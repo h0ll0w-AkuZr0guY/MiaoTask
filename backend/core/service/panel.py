@@ -34,6 +34,7 @@ from backend.core.service.notify import notify_security_attention
 from backend.core.runtime import data_dir, version
 from backend.core.service.branding import PUBLIC_ICON_FILES
 from backend.core.context import device_scoped
+from backend.core.service.pipeline import ActivityPipeline
 
 logger = logging.getLogger(__name__)
 from backend.core.runtime import ROOT
@@ -95,10 +96,11 @@ class PanelLogHandler(logging.Handler):
 
 from backend.core.service.preview import PreviewWorker
 
-class Controller(PreviewWorker):
+class Controller(ActivityPipeline, PreviewWorker):
     def __init__(self, config=None, registry=None, app=None, activity=None):
         self.registry = registry or default_registry()
         self.registration = self.registry.get(app, activity) if self.registry.has_activities else None
+        self._app_instance_plans = {}
         self.lock = threading.RLock()
         self.device = None
         self.control = RunControl()
@@ -121,12 +123,14 @@ class Controller(PreviewWorker):
         self.state = dict(status='disconnected', phase='idle', connected=False,
                           message='连接手机后，点击开始执行自动进入活动并识别任务', package='', source='',
                           current_task='', remaining=0, stats=asdict(RunStats()), tasks=[],
-                          config=config or (load_config(registry=self.registry, app=self.registration.app.id, activity=self.registration.activity.id) if self.registration else {}), device={}, logs=[], updated_at='',
+                          config=config or load_config(registry=self.registry, app=self.registration.app.id if self.registration else None, activity=self.registration.activity.id if self.registration else None), device={}, logs=[], updated_at='',
                           daily=None, task_scope='', last_failure=None, image_sequence=0, image_updated_at='',
                           app_instances=[], selected_instance='', instance_warnings=[], instance_queue=[],
                           app=self.registration.app.id if self.registration else '',
                           activity=self.registration.activity.id if self.registration else '',
-                          catalog=self.registry.catalog())
+                          catalog=self.registry.catalog(),
+                          activity_plan=[dict(app=self.registration.app.id, activity=self.registration.activity.id)] if self.registration else [],
+                          activity_pipeline=[])
 
     def log(self, level, message):
         with self.lock:
@@ -292,6 +296,12 @@ class Controller(PreviewWorker):
         self.log('INFO', str(message))
 
     def dispatch(self, action, payload):
+        with getattr(self, 'catalog_gate', nullcontext()):
+            if getattr(self, 'catalog_busy', lambda: False)() and action not in ('pause', 'resume', 'stop'):
+                raise ValueError('活动包正在更新，请稍后再操作设备')
+            return self._dispatch(action, payload)
+
+    def _dispatch(self, action, payload):
         if action in ('task_skip', 'task_execute'):
             return self._task_action(action, payload)
         control_action = action in ('pause', 'resume', 'stop')
@@ -317,6 +327,13 @@ class Controller(PreviewWorker):
             else:
                 if self.thread and self.thread.is_alive():
                     raise ValueError('设备正在执行操作，请先停止当前任务')
+                if action == 'select_pipeline':
+                    activities = self._validate_plan(payload.get('activities'))
+                    self.control = RunControl()
+                    self.update(status='scanning', message='正在保存活动流水线')
+                    self.thread = threading.Thread(target=self._change_plan, args=(activities,), daemon=True)
+                    self.thread.start()
+                    return
                 if action == 'select_activity':
                     registration = self.registry.get(payload.get('app'), payload.get('activity'))
                     config = load_config(registry=self.registry, app=registration.app.id, activity=registration.activity.id)
@@ -325,14 +342,25 @@ class Controller(PreviewWorker):
                     self.thread = threading.Thread(target=self._change_activity, args=(registration, config), daemon=True)
                     self.thread.start()
                     return
-                if not self.registration:
+                if not self.registration and action not in ('configure', 'wifi_pair'):
                     raise ValueError('未注册活动，请先安装活动包')
-                if (payload.get('app', self.registration.app.id) != self.registration.app.id
-                        or payload.get('activity', self.registration.activity.id) != self.registration.activity.id):
+                planned_run = action == 'run'
+                if planned_run:
+                    activities = self._validate_plan(payload.get('activities', self.state['activity_plan']))
+                    if not activities:
+                        raise ValueError('请至少选择一个已安装活动')
+                    payload = dict(payload, activities=activities)
+                    if len(activities) > 1 and not payload.get('auto_open', True):
+                        raise ValueError('多个活动的流水线必须自动进入活动')
+                if (self.registration and not planned_run and
+                        (payload.get('app', self.registration.app.id) != self.registration.app.id
+                         or payload.get('activity', self.registration.activity.id) != self.registration.activity.id)):
                     raise ValueError('请先选择对应应用和活动')
                 if action not in ('connect', 'wifi_pair', 'wifi_connect', 'scan', 'run', 'open_app', 'capture', 'configure', 'select_instance', 'refresh_instances'):
                     raise ValueError('未知操作')
                 if action in ('wifi_pair', 'wifi_connect'):
+                    if self.registration is None and payload.get('connect_address'):
+                        raise ValueError('请先安装并选择活动，再连接设备')
                     from backend.core.device.wifi import endpoint, pairing_code
                     address = payload.get('connect_address')
                     serial = endpoint(address) if action == 'wifi_connect' or address else None
@@ -348,11 +376,12 @@ class Controller(PreviewWorker):
                     raise ValueError('配置字段无效')
                 config.update(overrides)
                 validate_config(config)
-                if action in ('run', 'scan', 'select_instance') and isinstance(getattr(self.device, 'app_instances', None), list) and not self.state['app_instances']:
+                defer_instances = planned_run and (len(activities) > 1 or activities[0] != dict(app=self.state['app'], activity=self.state['activity']))
+                if not defer_instances and action in ('run', 'scan', 'select_instance') and isinstance(getattr(self.device, 'app_instances', None), list) and not self.state['app_instances']:
                     raise ValueError('未发现可用应用实例，请安装应用或刷新实例列表后重试')
                 if action in ('run', 'scan') and not isinstance(payload.get('auto_open', True), bool):
                     raise ValueError('auto_open 必须为布尔值')
-                if action in ('run', 'scan', 'select_instance') and self.state['app_instances']:
+                if not defer_instances and action in ('run', 'scan', 'select_instance') and self.state['app_instances']:
                     known = {item['id'] for item in self.state['app_instances']}
                     ids = payload.get('instance_ids', [payload.get('instance_id') or self.state['selected_instance']])
                     if (not isinstance(ids, list) or not 1 <= len(ids) <= 16
@@ -406,6 +435,7 @@ class Controller(PreviewWorker):
                 # A failed attempt to choose another phone must not leave the
                 # previous phone looking connected or export its diagnostics.
                 self.device = None
+                self._app_instance_plans.clear()
                 with self._daily_lock:
                     self.daily = None
                     self.unavailable_tasks.clear()
@@ -444,6 +474,7 @@ class Controller(PreviewWorker):
                             selected_instance=device.selected_instance.id if device.selected_instance else '',
                             instance_warnings=device.instance_warnings,
                             tasks=[], message='设备已连接，请确认应用实例后开始自动执行')
+                self._preview_stop.clear()
                 self._start_preview()
                 self.log('INFO', f'设备连接成功：{device}')
             elif action == 'open_app':
@@ -470,48 +501,21 @@ class Controller(PreviewWorker):
                             message='实例列表已刷新；未读取任何账号登录信息')
             elif action == 'select_instance':
                 self._select_instance(payload['instance_ids'][0])
+                self._remember_instances(payload['instance_ids'])
                 self.update(status='ready', phase='ready', instance_queue=[], message='已选择实例，开始后才会打开对应应用')
             else:
-                auto_open = payload.get('auto_open', True)
-                if not isinstance(auto_open, bool):
-                    raise ValueError('auto_open 必须为布尔值')
-                ids = payload.get('instance_ids') or [self.state['selected_instance'] or None]
-                known = {i['id']: i for i in self.state['app_instances']}
-                self.update(instance_queue=[dict(id=i, label=known.get(i, {}).get('label', '当前应用'),
-                                                 status='pending', stats={}) for i in ids])
-                for instance_id in ids:
-                    self.control.check()
-                    if instance_id:
-                        self._select_instance(instance_id)
-                    self._ensure_daily()
-                    self._queue_status(instance_id, 'running')
-                    session_id = uuid.uuid4().hex
-                    self._round_last_stats[session_id] = {}
-                    self.update(stats=asdict(RunStats()), status='running' if action == 'run' else 'scanning')
-                    runner = CampaignRunner(
-                        self.device, config, self.control,
-                        lambda **event: self._runner_event(session_id, action == 'run', **event), self.on_image,
-                        unavailable_tasks=self.unavailable_tasks, on_failure=self.on_failure,
-                        task_policy=self.task_policy,
-                        registry=self.registry, app=self.registration.app.id, activity=self.registration.activity.id)
-                    self.log('INFO', ('开始识别任务' if action == 'scan' else '开始执行任务') +
-                             ('：' + known[instance_id]['label'] if instance_id in known else ''))
-                    context = self.device.instance_session() if instance_id else nullcontext()
-                    with context:
-                        if action == 'scan':
-                            runner.scan(auto_open=auto_open)
-                        else:
-                            runner.run(auto_open=auto_open)
-                    self._persist_state()
-                    self._queue_status(instance_id, 'finished')
-                    self._save_report()
-                self.update(status='ready' if action == 'scan' else 'finished')
+                if action == 'run':
+                    self._run_activity_pipeline(action, payload, config)
+                else:
+                    self._execute_current_activity(action, payload, config)
         except Stopped:
             self._finish_active_queue('stopped')
+            self._finish_activity_pipeline('stopped')
             self.interrupt_records('已停止，本次进度尚未核验')
             self.update(status='stopped', phase='stopped', message='已停止，可从当前页面重新开始', remaining=0)
         except (NeedsAttention, InstanceMismatch) as exc:
             self._finish_active_queue('needs_attention')
+            self._finish_activity_pipeline('needs_attention')
             self.interrupt_records('需要手动处理后重新核验')
             self.log('WARNING', str(exc))
             self.update(status='needs_attention', phase='needs_attention', message=str(exc), remaining=0)
@@ -521,6 +525,7 @@ class Controller(PreviewWorker):
                 notify_security_attention()
         except Exception as exc:
             self._finish_active_queue('error')
+            self._finish_activity_pipeline('error')
             self.interrupt_records('执行中断，本次进度尚未核验')
             logger.exception('设备操作失败')
             self.update(status='error', phase='connect_failed' if action in ('connect', 'wifi_pair', 'wifi_connect') else 'error',
@@ -542,6 +547,42 @@ class Controller(PreviewWorker):
                 except Exception:
                     logger.exception('保存本地当天记录失败')
 
+    def _execute_current_activity(self, action, payload, config):
+        auto_open = payload.get('auto_open', True)
+        if not isinstance(auto_open, bool):
+            raise ValueError('auto_open 必须为布尔值')
+        ids = payload.get('instance_ids') or [self.state['selected_instance'] or None]
+        known = {i['id']: i for i in self.state['app_instances']}
+        self.update(instance_queue=[dict(id=i, label=known.get(i, {}).get('label', '当前应用'),
+                                         status='pending', stats={}) for i in ids])
+        for instance_id in ids:
+            self.control.check()
+            if instance_id:
+                self._select_instance(instance_id)
+            self._ensure_daily()
+            self._queue_status(instance_id, 'running')
+            session_id = uuid.uuid4().hex
+            self._round_last_stats[session_id] = {}
+            self.update(stats=asdict(RunStats()), status='running' if action == 'run' else 'scanning')
+            runner = CampaignRunner(
+                self.device, config, self.control,
+                lambda **event: self._runner_event(session_id, action == 'run', **event), self.on_image,
+                unavailable_tasks=self.unavailable_tasks, on_failure=self.on_failure,
+                task_policy=self.task_policy,
+                registry=self.registry, app=self.registration.app.id, activity=self.registration.activity.id)
+            self.log('INFO', ('开始识别任务' if action == 'scan' else '开始执行任务') +
+                     ('：' + known[instance_id]['label'] if instance_id in known else ''))
+            context = self.device.instance_session() if instance_id else nullcontext()
+            with context:
+                if action == 'scan':
+                    runner.scan(auto_open=auto_open)
+                else:
+                    runner.run(auto_open=auto_open)
+            self._persist_state()
+            self._queue_status(instance_id, 'finished')
+            self._save_report()
+        self.update(status='ready' if action == 'scan' else 'finished')
+
     def _select_instance(self, instance_id):
         self.control.check()
         target = self.device.select_app_instance(instance_id)
@@ -550,26 +591,23 @@ class Controller(PreviewWorker):
                     last_failure=None, stats=asdict(RunStats()))
 
     @device_scoped
-    def _change_activity(self, registration, config):
+    def _change_plan(self, activities):
         try:
             self.control.check()
-            if self.device is not None and self.registration.app.id != registration.app.id:
-                self.device.bind_application(registration.app.profile)
-            self.registration = registration
-            with self._daily_lock:
-                self.daily = None
-                self.unavailable_tasks.clear()
-            self.update(app=registration.app.id, activity=registration.activity.id,
-                        config=config, tasks=[], stats=asdict(RunStats()), daily=None,
-                        current_task='', remaining=0, last_failure=None, instance_queue=[],
-                        app_instances=[i.to_dict() for i in self.device.app_instances] if self.device else [],
-                        selected_instance=self.device.selected_instance.id if self.device and self.device.selected_instance else '')
-            if self.device:
-                self._ensure_daily()
-            self.update(status='ready' if self.device else 'disconnected', phase='ready', message='已选择活动')
+            self._set_plan(activities)
+        except Exception as exc:
+            self.update(status='error', message=str(exc))
+            self.log('WARNING', '保存活动流水线失败：' + str(exc))
+
+    @device_scoped
+    def _change_activity(self, registration, config):
+        try:
+            self._activate_registration(registration, config)
+            self.update(activity_plan=[dict(app=registration.app.id, activity=registration.activity.id)],
+                        activity_pipeline=[], status='ready' if self.device else 'disconnected',
+                        phase='ready', message='已选择活动')
         except Exception:
             logger.exception('活动切换失败')
-            # A failed driver rebind must never leave the old identity available.
             self.device = None
             self.update(status='error', connected=False, app_instances=[], selected_instance='',
                         message='活动切换失败，请重新连接设备')
@@ -629,6 +667,23 @@ def make_handler(controller, token):
                 self.reply(403, {'error': '只允许本机访问'})
                 return
             path = urlsplit(self.path).path
+            origin = f'http://127.0.0.1:{self.server.server_port}'
+            if path == '/api/plugins' and hasattr(root, 'plugins_snapshot'):
+                try:
+                    refresh = parse_qs(urlsplit(self.path).query).get('refresh', ['0'])[0] == '1'
+                    self.reply(200, root.plugins_snapshot(origin, refresh=refresh))
+                except (ValueError, OSError) as exc:
+                    self.reply(400, {'error': str(exc)})
+                return
+            if path.startswith('/api/plugins/test/'):
+                source = getattr(root, 'plugin_source', None)
+                try:
+                    if source is None:
+                        raise ValueError('未启用本机测试活动源')
+                    self.reply(200, *source.response(path, origin))
+                except (ValueError, OSError) as exc:
+                    self.reply(404, {'error': str(exc)})
+                return
             if path == '/api/workspaces' and hasattr(root, 'summaries'):
                 self.reply(200, dict(devices=root.summaries()))
                 return
@@ -642,6 +697,8 @@ def make_handler(controller, token):
                 self.reply(200, dict(controller.snapshot(), token=token, version=version(),
                                      busy=bool(controller.thread and controller.thread.is_alive()),
                                      workspace_id=getattr(controller, 'workspace_id', 'default'),
+                                     plugins_busy=getattr(root, 'plugin_busy', False),
+                                     plugins_operation=copy.deepcopy(getattr(root, 'plugin_operation', {})),
                                      workspaces=root.summaries() if hasattr(root, 'summaries') else []))
             elif path == '/api/health':
                 self.reply(200, dict(app='miao-task', version=version()))
@@ -699,6 +756,11 @@ def make_handler(controller, token):
                 if not isinstance(payload, dict):
                     raise ValueError('请求必须为 JSON 对象')
                 path = urlsplit(self.path).path
+                if path in ('/api/plugins/install', '/api/plugins/uninstall') and hasattr(root, 'change_plugin'):
+                    root.change_plugin(path.rsplit('/', 1)[-1], payload,
+                                       f'http://127.0.0.1:{self.server.server_port}')
+                    self.reply(202, {'ok': True})
+                    return
                 key = None if path.startswith('/api/workspaces') or path == '/api/shutdown' else parse_qs(urlsplit(self.path).query).get('device', [None])[0]
                 controller = root.resolve(key) if hasattr(root, 'resolve') else root
                 if not path.startswith('/api/'):
@@ -741,9 +803,11 @@ def make_handler(controller, token):
     return Handler
 
 
-def serve(port=8765, open_browser=True, config=None, port_file=None, app=None, activity=None):
+def serve(port=8765, open_browser=True, config=None, port_file=None, app=None, activity=None,
+          test_activity_source_dir=None):
     from backend.core.service.devices import DeviceHub
-    controller = DeviceHub(config, app=app, activity=activity)
+    controller = DeviceHub(config, app=app, activity=activity,
+                           test_activity_source_dir=test_activity_source_dir)
     logging.getLogger().addHandler(PanelLogHandler(controller))
     handler = make_handler(controller, secrets.token_urlsafe(32))
     def existing_assistant():
@@ -775,7 +839,7 @@ def serve(port=8765, open_browser=True, config=None, port_file=None, app=None, a
     if port_file:
         Path(port_file).write_text(json.dumps({'url': url}), encoding='utf-8')
     if sys.stdout is not None:
-        print(f'双11任务助手已启动：{url}\n按 Ctrl+C 退出。')
+        print(f'MiaoTask 已启动：{url}\n按 Ctrl+C 退出。')
     from backend.core.service.tray import WindowsTray
     def exit_service():
         controller.stop_all()

@@ -28,8 +28,10 @@
       button.firstChild.textContent=row.label;
       button.lastChild.textContent=(labels[row.status]||row.status)+(row.display?` · ${row.display.width}×${row.display.height}`:'')+` · 今日完成 ${row.stats.completed||0}`;
     }
-    byId('remove-device').disabled=rows.length<=1||snapshot?.busy;
-    byId('batch-run').disabled=byId('batch-stop').disabled=!checked.size;
+    byId('remove-device').disabled=rows.length<=1||snapshot?.busy||snapshot?.plugins_busy;
+    byId('add-device').disabled=Boolean(snapshot?.plugins_busy);
+    byId('batch-run').disabled=byId('batch-open-app').disabled=!checked.size||Boolean(snapshot?.plugins_busy);
+    byId('batch-stop').disabled=!checked.size;
   }
   async function discover(emulators=false){
     byId('add-device-message').textContent='正在检测设备…';

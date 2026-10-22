@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 
 from backend.core.device.profile import ApplicationProfile
-from backend.core.runtime import assets_dir
+from backend.core.runtime import assets_dir, data_dir
 
 
 def checked_id(value):
@@ -51,8 +51,10 @@ class Registration:
 
 
 class Registry:
-    def __init__(self, app_dir=None):
+    def __init__(self, app_dir=None, *, plugin_dir=None):
         self.root = Path(app_dir) if app_dir is not None else assets_dir() / 'backend/app'
+        self.plugin_root = (Path(plugin_dir) if plugin_dir is not None else
+                            data_dir() / 'plugins/apps' if app_dir is None else None)
         self._apps = {}
         self._activities = {}
 
@@ -65,10 +67,23 @@ class Registry:
 
     def discover(self):
         apps, activities = {}, {}
-        if not self.root.exists():
-            self._apps, self._activities = apps, activities
-            return self
-        for directory in sorted(self.root.iterdir()):
+        directories = {}
+        for root in (self.root, self.plugin_root):
+            if root is not None and root.is_dir():
+                for directory in sorted(root.iterdir()):
+                    if directory.is_dir() and (directory / 'manifest.py').is_file():
+                        directories[directory.name] = directory
+        if self.plugin_root is not None:
+            # Add writable reviewed activities to the same namespace in source
+            # and PyInstaller's PYZ. Framework/common modules remain bundled.
+            package = importlib.import_module('backend.app')
+            previous = getattr(package, '_miaotask_plugin_paths', ())
+            paths = [path for path in package.__path__ if path not in previous]
+            plugin_path = str(self.plugin_root.resolve())
+            package.__path__ = [plugin_path] + [path for path in paths if path != plugin_path]
+            package._miaotask_plugin_paths = (plugin_path,)
+            importlib.invalidate_caches()
+        for directory in directories.values():
             manifest = directory / 'manifest.py'
             if not directory.is_dir() or not manifest.is_file():
                 continue

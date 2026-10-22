@@ -4,6 +4,7 @@ from backend.core.service.branding import PUBLIC_ICON_FILES
 
 
 STATIC = {
+    '/js/components/activity-center.js': ('js/components/activity-center.js', 'text/javascript; charset=utf-8'),
     '/js/components/device-manager.js': ('js/components/device-manager.js', 'text/javascript; charset=utf-8'),
     '/': ('index.html', 'text/html; charset=utf-8'),
     '/app.js': ('js/app.js', 'text/javascript; charset=utf-8'),

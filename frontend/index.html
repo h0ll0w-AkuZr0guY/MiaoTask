@@ -4,7 +4,7 @@
   <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light"><title>MiaoTask · 设备任务工作台</title>
   <link rel="icon" type="image/png" sizes="32x32" href="/assets/miaotask-32.png"><link rel="icon" type="image/png" sizes="16x16" href="/assets/miaotask-16.png"><link rel="apple-touch-icon" sizes="180x180" href="/assets/miaotask-180.png">
-  <link rel="stylesheet" href="/css/base.css"><script src="/js/api.js" defer></script><script src="/js/components/activity-selector.js" defer></script><script src="/js/components/wifi-connect.js" defer></script><script src="/js/components/device-manager.js" defer></script><script src="/js/app.js" defer></script>
+  <link rel="stylesheet" href="/css/base.css"><script src="/js/api.js" defer></script><script src="/js/components/activity-selector.js" defer></script><script src="/js/components/activity-center.js" defer></script><script src="/js/components/wifi-connect.js" defer></script><script src="/js/components/device-manager.js" defer></script><script src="/js/app.js" defer></script>
 </head>
 <body>
   <header class="topbar"><a class="brand" href="/" aria-label="MiaoTask 首页"><span class="brand-icon"><img src="/assets/miaotask-64.png" srcset="/assets/miaotask-128.png 2x" width="40" height="40" alt=""></span><span class="brand-name">MiaoTask</span><span class="brand-edition">任务助手</span></a><div class="top-meta"><span class="local-dot"></span> 本地运行<span class="divider"></span><span>MULTI-DEVICE / LOCAL</span><a href="/api/report" download title="下载当前任务和日志">导出记录 ↗</a></div></header>
@@ -20,10 +20,15 @@
         <button type="button" class="text-button" id="refresh-device-list">↻ 检测已连接设备</button><button type="button" class="text-button" id="find-emulators">查找 MuMu 模拟器</button><p id="add-device-message" class="field-hint" role="status"></p>
       </section>
     </section>
+    <section class="card application-manager" aria-label="应用导航">
+      <div class="application-toolbar"><div><span class="eyebrow">APPS &amp; ACTIVITIES</span><h2>应用与活动</h2></div><button type="button" class="feature-button" id="activity-center-open">＋ 活动中心</button></div>
+      <nav id="application-nav" role="tablist" aria-label="浏览已安装应用"></nav>
+    </section>
     <div class="workspace">
       <section class="main-column">
         <section class="card setup-card" aria-labelledby="setup-title"><div class="section-heading"><h2 id="setup-title"><span class="step">01</span>设备与活动</h2><button class="text-button" id="discover">↻ 检测设备</button></div>
-          <details class="activity-manager" style="margin:16px 0"><summary>应用与活动</summary><div class="device-grid" style="margin-top:12px"><label>应用<select id="activity-app" aria-label="应用"></select></label><label>活动<select id="activity-choice" aria-label="活动"></select></label><button type="button" class="button" id="activity-apply">选择活动</button></div></details><form id="settings-form"><div class="connection-grid"><label>设备平台<select id="device-type"><option value="uiautomator2">Android · 安卓</option><option value="hmdriver2">HarmonyOS · 鸿蒙</option></select></label><label class="device-field">设备 / 无线调试地址<input id="serial" placeholder="自动选择已连接手机" list="device-options" maxlength="128"><datalist id="device-options"></datalist></label><button type="button" class="button dark" id="connect">连接设备 <span>↗</span></button></div>
+          <section class="activity-selection" aria-label="本设备活动选择"><h3 id="activity-selection-title">选择要执行的活动</h3><div id="activity-tiles" class="activity-tiles"></div><div class="pipeline-heading"><strong>本设备流水线 <span id="pipeline-count">0</span></strong><button type="button" class="text-button" id="pipeline-clear">清空选择</button></div><div id="activity-pipeline"></div><p class="field-hint">跨应用活动按此顺序执行，同一设备的活动与分身串行，不同设备并行。未选择过实例的应用使用主应用；已有分身选择会保留，不自动换号。</p></section>
+          <div hidden><select id="activity-app" aria-label="当前应用"></select><select id="activity-choice" aria-label="当前活动"></select><button id="activity-apply" type="button">选择活动</button></div><form id="settings-form"><div class="connection-grid"><label>设备平台<select id="device-type"><option value="uiautomator2">Android · 安卓</option><option value="hmdriver2">HarmonyOS · 鸿蒙</option></select></label><label class="device-field">设备 / 无线调试地址<input id="serial" placeholder="自动选择已连接手机" list="device-options" maxlength="128"><datalist id="device-options"></datalist></label><button type="button" class="button dark" id="connect">连接设备 <span>↗</span></button></div>
           <p class="field-hint" id="device-hint">请保持手机解锁，并开启 USB 调试。</p>
           <details class="wifi-manager" id="wifi-manager">
             <summary>通过 Wi-Fi 连接手机<span>无需数据线 · Android 11 及以上</span></summary>
@@ -108,6 +113,6 @@
       <section class="help-card"><span class="help-number">小提示 / 01</span><h3>开始之前，自动核定。</h3><p>默认自动恢复所选应用并进入活动任务列表。每次开始、返回都会读取当前任务，替换出的新任务也会更新。</p><div class="help-line"></div><p>遇到验证或登录请本人处理。处理后再次开始，助手会重新定位活动。滑块适配暂列待办，不自动尝试破解。</p><div class="help-line"></div><p>今日统计按设备与应用实例分别保存。当天确认缺失的应用再次启动也会跳过，第二天重新尝试。实际刷新速度受设备截图与本地识别耗时影响。</p></section>
       </aside>
     </div>
-  </main><div class="toast" id="toast" role="alert" hidden></div><div class="app-exit"><p id="service-hint">关闭网页后助手仍在后台；Windows 可在右下角托盘打开控制台或退出。</p><button id="shutdown" class="text-button">退出助手</button></div>
+  </main><dialog id="activity-center" aria-labelledby="activity-center-title"><div class="activity-center-heading"><div><span class="eyebrow">INSTALL ONLY WHAT YOU NEED</span><h2 id="activity-center-title">活动中心</h2></div><button type="button" class="text-button" id="activity-center-close" aria-label="关闭活动中心">关闭 ✕</button></div><div class="activity-source-toolbar"><span id="activity-source-label" class="activity-source-badge">MiaoTask 官方活动源</span><button type="button" class="text-button" id="activity-center-refresh">↻ 刷新目录</button></div><p id="activity-center-message" class="field-hint" role="status" aria-live="polite">选择需要的应用和活动，安装后在主页面勾选。</p><div id="activity-center-list"></div><p class="activity-center-note">活动单独下载与更新，卸载保留已有日记录。安装、更新与卸载前请停止所有设备；活动包含 Python 代码，仅使用可信来源。</p></dialog><div class="toast" id="toast" role="alert" hidden></div><div class="app-exit"><p id="service-hint">关闭网页后助手仍在后台；Windows 可在右下角托盘打开控制台或退出。</p><button id="shutdown" class="text-button">退出助手</button></div>
 </body>
 </html>

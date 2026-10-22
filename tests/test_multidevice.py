@@ -44,7 +44,7 @@ class HubTests(unittest.TestCase):
             with ExitStack() as stack:
                 stack.enter_context(patch('backend.core.service.panel.CampaignRunner',Runner))
                 for key in keys:
-                    c=hub.resolve(key);c.device=Mock()
+                    c=hub.resolve(key);c.device=Mock(device_type='uiautomator2')
                     c.device.screenshot.return_value=Image.new('RGB',(30,60))
                     c.update(connected=True)
                     for method in ['_ensure_daily','_persist_state','_save_report']:

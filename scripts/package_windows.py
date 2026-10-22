@@ -21,7 +21,7 @@ LICENSE_TEXT_SUFFIXES = {'', '.txt', '.md', '.rst', '.html', '.apache', '.bsd',
                          '.lgpl', '.mpl', '.zlib', '.isc'}
 
 
-def copy_documentation(destination):
+def copy_documentation(destination, *, include_activities=False):
     """Keep portable help in the same relative layout as the source docs."""
     folder = destination / 'docs'
     folder.mkdir(parents=True, exist_ok=True)
@@ -29,9 +29,12 @@ def copy_documentation(destination):
         shutil.copy2(ROOT / 'docs' / name, folder / name)
     for name in PROJECT_LICENSES:
         shutil.copy2(ROOT / name, destination / name)
+    activity_help = ('本包包含源码提供的活动，可在网页中选择使用。\n\n' if include_activities else
+                     '默认仅包含框架与运行环境。首次打开网页，在「活动中心」下载需要的应用与活动。\n\n')
     (destination / 'README.md').write_text(
         '# MiaoTask\n\n'
         '双击 `MiaoTask.exe`，保留 `_internal/`。升级前先退出旧助手。\n\n'
+        + activity_help +
         '[使用说明](docs/USAGE.md) · [风险与隐私](docs/SAFETY.md) · '
         '[发布记录](docs/RELEASES.md) · [许可与声明](docs/LICENSING.md)\n',
         encoding='utf-8')
@@ -97,6 +100,8 @@ def main():
     parser.add_argument('--adb-dir', help='Folder containing adb.exe, DLLs and NOTICE.txt')
     parser.add_argument('--hdc-dir', help='Optional authorized HDC runtime folder')
     parser.add_argument('--skip-tests', action='store_true', help='Skip unit tests already run on this commit')
+    parser.add_argument('--include-activities', action='store_true',
+                        help='Bundle source activities for offline compatibility checks (default: framework only)')
     args = parser.parse_args()
     if sys.platform != 'win32' or platform.machine().lower() not in ('amd64', 'x86_64'):
         raise SystemExit('Build this package on Windows x64')
@@ -117,24 +122,37 @@ def main():
         raise SystemExit('Build path escapes the workspace')
     env = os.environ.copy()
     env['MIAO_ADB_DIR'] = str(adb_dir)
+    # Always set the value explicitly: an inherited environment cannot silently
+    # turn the default framework release into an application bundle.
+    env['MIAO_INCLUDE_ACTIVITIES'] = '1' if args.include_activities else '0'
     if args.hdc_dir:
         env['MIAO_HDC_DIR'] = str(Path(args.hdc_dir).resolve())
     subprocess.run([sys.executable, '-m', 'PyInstaller', '--noconfirm', '--distpath', str(dist),
                     '--workpath', str(work), str(ROOT / 'build.spec')], env=env, cwd=ROOT, check=True)
     package = dist / 'MiaoTask'
     executable = package / 'MiaoTask.exe'
-    copy_documentation(package)
+    copy_documentation(package, include_activities=args.include_activities)
     licenses(package / 'licenses', adb_dir)
     from smoke_packaged import smoke
-    smoke(executable, package / 'self-test.json')
+    from package_activities import build_packages
+    activity_folder = work / 'activity-smoke'
+    catalog = build_packages(ROOT, activity_folder, 'activity-smoke', version.split('-v')[-1])
+    smoke_archives = [(activity_folder / entry['url'].rsplit('/', 1)[-1], entry['sha256'])
+                      for entry in catalog['packages']]
+    smoke_result = smoke(executable, package / 'self-test.json', activity_packages=smoke_archives)
+    policy = json.loads((package / '_internal/bundle-policy.json').read_text(encoding='utf-8'))
     manifest = dict(version=version, platform='windows-x64', python=platform.python_version(),
-                    source_commit=revision, source_repository='https://github.com/h0ll0w-AkuZr0guY/tmall-miao-double11',
+                    source_commit=revision, source_repository='https://github.com/h0ll0w-AkuZr0guY/MiaoTask',
+                    bundle_mode=policy['bundle_mode'], framework_api=policy['framework_api'],
+                    embedded_activities=policy['embedded_activity_modules'],
+                    verified_activity_imports=smoke_result['actual_activity_imports'],
                     built_utc=datetime.now(timezone.utc).isoformat(),
                     packages={d.metadata['Name']: d.version for d in metadata.distributions()},
                     adb_bundled=True, hdc_bundled=(package / '_internal/shared/tools/hdc.exe').exists(),
                     offline_models=True, smoke_test_passed=True)
     (package / 'build-manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
-    archive = ROOT / 'dist' / f'{version}-windows-x64.zip'
+    suffix = '-with-activities' if args.include_activities else ''
+    archive = ROOT / 'dist' / f'{version}-windows-x64{suffix}.zip'
     with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as bundle:
         for path in sorted(package.rglob('*')):
             if path.is_file():

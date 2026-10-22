@@ -5,16 +5,18 @@ import time
 import uuid
 
 from backend.core.context import workspace_scope
+from backend.core.service.activity_hub import ActivityCatalogHub
 
 
-class DeviceHub:
+class DeviceHub(ActivityCatalogHub):
     limit = 8
 
-    def __init__(self, config=None, registry=None, app=None, activity=None):
+    def __init__(self, config=None, registry=None, app=None, activity=None, test_activity_source_dir=None):
         self.lock = threading.RLock()
         self.controllers = {}
         self.leases = {}
         self.closing = False
+        self._init_activity_catalog(test_activity_source_dir)
         self.defaults = dict(config=config, registry=registry, app=app, activity=activity)
         self.add('设备 1', key='default')
 
@@ -22,7 +24,9 @@ class DeviceHub:
         from backend.core.service.panel import Controller
         if not isinstance(label, str) or len(label) > 60:
             raise ValueError('设备名称应不超过 60 个字符')
-        with self.lock:
+        with self.catalog_gate, self.lock:
+            if self.plugin_busy:
+                raise ValueError('活动包正在更新，请稍后添加设备')
             if self.closing or len(self.controllers) >= self.limit:
                 raise ValueError('工作区已关闭或达到设备数量上限（8 台）')
             key = key or uuid.uuid4().hex
@@ -32,6 +36,8 @@ class DeviceHub:
             controller.workspace_label = label.strip() or f'设备 {len(self.controllers)+1}'
             controller.claim_device = lambda kind, serial: self.claim(key, kind, serial)
             controller.release_device = lambda: self.release(key)
+            controller.catalog_gate = self.catalog_gate
+            controller.catalog_busy = lambda: self.plugin_busy
             self.controllers[key] = controller
             return key
 
@@ -80,7 +86,9 @@ class DeviceHub:
     def remove(self, key):
         if not isinstance(key,str) or not key:
             raise ValueError('请选择要移除的设备工作区')
-        with self.lock:
+        with self.catalog_gate, self.lock:
+            if self.plugin_busy:
+                raise ValueError('活动包正在更新，请稍后移除设备')
             controller = self.resolve(key)
             if len(self.controllers) == 1:
                 raise ValueError('请至少保留一个设备工作区')
@@ -110,7 +118,8 @@ class DeviceHub:
                 controller.dispatch(action, dict(config=payload.get('config', {}),
                                                  auto_open=payload.get('auto_open', True),
                                                  app=payload.get('app', controller.state['app']),
-                                                 activity=payload.get('activity', controller.state['activity'])))
+                                                 activity=payload.get('activity', controller.state['activity']),
+                                                 **({'activities':payload['activities']} if 'activities' in payload else {})))
                 results.append(dict(id=key, ok=True))
             except (ValueError, TypeError) as exc:
                 results.append(dict(id=key, ok=False, error=str(exc)))
@@ -137,6 +146,8 @@ class DeviceHub:
     def close(self, timeout=25):
         self.stop_all()
         deadline = time.monotonic() + timeout
+        if self.plugin_thread and self.plugin_thread is not threading.current_thread():
+            self.plugin_thread.join(max(0, deadline-time.monotonic()))
         for controller in list(self.controllers.values()):
             if controller.thread and controller.thread is not threading.current_thread():
                 controller.thread.join(max(0, deadline-time.monotonic()))

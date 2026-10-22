@@ -80,10 +80,21 @@ def load_resolved(registration, overrides=None):
     return ConfigSnapshot(freeze(values), MappingProxyType(sources))
 
 
+def load_framework_config(overrides=None):
+    """Usable generic controls before any app is installed, never an activity."""
+    values = read_config(assets_dir() / 'backend/core/config/defaults.json')
+    values.update(search_keyword='', entry_labels=['活动'], task_entry_labels=['任务'])
+    values.update(copy.deepcopy(overrides or {}))
+    validate_config(values)
+    return values
+
+
 def load_config(path=None, *, app=None, activity=None, registry=None, overrides=None):
     if registry is None:
         from backend.core.registry import default_registry
         registry = default_registry()
     user = read_config(path) if path else {}
     user.update(overrides or {})
+    if not registry.has_activities and app is None and activity is None:
+        return load_framework_config(user)
     return load_resolved(registry.get(app, activity), user).mutable()

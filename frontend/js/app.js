@@ -33,12 +33,13 @@ function validateSettingsForm(){
 }
 async function action(name, extra={}){
   if(requesting)return;
+  if(!state&&name!=='shutdown'){toast('正在读取当前设备，请稍候');return;}
   if(['run','connect','configure'].includes(name)&&!validateSettingsForm())return;
   if(name==='run'&&!config().enabled_task_kinds.length){showSettings('tasks');toast('请至少选择一种本轮任务类型');return;}
   requesting=true;
   try{const payload={app:state?.app,activity:state?.activity,...extra,auto_open:document.querySelector('input[name=mode]:checked').value==='auto'};
     if(['run','connect','configure'].includes(name))payload.config=config();
-    if(name==='run'){const queued=clonesEnabled&&$('sequence-instances').checked;payload.instance_ids=queued?queueOrder:[clonesEnabled?$('app-instance').value:defaultInstanceId()];if(!payload.instance_ids.length||payload.instance_ids.some(id=>!id))throw new Error('请至少选择一个应用实例');if(queued)payload.auto_open=true;}
+    if(name==='run'){payload.activities=MiaoActivities.plan;if(!payload.activities.length)throw new Error('请先勾选至少一个活动');const queued=clonesEnabled&&$('sequence-instances').checked;if(payload.activities.length===1){payload.instance_ids=queued?queueOrder:[clonesEnabled?$('app-instance').value:defaultInstanceId()];if(!payload.instance_ids.length||payload.instance_ids.some(id=>!id))throw new Error('请至少选择一个应用实例');}if(queued)payload.auto_open=true;}
     if(name==='connect'){payload.device_type=$('device-type').value;payload.serial=$('serial').value.trim();}
     const response=await fetch(MiaoAPI.url('/api/'+name),{method:'POST',headers:{'Content-Type':'application/json','X-Miao-Token':token},body:JSON.stringify(payload)});
     const result=await response.json();if(!response.ok)throw new Error(result.error||'操作失败');if(name==='shutdown'){toast('助手已退出，可以关闭此页面');return;}if(name==='configure')toast('执行设置已应用');await poll();
@@ -86,7 +87,7 @@ function renderTasks(force=false){
 function renderLogs(){const logs=state.logs||[];const hash=logs.length?String(logs[logs.length-1].id):'';if(hash===logsHash)return;logsHash=hash;const list=$('log-list');const atBottom=list.scrollTop+list.clientHeight>=list.scrollHeight-30;list.replaceChildren();for(const log of logs){const line=el('div','log-line '+log.level);line.append(el('time','',log.time.slice(11,19)),el('span','log-level',log.level),el('span','log-text',log.message));list.append(line);}if(atBottom)list.scrollTop=list.scrollHeight;}
 function render(){for(const a of document.querySelectorAll('a[href^="/api/report"],a[href^="/api/diagnostics"]'))a.href=MiaoAPI.url(a.pathname);
   window.dispatchEvent(new CustomEvent('miaotask:state',{detail:state}));
-  if(!state.catalog?.some(app=>app.activities.length)){$('run').disabled=$('connect').disabled=true;$('message').textContent='尚未安装活动包，请按开发文档注册活动';return;}
+  const hasActivities=Boolean(state.catalog?.some(app=>app.activities.length)), hasPlan=Boolean(MiaoActivities.plan.length);
   $('app-version').textContent=state.version||'';
   if(!initialized){
     if(state.connected&&state.device?.serial){$('serial').value=state.device.serial;$('device-type').value=state.device.type;$('device-hint').textContent='当前工作区已连接 · '+state.device.serial;}
@@ -95,17 +96,18 @@ function render(){for(const a of document.querySelectorAll('a[href^="/api/report
     queueOrder=pref?.queueOrder?.slice()||[];$('sequence-instances').checked=pref?.sequence||false;
     document.querySelector('input[name=mode][value="'+(pref?.mode||'auto')+'"]').checked=true;
   }
-  const busy=busyStates.has(state.status)||state.busy;renderInstances(busy);const running=state.status==='running',paused=state.status==='paused';
+  const busy=busyStates.has(state.status)||state.busy||state.plugins_busy;renderInstances(busy);const running=state.status==='running',paused=state.status==='paused';
+  const currentEntry=document.querySelector('input[name=mode][value=current]');currentEntry.disabled=busy||MiaoActivities.plan.length>1;if(MiaoActivities.plan.length>1)document.querySelector('input[name=mode][value=auto]').checked=true;
   $('connection-label').className='status-pill'+(state.connected?' connected':'');$('connection-label').replaceChildren(el('span'),document.createTextNode(statusLabels[state.status]||state.status));
-  $('connect').disabled=busy;$('connect').textContent=state.connected?'重新连接 ↗':'连接设备 ↗';
+  $('connect').disabled=busy||!hasActivities||!hasPlan;$('connect').textContent=state.connected?'重新连接 ↗':'连接设备 ↗';
   for(const id of ['run','capture'])$(id).disabled=!state.connected||busy;
-  $('run').textContent=busy?'正在处理…':clonesEnabled&&$('sequence-instances').checked?'▶ 按顺序执行':'▶ 开始自动执行';if(!(state.app_instances||[]).length)$('run').disabled=true;
+  $('run').textContent=busy?'正在处理…':MiaoActivities.plan.length>1?'▶ 执行活动流水线':clonesEnabled&&$('sequence-instances').checked?'▶ 按顺序执行':'▶ 开始自动执行';if(!(state.app_instances||[]).length||!hasActivities||!hasPlan||MiaoActivities.locked)$('run').disabled=true;
   $('pause').disabled=!running&&!paused;$('pause').textContent=paused?'▶ 继续':'Ⅱ 暂停';$('stop').disabled=!busy||state.status==='stopping';
   $('device-type').disabled=busy;$('serial').disabled=busy;
   $('save-settings').disabled=busy;
   $('phase-label').textContent=phaseLabels[state.phase]||'READY WHEN YOU ARE';
   $('execution-title').textContent=paused?'休息一下，进度还在':state.current_task||({disconnected:'准备好，再出发',ready:'手机已就绪',finished:'本轮任务已处理',needs_attention:'这一步，需要你来处理',error:'连接或执行遇到问题',stopped:'已停止执行'}[state.status]||statusLabels[state.status]);
-  $('message').textContent=state.message;$('countdown').hidden=!running||!state.remaining;$('remaining').textContent=state.remaining||0;
+  $('message').textContent=hasActivities?state.message:'框架已就绪，请打开活动中心安装所需活动，勾选后连接设备。';$('countdown').hidden=!running||!state.remaining;$('remaining').textContent=state.remaining||0;
   document.querySelector('.execution-card').classList.toggle('is-active',running);document.querySelector('.execution-card').classList.toggle('needs-attention',['error','needs_attention'].includes(state.status));
   const round=state.stats||{},daily=state.daily,stats=daily?.stats||{};
   for(const [id,key] of [['completed','completed'],['claims','claims'],['cross','cross_app'],['skipped','skipped'],['failed','failed']])$('stat-'+id).textContent=stats[key]||0;
@@ -119,7 +121,7 @@ function render(){for(const a of document.querySelectorAll('a[href^="/api/report
   const failureTitle=typeof failureTask==='string'?failureTask:failureTask?.title;
   $('last-failure').textContent=state.last_failure?`最近记录：${state.last_failure.reason||'执行未通过'}${failureTitle?' · '+failureTitle:''}`:'遇到验证、恢复失败或核验失败时记录现场，原始截图仅保存在本机。';
   $('package-name').textContent=state.package||'设备未连接';$('preview-source').textContent=state.source==='ocr'?'本地 OCR 识别':state.source==='ui'?'页面控件识别':'手机截图预览';
-  if(!initialized){const c=state.config;for(const name of ['distance','duration','interval','burst'])for(const bound of ['min','max'])$('swipe-'+name+'-'+bound).value=Number((c['swipe_'+name+'_'+bound]*(name==='distance'?100:1)).toFixed(3));$('browse-seconds').value=c.default_browse_seconds;$('browse-extra').value=c.browse_extra_seconds;$('max-attempts').value=c.max_attempts;$('max-tasks').value=c.max_tasks;$('cross-app').checked=c.allow_cross_app;$('ocr').checked=c.ocr;$('scroll').checked=c.scroll_browse;$('claim').checked=c.claim_rewards;for(const k of ['browse','search','visit','claim'])$('kind-'+k).checked=(c.enabled_task_kinds||['browse','search','visit','claim']).includes(k);initialized=true;}
+  if(!initialized){const c={...config(),...(state.config||{})};for(const name of ['distance','duration','interval','burst'])for(const bound of ['min','max']){const value=Number(c['swipe_'+name+'_'+bound]);if(Number.isFinite(value))$('swipe-'+name+'-'+bound).value=Number((value*(name==='distance'?100:1)).toFixed(3));}$('browse-seconds').value=c.default_browse_seconds;$('browse-extra').value=c.browse_extra_seconds;$('max-attempts').value=c.max_attempts;$('max-tasks').value=c.max_tasks;$('cross-app').checked=c.allow_cross_app;$('ocr').checked=c.ocr;$('scroll').checked=c.scroll_browse;$('claim').checked=c.claim_rewards;for(const k of ['browse','search','visit','claim'])$('kind-'+k).checked=(c.enabled_task_kinds||['browse','search','visit','claim']).includes(k);initialized=true;}
   updateSettingsSummary();renderTasks();renderLogs();preview();
 }
 async function poll(){
@@ -164,16 +166,17 @@ $('settings-form').addEventListener('submit',event=>event.preventDefault());
 for(const button of document.querySelectorAll('[data-filter]'))button.addEventListener('click',()=>{filter=button.dataset.filter;document.querySelectorAll('[data-filter]').forEach(b=>b.classList.toggle('active',b===button));if(state)renderTasks(true);});
 for(const name of ['tasks','logs'])$(name+'-tab').addEventListener('click',()=>{for(const other of ['tasks','logs']){const selected=name===other;$(other+'-tab').classList.toggle('active',selected);$(other+'-tab').setAttribute('aria-selected',String(selected));$(other+'-panel').hidden=!selected;}});
 window.addEventListener('miaotask:activity-changed',()=>{initialized=false;taskHash=logsHash=instanceHash='';poll();});
+window.addEventListener('miaotask:plan-changed',()=>{taskHash=instanceHash='';poll();});
 window.addEventListener('miaotask:error',event=>toast(event.detail));
 window.addEventListener('miaotask:device-selected',()=>{
   if(state?.workspace_id)deviceUIPreferences.set(state.workspace_id,{clonesEnabled,queueOrder:queueOrder.slice(),sequence:$('sequence-instances').checked,mode:document.querySelector('input[name=mode]:checked').value});
   initialized=false;taskHash=logsHash=instanceHash='';clonesEnabled=false;queueOrder=[];
   previewReady=false;lastPreviewSequence=null;$('phone-image').parentElement.style.aspectRatio='9/20';$('phone-image').closest('.phone').classList.remove('wide-screen');$('preview-time').textContent='—';$('phone-image').src='';$('phone-image').hidden=true;$('phone-placeholder').hidden=false;
-  state=null;$('serial').value='';$('device-hint').textContent='请连接当前工作区的设备';poll().then(poll);
+  state=null;for(const id of ['run','connect','capture','pause','stop'])$(id).disabled=true;$('serial').value='';$('device-hint').textContent='请连接当前工作区的设备';poll().then(poll);
 });
 window.addEventListener('miaotask:batch',async event=>{
   if(event.detail.action==='run'&&!validateSettingsForm())return;
-  try{const result=await MiaoAPI.request('/api/workspaces/batch',{method:'POST',token,payload:{...event.detail,config:config(),auto_open:document.querySelector('input[name=mode]:checked').value==='auto',app:state?.app,activity:state?.activity}});
+  try{if(event.detail.action==='run'&&!MiaoActivities.plan.length)throw new Error('请先勾选至少一个活动');const result=await MiaoAPI.request('/api/workspaces/batch',{method:'POST',token,payload:{...event.detail,config:config(),auto_open:document.querySelector('input[name=mode]:checked').value==='auto',activities:MiaoActivities.plan}});
     const failed=result.results.filter(row=>!row.ok);toast(failed.length?failed.map(row=>row.error).join('；'):'所选设备已收到操作，各自独立执行');await poll();
   }catch(error){toast(error.message);}
 });
