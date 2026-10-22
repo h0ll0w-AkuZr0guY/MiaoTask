@@ -7,7 +7,7 @@ body:
       value: |
         提交前请搜索已有 Issue。一个 Issue 聚焦一个问题，按标题格式填写模块与现象。
         请勿提供序列号、Android ID、设备 IP/端口、配对码、账号或私钥；截图与日志先脱敏。完整诊断包不必直接公开。
-        贡献要求见 [CONTRIBUTING](https://github.com/h0ll0w-AkuZr0guY/tmall-miao-double11/blob/main/docs/CONTRIBUTING.md)。
+        贡献要求见 [CONTRIBUTING](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/blob/main/docs/CONTRIBUTING.md)。
   - type: checkboxes
     id: precheck
     attributes:

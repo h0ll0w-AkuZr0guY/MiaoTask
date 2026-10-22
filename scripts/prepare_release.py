@@ -1,5 +1,6 @@
 """Roll reviewed pending contributions into the unified release history."""
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -22,6 +23,30 @@ def pending_entries(text):
             raise ValueError('Pending entries must use * 【分类】说明 (#PR) on one line')
         entries.append((match[1], match[2].strip()))
     return entries
+
+
+def release_ready(root, previous_version=None):
+    """Validate an explicit reviewed preparation; unrelated pushes are not releases."""
+    if __package__:
+        from .release_notes import extract_notes
+    else:
+        from release_notes import extract_notes
+    root = Path(root)
+    metadata = json.loads((root / 'version.json').read_text(encoding='utf-8-sig'))
+    version = metadata.get('version')
+    if not isinstance(version, str) or not re.fullmatch(r'MiaoTask-v0\.\d+\.\d+', version):
+        raise ValueError('Invalid release version')
+    if metadata.get('app_version') != version:
+        raise ValueError('Both version fields must match')
+    plan = json.loads((root / '.github/release-plan.json').read_text(encoding='utf-8-sig'))
+    if plan.get('version') != version or not isinstance(plan.get('contributions'), int) or plan['contributions'] < 1:
+        raise ValueError('A matching reviewed release preparation is required')
+    if previous_version is not None and plan.get('previous_version') != previous_version:
+        raise ValueError('Preparation does not match the previous published source version')
+    if pending_entries((root / 'docs/UNRELEASED.md').read_text(encoding='utf-8-sig')):
+        raise ValueError('Pending contributions remain; update the release preparation first')
+    extract_notes((root / 'docs/RELEASES.md').read_text(encoding='utf-8-sig'), version)
+    return version
 
 
 def prepare(root, version, summary):
@@ -53,8 +78,8 @@ def prepare(root, version, summary):
     footer = ('下载 Windows x64 ZIP，完整解压后运行 `MiaoTask.exe`，保留 `_internal/`。升级前退出旧助手。'
               '安全认证需本人处理，诊断截图分享前请脱敏。\n\n'
               '感谢 [MonsterNone/tmall-miao](https://github.com/MonsterNone/tmall-miao) 提供早期实现思路参考。'
-              '[使用说明](https://github.com/h0ll0w-AkuZr0guY/tmall-miao-double11/blob/main/docs/USAGE.md) · '
-              '[项目介绍](https://github.com/h0ll0w-AkuZr0guY/tmall-miao-double11#readme)\n\n')
+              '[使用说明](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/blob/main/docs/USAGE.md) · '
+              '[项目介绍](https://github.com/h0ll0w-AkuZr0guY/MiaoTask#readme)\n\n')
     section = '## ' + version + '\n\n' + summary.strip() + '\n\n' + '\n'.join(groups) + '\n\n' + footer
     position = re.search(r'^## ', history, re.M)
     position = position.start() if position else len(history.rstrip()) + 2
@@ -62,10 +87,14 @@ def prepare(root, version, summary):
         history = history.rstrip() + '\n\n'
         position = len(history)
     metadata.update(version=version, app_version=version)
+    plan = dict(version=version, previous_version=current, contributions=len(entries),
+                contribution_digest=hashlib.sha256(json.dumps(entries, ensure_ascii=False).encode()).hexdigest())
     # Validate all inputs before changing any of the three reviewable files.
     history_path.write_text(history[:position] + section + history[position:], encoding='utf-8')
     pending_path.write_text(pending.split(MARKER, 1)[0] + MARKER, encoding='utf-8')
     metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    (root / '.github').mkdir(exist_ok=True)
+    (root / '.github/release-plan.json').write_text(json.dumps(plan, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
 
 
 def main():
@@ -73,9 +102,13 @@ def main():
     parser.add_argument('--version')
     parser.add_argument('--summary')
     parser.add_argument('--check', action='store_true')
+    parser.add_argument('--ready', action='store_true', help='Verify the reviewed preparation before building')
+    parser.add_argument('--previous-version', help='Expected version of the previous main commit')
     args = parser.parse_args()
     try:
-        if args.check:
+        if args.ready:
+            print(release_ready(ROOT, args.previous_version))
+        elif args.check:
             pending_entries((ROOT / 'docs/UNRELEASED.md').read_text(encoding='utf-8-sig'))
         else:
             if not args.version or not args.summary:

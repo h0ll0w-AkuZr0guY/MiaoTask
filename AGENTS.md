@@ -71,6 +71,6 @@
 
 * Issue 使用仓库表单；标题和必填内容见 [CONTRIBUTING](docs/CONTRIBUTING.md#提交-issue)。不要只提交一张无上下文截图。
 * 提交与 PR 标题使用 `type(scope): 简短说明`，采用仓库 PR 模板，写明问题、最终行为、兼容影响、验证与限制。贡献条目格式见 [CONTRIBUTING](docs/CONTRIBUTING.md#提交-pr)。
-* 普通 PR 不修改版本、不重写已发布记录、不提交 exe/ZIP、不创建标签、不构建 Release。
+* 普通 PR 不修改版本、不重写已发布记录、不提交 exe/ZIP、不创建标签、不构建 Release。PR CI 自动检查标题、正文、贡献条目、公开文件和回归；检查通过后仍由维护者评审合并。
 * 未经维护者明确授权，不推送、不合并、不公开发布、不替换附件或删除 Release。已有授权按范围执行，无需重复询问。
-* 发布由维护者手动触发：汇总待发布贡献并审阅准备 PR，随后构建、检查附件，最后确认公开。完整流程只在 [BUILDING](docs/BUILDING.md#发布) 维护。
+* 发布由维护者手动发起准备 PR，汇总待发布贡献；审阅合并到 main 后自动测试和构建，在 `release` 环境等待维护者确认后公开。版本未变的普通合并不会发布。完整流程只在 [BUILDING](docs/BUILDING.md#发布) 维护。

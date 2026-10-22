@@ -2,17 +2,26 @@ name: Check pull request
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: pr-check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
+    name: check
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
@@ -24,6 +33,10 @@ jobs:
       - run: python -m pip install -r requirements-windows.lock
       - run: python scripts/check_public_files.py
       - run: python scripts/prepare_release.py --check
+      - name: Validate PR title, review context and contribution record
+        if: github.event_name == 'pull_request'
+        shell: pwsh
+        run: python scripts/check_contribution.py --event "$env:GITHUB_EVENT_PATH"
       - run: python -m unittest discover -s tests -q
       - run: python -m compileall -q main.py backend scripts tests
       - shell: pwsh

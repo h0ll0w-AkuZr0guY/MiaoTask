@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         请先搜索已有建议，一个 Issue 聚焦一个场景。无需先写代码或提供账号、设备地址。
-        新应用、设备或公共组件建议可先参考 [架构](https://github.com/h0ll0w-AkuZr0guY/tmall-miao-double11/blob/main/docs/ARCHITECTURE.md) 与 [公共接口](https://github.com/h0ll0w-AkuZr0guY/tmall-miao-double11/blob/main/docs/REUSABLE_INTERFACES.md)。
+        新应用、设备或公共组件建议可先参考 [架构](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/blob/main/docs/ARCHITECTURE.md) 与 [公共接口](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/blob/main/docs/REUSABLE_INTERFACES.md)。
   - type: checkboxes
     id: precheck
     attributes:

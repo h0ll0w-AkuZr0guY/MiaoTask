@@ -2,7 +2,7 @@
 
 ## 启动与连接
 
-从 [Releases](https://github.com/h0ll0w-AkuZr0guY/tmall-miao-double11/releases/latest) 的 Assets 下载 Windows x64 ZIP，完整解压后运行 `MiaoTask.exe`，不要移走 `_internal/`。`Source code` 是源码包。
+从 [Releases](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/releases/latest) 的 Assets 下载 Windows x64 ZIP，完整解压后运行 `MiaoTask.exe`，不要移走 `_internal/`。`Source code` 是源码包。
 
 手机保持解锁，开启 USB 调试、连接数据线，并在手机上允许这台电脑调试。在网页点击「连接设备」；只有一台可用手机时自动选择，多台时选择对应设备。
 
@@ -67,6 +67,6 @@
 
 ## 操作演示
 
-[横版视频](https://github.com/h0ll0w-AkuZr0guY/tmall-miao-double11/releases/download/v20261019-double11.4/MiaoTask-Guide-PC-1920x1080.mp4) · [竖版视频](https://github.com/h0ll0w-AkuZr0guY/tmall-miao-double11/releases/download/v20261019-double11.4/MiaoTask-Guide-Phone-1080x1920.mp4)
+[横版视频](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/releases/download/v20261019-double11.4/MiaoTask-Guide-PC-1920x1080.mp4) · [竖版视频](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/releases/download/v20261019-double11.4/MiaoTask-Guide-Phone-1080x1920.mp4)
 
-视频为历史版本实录，含 AI 配音、字幕和隐私遮挡；不同轮次经过剪辑，等待部分加速，按钮布局以当前程序为准。源码运行请看[开发文档](https://github.com/h0ll0w-AkuZr0guY/tmall-miao-double11/blob/main/docs/DEVELOPMENT.md)。
+视频为历史版本实录，含 AI 配音、字幕和隐私遮挡；不同轮次经过剪辑，等待部分加速，按钮布局以当前程序为准。源码运行请看[开发文档](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/blob/main/docs/DEVELOPMENT.md)。

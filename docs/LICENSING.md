@@ -21,4 +21,4 @@ MiaoTask 采用 [Apache License 2.0](../LICENSE)，项目声明见 [NOTICE](../N
 
 ## 后续贡献
 
-新增或替换依赖、模型、图片或上游代码时，在同一 PR 中记录准确版本、官方来源、许可范围和随包声明位置；不能只根据包元数据中的许可简称判断。FlatBuffers 补充材料仅对应已核查的固定版本，升级时重新核对。保留原有权利归属，不将未获授权的第三方内容自动归入项目许可。验证与打包步骤见 [BUILDING](https://github.com/h0ll0w-AkuZr0guY/tmall-miao-double11/blob/main/docs/BUILDING.md)。
+新增或替换依赖、模型、图片或上游代码时，在同一 PR 中记录准确版本、官方来源、许可范围和随包声明位置；不能只根据包元数据中的许可简称判断。FlatBuffers 补充材料仅对应已核查的固定版本，升级时重新核对。保留原有权利归属，不将未获授权的第三方内容自动归入项目许可。验证与打包步骤见 [BUILDING](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/blob/main/docs/BUILDING.md)。

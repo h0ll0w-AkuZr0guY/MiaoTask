@@ -7,8 +7,8 @@
 使用 Python 3.13，准备可用的 Android ADB；手机保持解锁并允许调试。HarmonyOS 驱动接口需要另行提供 HDC，当前便携包不包含 HDC。
 
 ```powershell
-git clone https://github.com/h0ll0w-AkuZr0guY/tmall-miao-double11.git
-cd tmall-miao-double11
+git clone https://github.com/h0ll0w-AkuZr0guY/MiaoTask.git
+cd MiaoTask
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe main.py

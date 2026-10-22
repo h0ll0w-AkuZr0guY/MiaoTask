@@ -1,0 +1,68 @@
+name: Release reviewed version
+
+on:
+  push:
+    branches: [main]
+    paths: [version.json]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-pipeline-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.plan.outputs.ready }}
+      version: ${{ steps.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Require an explicit reviewed preparation and version transition
+        id: plan
+        shell: bash
+        env:
+          RUN_EVENT: ${{ github.event_name }}
+        run: |
+          previous=$(git show HEAD^:version.json | python -c 'import json,sys; print(json.load(sys.stdin)["version"])')
+          current=$(python -c 'import json; print(json.load(open("version.json"))["version"])')
+          if [ "$RUN_EVENT" = push ] && [ "$previous" = "$current" ]; then
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$RUN_EVENT" = push ]; then
+            python scripts/prepare_release.py --ready --previous-version "$previous"
+          else
+            python scripts/prepare_release.py --ready
+          fi
+          echo "version=$current" >> "$GITHUB_OUTPUT"
+          echo 'ready=true' >> "$GITHUB_OUTPUT"
+  build:
+    needs: plan
+    if: needs.plan.outputs.ready == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      source_ref: ${{ github.sha }}
+    permissions:
+      contents: read
+  publish:
+    needs: [plan, build]
+    uses: ./.github/workflows/publish-release.yml
+    with:
+      tag: ${{ needs.plan.outputs.version }}
+      source_ref: ${{ github.sha }}
+      build_run_id: ${{ format('{0}', github.run_id) }}
+      confirm: true
+    permissions:
+      contents: write
+      actions: read

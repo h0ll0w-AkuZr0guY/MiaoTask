@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 import yaml
-from scripts.prepare_release import prepare, pending_entries
+from scripts.prepare_release import prepare, pending_entries, release_ready
 from scripts.release_notes import extract_notes
 
 
@@ -27,6 +27,12 @@ class ReleasePreparationTests(unittest.TestCase):
         metadata = json.loads((self.root / 'version.json').read_text())
         self.assertEqual(metadata['version'], metadata['app_version'])
         self.assertEqual(metadata['version'], 'MiaoTask-v0.1.0')
+        plan = json.loads((self.root / '.github/release-plan.json').read_text())
+        self.assertEqual(plan['previous_version'], 'MiaoTask-v0.0.9')
+        self.assertEqual(plan['contributions'], 2)
+        self.assertEqual(release_ready(self.root, 'MiaoTask-v0.0.9'), 'MiaoTask-v0.1.0')
+        with self.assertRaises(ValueError):
+            release_ready(self.root, 'MiaoTask-v0.0.8')
 
     def test_invalid_existing_and_backwards_version_do_not_change_files(self):
         paths = list(self.root.rglob('*.md')) + [self.root / 'version.json']
@@ -43,16 +49,36 @@ class ReleasePreparationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             prepare(self.root, 'MiaoTask-v0.1.0', '更新')
 
-    def test_pr_and_tag_events_never_build_or_publish(self):
+    def test_only_prepared_main_versions_can_automatically_build_and_publish(self):
         folder = Path(__file__).resolve().parents[1] / '.github/workflows'
         # BaseLoader preserves YAML's `on` key instead of YAML 1.1 booleans.
         for name in ('prepare-release.yml', 'release.yml', 'publish-release.yml'):
             workflow = yaml.load((folder / name).read_text(encoding='utf-8'), Loader=yaml.BaseLoader)
-            self.assertEqual(set(workflow['on']), {'workflow_dispatch'})
+            self.assertNotIn('pull_request', workflow['on'])
+            self.assertNotIn('push', workflow['on'])
+        pipeline = yaml.load((folder / 'release-pipeline.yml').read_text(encoding='utf-8'), Loader=yaml.BaseLoader)
+        self.assertEqual(pipeline['on']['push']['branches'], ['main'])
+        self.assertEqual(pipeline['on']['push']['paths'], ['version.json'])
+        self.assertNotIn('tags', pipeline['on']['push'])
+        self.assertIn('needs', pipeline['jobs']['publish'])
+        publish = yaml.load((folder / 'publish-release.yml').read_text(encoding='utf-8'), Loader=yaml.BaseLoader)
+        self.assertEqual(publish['jobs']['publish']['environment'], 'release')
         ci = (folder / 'ci.yml').read_text(encoding='utf-8')
         self.assertNotIn('package_windows.py', ci)
         self.assertNotIn('gh release', ci)
         self.assertNotIn('contents: write', ci)
+        self.assertNotIn('pull_request_target', ci)
+        self.assertIn('persist-credentials: false', ci)
+        self.assertIn('check_contribution.py', ci)
+
+    def test_missing_stale_marker_or_uncollected_entries_cannot_release(self):
+        with self.assertRaises(FileNotFoundError):
+            release_ready(self.root)
+        prepare(self.root, 'MiaoTask-v0.1.0', '合成更新。')
+        pending = self.root / 'docs/UNRELEASED.md'
+        pending.write_text('## 待发布\n\n* 【新增】后来贡献 (#20)\n', encoding='utf-8')
+        with self.assertRaises(ValueError):
+            release_ready(self.root)
 
 
 if __name__ == '__main__':

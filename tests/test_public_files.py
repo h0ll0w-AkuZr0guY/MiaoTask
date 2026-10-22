@@ -6,7 +6,7 @@ from scripts.check_public_files import audit_file
 class PublicFilesTests(unittest.TestCase):
     def test_public_source_and_docs_are_allowed(self):
         for name in ('main.py', 'modules/device_adapter.py', 'configs/double11.json',
-                     '.github/workflows/release.yml', 'docs/SAFETY.md', 'AGENTS.md'):
+                     '.github/workflows/release.yml', '.github/CODEOWNERS', 'docs/SAFETY.md', 'AGENTS.md'):
             self.assertEqual(audit_file(name, b'public source'), [])
 
     def test_local_directories_and_binary_artifacts_are_rejected(self):

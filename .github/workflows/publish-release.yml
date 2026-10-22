@@ -1,6 +1,20 @@
 name: Publish verified release assets
 
 on:
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+      source_ref:
+        type: string
+        required: true
+      build_run_id:
+        type: string
+        required: true
+      confirm:
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       tag:
@@ -28,6 +42,7 @@ concurrency:
 jobs:
   publish:
     if: inputs.confirm
+    environment: release
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
@@ -35,6 +50,7 @@ jobs:
         with:
           ref: ${{ inputs.source_ref }}
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
@@ -57,7 +73,13 @@ jobs:
           if ($LASTEXITCODE -eq 0 -and $existingTag.Trim() -ne $revision) { throw 'Existing tag points to different source' }
           $build = (& gh api "repos/$env:GH_REPO/actions/runs/$env:BUILD_RUN_ID" | ConvertFrom-Json)
           if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect build run' }
-          if ($build.conclusion -ne 'success' -or $build.head_sha -ne $revision -or $build.event -ne 'workflow_dispatch' -or $build.path -ne '.github/workflows/release.yml' -or $build.name -ne 'Build Windows portable release') {
+          $manualBuild = $build.conclusion -eq 'success' -and $build.event -eq 'workflow_dispatch' -and $build.path -eq '.github/workflows/release.yml' -and $build.name -eq 'Build Windows portable release'
+          $samePipeline = $env:BUILD_RUN_ID -eq $env:GITHUB_RUN_ID -and $build.path -eq '.github/workflows/release-pipeline.yml' -and $build.event -in @('push', 'workflow_dispatch') -and $build.status -eq 'in_progress'
+          if ($samePipeline) {
+            $jobs = & gh api --paginate "repos/$env:GH_REPO/actions/runs/$env:BUILD_RUN_ID/jobs" --jq '.jobs[] | select(.name == "build / build") | .conclusion'
+            if ($LASTEXITCODE -ne 0 -or $jobs -notcontains 'success') { throw 'The pipeline build job must succeed before publication' }
+          }
+          if ($build.head_sha -ne $revision -or -not ($manualBuild -or $samePipeline)) {
             throw 'Build run must be successful and match this release commit'
           }
           & gh run download $env:BUILD_RUN_ID --name MiaoTask-windows-x64 --dir release-assets

@@ -8,10 +8,10 @@
 
 一个本地网页，管理手机、平板与模拟器的重复任务。
 
-[![下载](https://img.shields.io/github/v/release/h0ll0w-AkuZr0guY/tmall-miao-double11?label=Download&color=f97316)](https://github.com/h0ll0w-AkuZr0guY/tmall-miao-double11/releases/latest)
+[![下载](https://img.shields.io/github/v/release/h0ll0w-AkuZr0guY/MiaoTask?label=Download&color=f97316)](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/releases/latest)
 ![平台](https://img.shields.io/badge/Windows_x64-Android-315f56)
 [![License](https://img.shields.io/badge/License-Apache_2.0-2563eb)](LICENSE)
-[![Star](https://img.shields.io/github/stars/h0ll0w-AkuZr0guY/tmall-miao-double11?style=flat&color=e8ab38)](https://github.com/h0ll0w-AkuZr0guY/tmall-miao-double11/stargazers)
+[![Star](https://img.shields.io/github/stars/h0ll0w-AkuZr0guY/MiaoTask?style=flat&color=e8ab38)](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/stargazers)
 
 [下载使用](#开始使用) · [功能与界面](#功能与界面) · [参与开发](docs/CONTRIBUTING.md) · [发布记录](docs/RELEASES.md)
 
@@ -23,7 +23,7 @@
 
 ## 开发 & 反馈
 
-**Q 群：1103989184** · [反馈问题](https://github.com/h0ll0w-AkuZr0guY/tmall-miao-double11/issues/new/choose) · [贡献规范](docs/CONTRIBUTING.md)
+**Q 群：1103989184** · [反馈问题](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/issues/new/choose) · [贡献规范](docs/CONTRIBUTING.md)
 
 反馈请附版本、机型与系统、复现步骤和脱敏截图。设备码、地址、账号与配对码无需公开。
 
@@ -41,7 +41,7 @@
 
 ### 下载并启动
 
-1. 打开 [Releases](https://github.com/h0ll0w-AkuZr0guY/tmall-miao-double11/releases/latest)，在 **Assets** 下载 `MiaoTask-…-windows-x64.zip`。`Source code` 是源码包。
+1. 打开 [Releases](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/releases/latest)，在 **Assets** 下载 `MiaoTask-…-windows-x64.zip`。`Source code` 是源码包。
 2. **完整解压**，双击 `MiaoTask.exe`，保留同目录的 `_internal/`。电脑无需另装 Python、ADB 或 OCR 模型。
 3. 浏览器打开本地控制台。按下方任一方式连接设备，保留「自动进入活动」，点击 **开始自动执行**。初次可在「任务设置」把本轮上限设为 2 次。
 

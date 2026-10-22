@@ -10,11 +10,13 @@
 | `scripts/fetch_platform_tools.py` | 获取官方 Android platform-tools |
 | `scripts/package_windows.py`、`build.spec` | 独立目录构建 exe、运行自检并生成 ZIP |
 | `scripts/smoke_packaged.py` | 对解压后的 exe 检查运行环境、网页和退出 |
-| `scripts/prepare_release.py`、`scripts/release_notes.py` | 汇总待发布贡献、提取已审阅版本正文 |
+| `scripts/prepare_release.py`、`scripts/release_notes.py` | 汇总待发布贡献、校验发布标记、提取已审阅版本正文 |
+| `scripts/check_contribution.py` | 检查 PR 标题、正文、贡献保留和版本变更边界 |
 | `scripts/export_icons.py` | 从统一母版导出 PNG / ICO |
 | `.github/workflows/ci.yml` | PR 审计与回归，不构建 exe |
 | `.github/workflows/prepare-release.yml` | 手动汇总贡献并创建发布准备 PR |
-| `.github/workflows/release.yml`、`publish-release.yml` | 手动构建附件、再次确认后公开发布 |
+| `.github/workflows/release-pipeline.yml` | 发布准备合并到 main 后自动测试、打包，等待确认后发布 |
+| `.github/workflows/release.yml`、`publish-release.yml` | 流水线复用的构建与发布；保留手动恢复入口 |
 
 ## 验证修改
 
@@ -100,20 +102,36 @@ Expand-Archive -LiteralPath "dist/$releaseVersion-windows-x64.zip" -DestinationP
 
 ## 发布
 
-普通 PR 通过检查后合并，贡献记录累积在 [UNRELEASED.md](UNRELEASED.md)。不按 PR 发版，推送标签也不会自动构建。三个工作流均需维护者手动操作：
+普通 PR 自动运行只读检查，维护者审阅合并后，贡献记录累积在 [UNRELEASED.md](UNRELEASED.md)。不按普通 PR 发版，推送标签也不会自动构建。发布由维护者决定收录范围，云端完成后续构建：
 
-1. **Prepare release for review**：在 Actions 选择本次发布的集成分支，填写 `MiaoTask-v0.x.y` 和一句摘要。脚本将待发布条目按类别汇总，在 `RELEASES.md` 顶部新增小节，清空已收录贡献，并同步 `version.json` 的两个字段；创建独立发布准备 PR，不生成 exe。
-2. 审阅准备 PR 的内容和版本。聚合脚本只压缩分类，不代替人工措辞审查；必要时在该 PR 精简重复条目。合并前若集成分支又有贡献，处理冲突并保留尚未收录的条目；构建要求待发布区为空，避免漏写本批变化。
-3. **Build Windows portable release**：选择已合并发布准备 PR 的分支，手动运行。工作流要求版本已有对应说明且待发布区为空；锁定依赖、验证并构建，保存 `MiaoTask-windows-x64` 附件，不创建或公开 Release。记下运行 ID 与该运行的完整提交 SHA。
-4. 下载附件检查后，手动运行 **Publish verified release assets**，填写版本、上述运行 ID 和完整 SHA，勾选确认公开。工作流核对成功构建、提交、包内清单、版本及完整性，再使用已审阅的小节发布 ZIP。已有公开版本时拒绝覆盖；标签不存在时只为这个提交创建标签。
+1. **Prepare release for review**：在 Actions 选择 `main`，填写 `MiaoTask-v0.x.y` 和一句摘要。脚本将已合并的待发布条目按类别汇总到 `RELEASES.md` 顶部，清空已收录贡献，同步 `version.json`，并生成 `.github/release-plan.json`。创建独立发布准备 PR，不生成 exe。该 PR 不收录尚未合并的贡献。
+2. 审阅准备 PR 的内容和版本。必要时精简重复条目；若 main 又合入贡献，将其一并更新到准备 PR，避免打包代码与说明不一致。准备 PR 仅改以上四个文件，版本不能回退或覆盖历史版本。
+3. 审阅合并到 main 后，**Release reviewed version** 自动检查版本确实变化、标记与前后版本一致、说明存在且待发布区为空；随后锁定依赖、审计与回归、获取官方 ADB、构建带环境 ZIP 并执行 exe 自检。失败时停止，不创建 Release。
+4. 构建成功后，运行停在 **Review deployments → release**。维护者下载 `MiaoTask-windows-x64` 附件检查后点 **Approve and deploy**。流水线核对构建提交、包内清单、版本、完整性和已完成的构建任务，再发布 ZIP；标签只指向本次提交，已有公开版本不覆盖。
 
-工作流需先合并到默认分支，GitHub 才显示手动入口。仓库 Actions 设置需允许工作流创建 PR；受保护分支仍按仓库评审规则合并。若准备阶段因该设置失败，下载 `release-preparation` 补丁附件，审阅后本地应用并提 PR。参考 [GitHub 手动运行工作流说明](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)。
+只有 `main` 的版本变化会进入自动发布；普通代码合并、工作流修改、推送标签或单独修改活动不会触发框架发布。发布标记随源码保留供追溯，只有与版本变化配对的新标记才生效。构建、公开发布分离，因此不需要维护者本机安装 Python 或打包环境。
+
+### 仓库首次设置
+
+* **Settings → Actions → General**：允许所用官方 Actions；工作流默认权限使用只读，并勾选 **Allow GitHub Actions to create and approve pull requests**。创建发布准备 PR 的工作流按 job 显式申请必要的写权限，不向普通 PR 提供 secrets。
+* **Settings → Rules → Rulesets / Branches**：保护 `main`，要求 PR、通过 `check` 状态、解决评审对话和 CODEOWNERS 评审；禁止强推和删除。合并方式建议 squash。`.github/CODEOWNERS` 指向维护者，CI 通过不代表自动合并。管理员处理自己发起的 PR 时可保留明确的管理员旁路，其他贡献者不能绕过。
+* **Settings → Environments → release**：添加维护者为 Required reviewer；仅允许 `main` 部署。维护者既发起准备又确认发布时，关闭 Prevent self-review。公开仓库支持这项审批。没有配置审批时环境本身不会自动提供确认关卡，因此首次发布前必须完成该设置。
+
+仓库本次使用上述保护。`pull_request` 工作流保持 `contents: read` 且 checkout 不保留凭据，不使用 `pull_request_target` 执行贡献者代码。外部贡献者第一次运行可能仍需 GitHub 的工作流批准；机器人创建的准备 PR 也可能显示 **Approve workflows to run**，由维护者批准检查即可，无需个人访问令牌。
+
+### 恢复失败的发布
+
+优先在失败运行中 **Re-run failed jobs**，仍保留相同提交和环境确认。也可在 main 手动运行 **Release reviewed version**，它仍要求已审阅发布标记。已公开的版本会拒绝重复发布，避免意外替换旧附件。
+
+保留的分步入口适合构建与发布之间需要较长验收的情况：先运行 **Build Windows portable release**；验收附件后运行 **Publish verified release assets**，填写版本、成功构建运行 ID、完整 40 位提交 SHA 并勾选确认，公开前仍经过 `release` 环境审批。
+
+工作流需先合并到默认分支，GitHub 才显示手动入口。若准备阶段因创建 PR 权限失败，下载 `release-preparation` 补丁附件，审阅后本地应用并提 PR。参考 [手动运行工作流](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)、[工作流触发与机器人 PR](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)、[环境审批](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments)。
 
 本地等效准备命令：
 
 ```powershell
-.\.venv\Scripts\python.exe scripts/prepare_release.py --version MiaoTask-v0.1.0 --summary "一句本次更新摘要"
-# 审阅三个修改文件，提交并合并；然后按前文流程构建、检查。
+.\.venv\Scripts\python.exe scripts/prepare_release.py --version MiaoTask-v0.1.1 --summary "一句本次更新摘要"
+# 审阅四个修改文件，以发布准备 PR 提交并合并；然后按前文流程检查附件。
 ```
 
 版本已存在、回退版本、空待发布区或条目格式错误时脚本拒绝覆盖。公开版本的同版本替换仅在维护者明确授权后单独处理，不由普通工作流自动覆盖附件或移动标签。当前本地候选包不意味着已经完成发布准备或远端验收。

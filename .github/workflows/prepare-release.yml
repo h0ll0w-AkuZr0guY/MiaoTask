@@ -44,7 +44,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Cannot create review branch' }
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add docs/UNRELEASED.md docs/RELEASES.md version.json
+          git add docs/UNRELEASED.md docs/RELEASES.md version.json .github/release-plan.json
           git commit -m "chore(release): prepare $env:RELEASE_VERSION"
           if ($LASTEXITCODE -ne 0) { throw 'Cannot commit prepared files' }
           git diff HEAD^ HEAD --output=release-preparation.patch
@@ -54,7 +54,14 @@ jobs:
           @"
           汇总 docs/UNRELEASED.md 到统一发布记录并清空待发布区。请审阅措辞、版本和范围后合并。
 
-          本 PR 不构建或发布 exe。合并后由维护者手动运行 Build Windows portable release，再确认发布。
+          ## 问题与结果
+          本 PR 仅准备发布记录、版本与明确发布标记，不执行打包。合并到 main 后自动测试并构建 ZIP，公开发布前在 release 环境等待维护者确认。
+
+          ## 影响与兼容
+          仅收录已合并贡献。若 main 新增贡献，请更新本准备 PR；普通功能 PR 不会触发发布。
+
+          ## 实际验证
+          PR CI 验证准备文件，合并后重新运行完整回归、便携包构建及 exe 自检。
           "@ | Set-Content -LiteralPath $bodyPath -Encoding utf8
           gh pr create --base $env:BASE_BRANCH --head $branch --title "chore(release): prepare $env:RELEASE_VERSION" --body-file $bodyPath
           if ($LASTEXITCODE -ne 0) { throw 'Cannot create review PR; enable Actions PR creation or use the patch artifact' }

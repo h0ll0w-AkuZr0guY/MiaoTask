@@ -109,16 +109,16 @@
 
 ## 合并与发布
 
-普通 PR 只接受代码、文档与对应验证，不修改 `version.json`，不改已发布历史，不上传 exe/ZIP 或构建环境。PR CI 负责审计与回归，不构建 Release；PR 合并和推送标签都不会自动发版。
+普通 PR 只接受代码、文档与对应验证，不修改 `version.json`，不改已发布历史或 `.github/release-plan.json`，不上传 exe/ZIP 或构建环境。PR CI 自动检查标题、正文、待发布贡献、公开文件和回归，检查通过后仍由维护者评审合并。普通 PR 合并和推送标签不会发版。
 
 维护者统一按以下流程发布：
 
 1. 手动运行 **Prepare release for review**，汇总 `UNRELEASED.md` 到 `RELEASES.md`，同步版本并创建准备 PR。
-2. 审阅、精简汇总内容并合并。准备 PR 是版本与发布记录变更的专门入口，仍不构建 exe。
-3. 手动运行 **Build Windows portable release**，检查生成的实际附件。
-4. 再运行 **Publish verified release assets**，明确确认后公开发布。
+2. 审阅、精简汇总内容与发布标记并合并到 main。准备 PR 是版本与发布记录变更的专门入口，PR 阶段不构建 exe。
+3. **Release reviewed version** 自动校验版本变化与准备标记，执行回归、带环境 ZIP 构建和 exe 自检。
+4. 维护者在该运行的 **Review deployments → release** 审阅实际附件并确认，随后自动公开发布。未确认时不会创建公开版本。
 
-操作、权限与异常处理集中在 [BUILDING](BUILDING.md#发布)。各分支可持续积累贡献，维护者决定一次发布收录的范围。公开版本覆盖、附件替换和标签移动需另行明确授权。
+操作、权限与异常处理集中在 [BUILDING](BUILDING.md#发布)。未合并的 PR 不收录；不同分支的已合并贡献持续积累，发布准备只清空已经收录的条目，不删除贡献历史。公开版本覆盖、附件替换和标签移动需另行明确授权。
 
 ## 使用 AI 参与
 
