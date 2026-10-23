@@ -2,6 +2,20 @@
 
 按新到旧维护用户可见变化。GitHub Release 正文从对应的 `## 版本号` 小节提取，发布状态以 [Releases](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/releases) 为准。
 
+## MiaoTask-v0.1.2
+
+活动源码按需更新、设备流水线与可视化打包。
+
+* 【新增】框架与活动分开交付，活动中心从官方 GitHub main 按需安装、更新或卸载所选活动，无需随活动修改重打框架。
+* 【优化】活动源码独立保存在 exe 旁的 `activities/apps/`，活动中心可查看并打开实际目录；旧安装复制迁移，保留日记录。
+* 【新增】每台设备可勾选、排序多个活动，活动与分身串行、不同设备并行；更换设备后清空旧实例计划。
+* 【修复】Android 实例与安装信息读取增加有界 ADB 回退，区分读取失败与确认未安装，异常分身空间不阻断主空间。关联 #7。
+* 【新增】可视化 Release Builder 接受源码目录、ZIP 或 GitHub 链接，默认递增小版本，可预装官方活动，汇总贡献并生成带环境 ZIP；PR 格式改为提示，本地与云端复用同一预检入口。
+
+下载 Windows x64 ZIP，完整解压后运行 `MiaoTask.exe`，保留 `_internal/`；未预装活动时，在活动中心选择下载。升级前退出旧助手。安全认证需本人处理，诊断截图分享前请脱敏。
+
+感谢 [MonsterNone/tmall-miao](https://github.com/MonsterNone/tmall-miao) 提供早期实现思路参考。[使用说明](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/blob/main/docs/USAGE.md) · [项目介绍](https://github.com/h0ll0w-AkuZr0guY/MiaoTask#readme)
+
 ## MiaoTask-v0.1.0
 
 多设备并行、无线调试与可扩展架构。
