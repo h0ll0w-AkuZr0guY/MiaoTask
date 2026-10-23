@@ -277,9 +277,15 @@ class DeviceAdapter:
             package, activity = self._device.current_app()
             info = {'package': package or '', 'activity': activity or ''}
         else:
+            fallback = [None]
+            def reliable_read(args):
+                from backend.core.device.read_shell import AdbReadShell
+                if fallback[0] is None:
+                    fallback[0] = AdbReadShell(self.serial, budget=8)
+                return fallback[0](args)
             # adbutils drops the user field. Read it from the SAME focused
             # window record instead; a background instance is never evidence.
-            result = self._device.shell(['dumpsys', 'window', 'windows'])
+            result = self._read_metadata(['dumpsys', 'window', 'windows'], fallback=reliable_read)
             if result.exit_code == 0:
                 self._window_dump = result.output
                 from backend.core.device.displays import focused_display
@@ -292,21 +298,46 @@ class DeviceAdapter:
             info = parse_foreground(result.output) if result.exit_code == 0 else None
             if info is None and result.exit_code == 0:
                 from backend.core.device.displays import focused_window_dump
-                displays=self._device.shell(['dumpsys','window','displays'])
+                displays=self._read_metadata(['dumpsys','window','displays'], fallback=reliable_read)
                 if displays.exit_code == 0:
                     self._focused_window_dump=focused_window_dump(displays.output,getattr(self,'_display_id',0))
                     self._focused_window_stamp=time.monotonic()
                     info=parse_foreground(self._focused_window_dump)
             if info is None:
-                result = self._device.shell(['dumpsys', 'activity', 'activities'])
+                result = self._read_metadata(['dumpsys', 'activity', 'activities'], fallback=reliable_read)
                 info = parse_foreground(result.output) if result.exit_code == 0 else None
             if info is None:
-                info = dict(self._device.app_current(), user_id=None)
+                try:
+                    info = dict(self._device.app_current(), user_id=None)
+                except Exception as exc:
+                    raise InstanceMismatch('无法读取并核定前台应用身份，请检查调试连接后重试；未执行输入操作') from exc
+                if not info.get('package'):
+                    raise InstanceMismatch('未取得前台应用身份，请检查调试连接后重试；未执行输入操作')
         identity = (info.get('package', ''), info.get('user_id'))
         if identity != getattr(self, '_foreground_package', None):
             self._screenshot_cache = None
             self._foreground_package = identity
         return info
+
+    def _read_metadata(self, args, *, fallback=None):
+        """Preserve successful SDK reads; isolate empty/sentinel failures."""
+        from backend.core.device.read_shell import AdbReadShell, ReadResult
+        def usable(result):
+            return (result.exit_code == 0 and isinstance(result.output, str) and result.output.strip()
+                    and not re.search(r'SecurityException|Permission Denial|(?:^|\n)\s*(?:Error:|Exception)', result.output))
+        try:
+            result = self._device.shell(args)
+            if usable(result):
+                return result
+        except Exception:
+            pass
+        try:
+            result = (fallback or AdbReadShell(self.serial, budget=8))(args)
+            if usable(result):
+                return result
+        except Exception:
+            pass
+        return ReadResult('', 1)
 
     @serialized
     def installed_packages(self):
@@ -314,14 +345,24 @@ class DeviceAdapter:
         if self.device_type != 'uiautomator2':
             return None
         target = getattr(self, 'selected_instance', None)
-        args = ['pm', 'list', 'packages']
-        if isinstance(target, AppInstance):
-            args += ['--user', str(target.user_id)]
-        result = self._device.shell(args)
-        if result.exit_code != 0:
+        if not isinstance(target, AppInstance) or not isinstance(target.user_id, int) or isinstance(target.user_id, bool) or target.user_id < 0:
             return None
-        return {line.removeprefix('package:').strip() for line in result.output.splitlines()
-                if line.startswith('package:')}
+        from backend.core.device.read_shell import AdbReadShell, parse_package_list
+        try:
+            read = AdbReadShell(self.serial, budget=12)
+        except ValueError:
+            return None
+        for prefix in (['pm', 'list', 'packages'], ['cmd', 'package', 'list', 'packages']):
+            try:
+                result = read(prefix + ['--user', str(target.user_id)])
+                if result.exit_code != 0 or re.search(r'SecurityException|Error:|Exception|Permission Denial', result.output):
+                    continue
+                packages = parse_package_list(result.output)
+                if packages:
+                    return packages
+            except Exception:
+                continue
+        return None
 
     @serialized
     def resume_app(self, package_name):
@@ -392,14 +433,18 @@ class DeviceAdapter:
         if getattr(self, '_instance_guard_active', False):
             raise ValueError('执行期间不能刷新或切换应用实例')
         if self.device_type == 'uiautomator2':
-            instances, warnings = discover_android_instances(self._device.shell, self.application)
+            from backend.core.device.read_shell import AdbReadShell
+            instances, warnings = discover_android_instances(AdbReadShell(self.serial), self.application)
         else:
             instances = [AppInstance(self.application.package_for('hmdriver2'), None, self.application.label + ' · HarmonyOS 原生应用')]
             warnings = []
         self.app_instances = instances
         self.instance_warnings = warnings
         previous = getattr(self, 'selected_instance', None)
-        self.selected_instance = next((i for i in instances if i == previous), instances[0] if instances else None)
+        self.selected_instance = (next((i for i in instances if i == previous), None) if previous is not None
+                                  else instances[0] if instances else None)
+        if previous is not None and self.selected_instance is None:
+            self.instance_warnings.append('之前选定的应用实例未能重新确认，请明确选择可用实例；未自动切换到其他账号')
         return [item.to_dict() for item in instances]
 
     @serialized
@@ -452,7 +497,7 @@ class DeviceAdapter:
                     import adbutils
                     from backend.core.device.displays import capture_display
                     if not getattr(self, '_capture_id', None) or time.monotonic()-getattr(self,'_capture_stamp',0) > 2:
-                        output = self._device.shell(['dumpsys','display'])
+                        output = self._read_metadata(['dumpsys','display'])
                         self._capture_id = capture_display(output.output, self._display_id)
                         self._capture_stamp = time.monotonic()
                     raw = adbutils.adb.device(self.serial).shell(['screencap','-p','-d',self._capture_id], encoding=None)
@@ -534,7 +579,7 @@ class DeviceAdapter:
             if getattr(self, '_display_id', 0):
                 from backend.core.device.displays import focused_window_dump
                 if time.monotonic()-getattr(self,'_focused_window_stamp',0) > .2:
-                    result=self._device.shell(['dumpsys','window','displays'])
+                    result=self._read_metadata(['dumpsys','window','displays'])
                     if result.exit_code == 0:
                         self._focused_window_dump=focused_window_dump(result.output,self._display_id)
                         self._focused_window_stamp=time.monotonic()

@@ -165,9 +165,12 @@ class ScopedDeviceTests(unittest.TestCase):
 
     def test_package_availability_is_checked_in_selected_user(self):
         d = self.phone()
-        d._device.shell.return_value = result('package:com.sina.weibo')
-        self.assertEqual(d.installed_packages(), {'com.sina.weibo'})
-        d._device.shell.assert_called_once_with(['pm', 'list', 'packages', '--user', '999'])
+        d.serial = 'synthetic-usb'
+        with patch('backend.core.device.read_shell.AdbReadShell') as channel:
+            channel.return_value.return_value = result('package:com.sina.weibo')
+            self.assertEqual(d.installed_packages(), {'com.sina.weibo'})
+            channel.return_value.assert_called_once_with(['pm', 'list', 'packages', '--user', '999'])
+        d._device.shell.assert_not_called()
 
     def test_same_package_user_switch_invalidates_preview_frame(self):
         d = self.phone()

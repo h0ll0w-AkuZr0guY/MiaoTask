@@ -108,7 +108,8 @@ class WifiPanelTests(unittest.TestCase):
         self.assertEqual(adapter.call_args.args, ('uiautomator2', device.serial))
         self.assertIs(adapter.call_args.kwargs['application'], controller.registration.app.profile)
         self.assertTrue(controller.snapshot()['connected'])
-        self.assertEqual(controller.snapshot()['status'], 'ready')
+        self.assertEqual(controller.snapshot()['status'], 'needs_attention')
+        self.assertEqual(controller.snapshot()['phase'], 'instance_missing')
 
     def test_pair_without_connect_address_does_not_open_or_select_a_phone(self):
         controller = Controller()

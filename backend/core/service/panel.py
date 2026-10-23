@@ -158,6 +158,11 @@ class Controller(ActivityPipeline, PreviewWorker):
             device = self.device
             if device is None:
                 return False
+            if isinstance(getattr(device, 'app_instances', None), list) and not device.app_instances:
+                self.daily = None
+                self.unavailable_tasks.clear()
+                self.update(daily=None, task_scope='')
+                return False
             date = local_day()
             identity = getattr(device, 'identity_serial', None)
             if not isinstance(identity, str) or not identity:
@@ -476,6 +481,7 @@ class Controller(ActivityPipeline, PreviewWorker):
                             tasks=[], message='设备已连接，请确认应用实例后开始自动执行')
                 self._preview_stop.clear()
                 self._start_preview()
+                self._instance_availability('设备已连接，请确认应用实例后开始自动执行')
                 self.log('INFO', f'设备连接成功：{device}')
             elif action == 'open_app':
                 self.control.check()
@@ -499,6 +505,7 @@ class Controller(ActivityPipeline, PreviewWorker):
                             instance_warnings=self.device.instance_warnings, instance_queue=[],
                             status='ready', phase='ready', tasks=[], current_task='', stats=asdict(RunStats()),
                             message='实例列表已刷新；未读取任何账号登录信息')
+                self._instance_availability('实例列表已刷新；未读取任何账号登录信息')
             elif action == 'select_instance':
                 self._select_instance(payload['instance_ids'][0])
                 self._remember_instances(payload['instance_ids'])
@@ -546,6 +553,22 @@ class Controller(ActivityPipeline, PreviewWorker):
                     self._save_report()
                 except Exception:
                     logger.exception('保存本地当天记录失败')
+
+    def _instance_availability(self, ready_message):
+        warnings = list(getattr(self.device, 'instance_warnings', ()) or ())
+        if not self.state['app_instances'] or not self.state['selected_instance']:
+            label = self.registration.app.label if self.registration else '当前应用'
+            message = (f'设备已连接，但未检测到可执行的{label}实例；请确认应用已安装及调试权限，点击「刷新实例」重试'
+                       if not self.state['app_instances'] else
+                       '原选择的应用实例已失效，未自动切换其他账号；请展开「应用分身」重新选择')
+            if not warnings:
+                warnings = ['未核验到可执行应用实例，未自动选择主应用或分身']
+            self.update(status='needs_attention', phase='instance_missing', message=message,
+                        selected_instance='', instance_warnings=warnings, tasks=[], task_scope='')
+        else:
+            self.update(status='ready', phase='ready', message=ready_message, instance_warnings=warnings)
+        for warning in warnings:
+            self.log('WARNING', warning)
 
     def _execute_current_activity(self, action, payload, config):
         auto_open = payload.get('auto_open', True)
@@ -675,15 +698,6 @@ def make_handler(controller, token):
                 except (ValueError, OSError) as exc:
                     self.reply(400, {'error': str(exc)})
                 return
-            if path.startswith('/api/plugins/test/'):
-                source = getattr(root, 'plugin_source', None)
-                try:
-                    if source is None:
-                        raise ValueError('未启用本机测试活动源')
-                    self.reply(200, *source.response(path, origin))
-                except (ValueError, OSError) as exc:
-                    self.reply(404, {'error': str(exc)})
-                return
             if path == '/api/workspaces' and hasattr(root, 'summaries'):
                 self.reply(200, dict(devices=root.summaries()))
                 return
@@ -746,6 +760,16 @@ def make_handler(controller, token):
 
         def do_POST(self):
             if not allowed_write(self.headers, self.server.server_port, token):
+                # Drain a small well-formed rejected request before closing the
+                # socket. Windows may reset a connection with an unread body,
+                # hiding the actionable 403 response from the browser.
+                try:
+                    size = int(self.headers.get('Content-Length', '0'))
+                    if 0 < size <= 32768:
+                        self.connection.settimeout(1)
+                        self.rfile.read(size)
+                except (ValueError, OSError):
+                    pass
                 self.reply(403, {'error': '请求来源校验失败，请刷新本地控制台'})
                 return
             try:
@@ -756,6 +780,10 @@ def make_handler(controller, token):
                 if not isinstance(payload, dict):
                     raise ValueError('请求必须为 JSON 对象')
                 path = urlsplit(self.path).path
+                if path == '/api/plugins/open-folder' and hasattr(root, 'open_activity_folder'):
+                    folder = root.open_activity_folder(f'http://127.0.0.1:{self.server.server_port}')
+                    self.reply(200, {'ok': True, 'path': folder})
+                    return
                 if path in ('/api/plugins/install', '/api/plugins/uninstall') and hasattr(root, 'change_plugin'):
                     root.change_plugin(path.rsplit('/', 1)[-1], payload,
                                        f'http://127.0.0.1:{self.server.server_port}')
@@ -803,11 +831,9 @@ def make_handler(controller, token):
     return Handler
 
 
-def serve(port=8765, open_browser=True, config=None, port_file=None, app=None, activity=None,
-          test_activity_source_dir=None):
+def serve(port=8765, open_browser=True, config=None, port_file=None, app=None, activity=None):
     from backend.core.service.devices import DeviceHub
-    controller = DeviceHub(config, app=app, activity=activity,
-                           test_activity_source_dir=test_activity_source_dir)
+    controller = DeviceHub(config, app=app, activity=activity)
     logging.getLogger().addHandler(PanelLogHandler(controller))
     handler = make_handler(controller, secrets.token_urlsafe(32))
     def existing_assistant():

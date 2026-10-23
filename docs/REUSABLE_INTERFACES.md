@@ -15,6 +15,8 @@
 | 调整今日执行队列 | `Controller.dispatch`、`TaskPolicy` | 提供稳定任务语义；不把按钮理解成立即点击任务 |
 | 保存统计与失败现场 | `DailyState`、`StorageNamespace`、会话回调 | 向现有记录管线报告，不另建全局日志 |
 | 多设备与网页操作 | `DeviceHub`、各设备 `Controller`、`api.js` | 请求明确工作区，不共享可变会话 |
+| 按需获取活动源码 | `GitHubSourceProvider`、`PluginManager`、`ActivityCatalogHub` | 提供审阅过的 manifest 与兼容声明，复用固定提交、下载与安装事务 |
+| 顺序执行多个活动 | `ActivityPipeline`、`select_pipeline` | 显式提供应用/活动 ID 与正确实例，不并发控制同一设备 |
 
 路径下文均相对仓库根目录；示例中的 `sample`、`org.example.sample` 和地址均为虚构占位。
 
@@ -29,7 +31,7 @@ AppMeta(id, label, profile, config='configs/base.json', default=False)
 ActivityMeta(app, id, label, factory, config='config.json',
              device_types=('uiautomator2', 'hmdriver2'), default=False,
              legacy_storage=False, rules_version='1')
-Registry(app_dir=None).discover()
+Registry(app_dir=None, *, plugin_dir=None).discover()
 registry.get(app=None, activity=None)              # Registration
 registry.catalog()                               # 可序列化应用 / 活动目录
 create_runner(device, config=None, *args, registry=None, **kwargs)
@@ -248,7 +250,7 @@ controller.dispatch(action, payload)              # 校验后提交，不等待�
 controller.snapshot()                            # 独立状态副本
 ```
 
-`DeviceHub` 上限 8 个工作区，每台控制器各有线程、配置、`RunControl`、记录、预览和队列。批量操作 `payload` 包含显式 `devices` 和 `action`，可附 `config/auto_open/app/activity`；支持 `run/scan/open_app/pause/resume/stop`。逐台提交给独立线程，某台忙碌或离线不阻止其他台；同一物理设备的连接别名不能重复租用。
+`DeviceHub` 上限 8 个工作区，每台控制器各有线程、配置、`RunControl`、记录、预览和队列。批量操作 `payload` 包含显式 `devices` 和 `action`，可附 `config/auto_open/app/activity/activities`；支持 `run/scan/open_app/pause/resume/stop`。逐台提交给独立线程，某台忙碌或离线不阻止其他台；同一物理设备的连接别名不能重复租用。批量活动计划与设置可以复制，各设备的实例选择仍独立。
 
 新增线程若产生设备日志或 OCR 状态，使用 `workspace_scope` 设置归属，或在拥有 `workspace_id` 的实例方法上使用 `@device_scoped`；不能另设全局“当前设备”。注意 `ContextVar` 不应依赖自动传入新线程，现有设备工作和预览入口均显式设置。
 
@@ -265,3 +267,64 @@ controller.snapshot()                            # 独立状态副本
 | 应用 manifest / `Activity` | 无需修改 core 注册新活动 | 对真实 App 的入口、任务、动作、核验与异常适配；合成示例不算真实支持 |
 
 更新能力时在 PR 说明调用者影响，并同步本页的签名、输入输出、异常、默认值、限制和最小示例。结构或所有权变化再更新架构文档；贡献条目追加 [UNRELEASED](UNRELEASED.md)，不把接口历史堆入 README 或每次新增说明文件。验证与构建统一见 [BUILDING](BUILDING.md)。
+
+## 10. 官方活动源码、安装门与流水线
+
+实现：[runtime.py](../backend/core/runtime.py)、[repository.py](../backend/core/plugins/repository.py)、[contracts.py](../backend/core/plugins/contracts.py)、[manager.py](../backend/core/plugins/manager.py)、[activity_hub.py](../backend/core/service/activity_hub.py)、[pipeline.py](../backend/core/service/pipeline.py)、[bundle_policy.py](../scripts/bundle_policy.py)。
+
+```text
+GitHubSourceProvider(fetch=None)
+provider.catalog(commit=None)                      # 默认解析官方main；commit可固定40位SHA
+provider.build_archive(entry, destination)          # 仅取所选活动与应用共享文件，返回摘要
+activities_dir()                                  # 实际可写的活动根目录 Path
+PluginManager(root=None, *, source_provider=None, catalog_url=None, allow_local=False)
+manager.snapshot(registry=None, refresh=False)     # 目录、安装、兼容、提交、更新与实际路径
+manager.install(app, activity, *, source_commit=None)
+manager.install_local(archive_path, expected_sha256,
+                      *, expected_app=None, expected_activity=None)
+manager.uninstall(app, activity)                   # 移除活动，保留任务数据
+validate_archive(path, expected_sha256, *, expected_app=None, expected_activity=None)
+# → (manifest_dict, {relative_path: bytes})；校验阶段不导入 manifest
+reload_plugin_registry()                          # 清理活动模块缓存并重建默认注册表
+hub.plugins_snapshot(origin, refresh=False)
+hub.change_plugin(action, {'app': ..., 'activity': ..., 'source_commit': ...}, origin)
+hub.open_activity_folder(origin)                  # Windows 打开固定安装目录，返回路径字符串
+```
+
+产品默认使用官方 `main` 源码。目录先解析提交与树，只静态读取 manifest 和兼容声明，不执行远端 Python；源码按固定提交从官方地址获取，核对 Git blob 摘要、长度、路径及数量。每个目录项有 `source='github-source'`、`source_ref`、`source_commit`、短 `revision`、合成版本 `0.0.0+git.<revision>` 和兼容信息；客户端安装/更新传已展示的完整提交，目录变化时拒绝静默改装。
+
+新活动或修改过的 manifest 在活动目录提供 `compat.json`，例如 `{"schema": 1, "framework_api": 1, "python": "3.13"}`。少量已审阅的旧 manifest 使用明确摘要白名单兼容，不能借此推断任意新活动兼容。目录中的 `warnings` 报告无效声明；`installed_source_commit`、`update_available` 和 `compatible` 用于界面展示。
+
+普通产品请求只通过 `hub.change_plugin` 提交 `install/uninstall`，让服务检查全部设备线程空闲并串行替换模块；不能从单设备控制器绕过此门，也不能让网页传任意源码 URL。`build_archive` 是安装器内部复用归档校验的实现，客户端不依赖活动 Release。低层 `install_local` 和注入测试源仅供离线用例/打包验证，产品没有本机测试源路由或启动参数；调用方必须保证没有活动线程运行。
+
+`validate_archive` 校验分发/Python/框架接口版本、ZIP 与文件摘要、路径、大小、文件数及应用/活动身份，只返回经验证的相对路径内容。安装的暂存阶段才实际导入工厂、读取配置，因此缺少冻结依赖会在替换前失败；可捕获的目录交换或记录写入错误尝试回滚。共享应用文件变化与其他已安装活动冲突时拒绝升级。更新公共接口必须同步 `FRAMEWORK_API` 的兼容决策、包构建和本页，不自动安装第三方依赖。
+
+`PluginManager()` 默认根目录为 `activities_dir()`，源码在其 `apps/<app_module>/` 下，`installed.json` 与 `catalog.json` 保存在活动根。`snapshot` 的 `activities_dir` 是活动根的绝对路径，`source_dir` 是其中 `apps/` 的绝对路径。不要根据 `data_dir()` 自行拼接旧 `plugins/` 位置。显式 `PluginManager(root=...)` 用于受控构建或隔离用例，由调用方管理该目录。
+
+`activities_dir()` 优先使用显式 `MIAO_ACTIVITIES_DIR`，不可写则报错；否则便携版使用 exe 旁的 `activities/`，源码使用仓库根的 `activities/`。设置 `MIAO_DATA_DIR` 会同时将活动隔离到该根下，避免测试读写正式活动。默认位置不可写时回退到私人数据根的 `activities/`。新目录不存在时复制旧 `plugins/`，或只读便携目录内的预装活动；保留源文件，不覆盖已有活动根。日记录和设备信息仍由 `data_dir()` 管理，不写入活动源码目录。
+
+默认 `Registry()` 合并源码资源与 `activities_dir()/apps`，插件应用目录按模块名覆盖对应内置应用，避免同一 ID 重复注册。自定义 `Registry(app_dir)` 默认只发现该目录；需加载外部包时显式传 `plugin_dir`。框架空包的 `has_activities` 为 false，`load_config()` 返回通用界面配置，但不能据此执行默认应用；执行前必须安装、选择真实活动。
+
+`POST /api/plugins/open-folder` 以空 JSON 对象请求，必须通过现有令牌、Host 与 Origin 校验。服务只打开已解析的 `manager.root`，忽略客户端路径；响应 `{ok: true, path: ...}`。非 Windows 或无法打开时返回可读错误，活动中心保留实际路径供手动访问。
+
+目录失败时保留经验证的缓存并附错误，不能把缓存声称为最新 main。已安装代码留在本地可离线执行；更新需要重新访问官方源。缓存与安装记录不包含账号或设备授权，卸载不删除任务日记录。
+
+```python
+# 在已初始化的指定设备控制器上保存计划；不会立即执行。
+controller.dispatch('select_pipeline', {'activities': [
+    {'app': 'sample', 'activity': 'daily-tasks'},
+    {'app': 'sample', 'activity': 'weekly-tasks'},
+]})
+# 等保存操作结束，再按现有入口启动；不要并发提交到同一控制器。
+controller.dispatch('run', {'auto_open': True})
+```
+
+`activities` 必须是最多 16 项的列表，每项仅有有效 `app/activity`，拒绝空身份、重复活动及当前驱动不支持的活动。HTTP 使用 `/api/select_pipeline?device=<id>`；多设备批量启动可携带同结构列表。计划改变期间与运行期间不可更换活动，先停止再修改。空计划可以保存，启动空计划会拒绝。
+
+同一设备的活动与应用实例串行，跨设备工作线程并行；公共设置可沿用，活动入口和任务规则重新从当前注册加载。实例计划属于当前物理设备，重连清空；缺失记忆实例不回退其他账号。认证、停止、身份错误和异常终止本设备后续活动，正常返回才进入下一项。`activity_pipeline` 状态用于运行进度，任务完成数继续由各活动核验统计。
+
+## 11. 有界 Android 元数据回退
+
+实现：[read_shell.py](../backend/core/device/read_shell.py)。`AdbReadShell(serial, *, timeout=8, budget=24)` 是绑定明确设备的可调用只读通道，返回 `ReadResult(output, exit_code)`。仅接受用户空间、包列表和显示/焦点查询白名单，通过 ADB `exec-out` 避开 SDK shell 哨兵/PTY 处理；不能用于点击、启动、输入或任意 shell 命令。
+
+实例枚举使用总计最多 24 秒预算，安装列表与焦点回退分别限定 12 秒、8 秒；调用方复用预算对象，不能每个回退重新开始无限等待。空输出、诊断文本和失败按未知处理，不能据此记录应用未安装；确认可读的用户空间单独保留，坏分身空间通过 warning 报告，不推测额外用户或实例。已选实例失效仍停止，不能因读取失败转而执行主账号。本轮属于本地回归覆盖，未声称已在 Issue #7 的设备上复现验证。

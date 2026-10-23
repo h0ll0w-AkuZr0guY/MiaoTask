@@ -1,76 +1,22 @@
-"""Service-wide activity installation gate and explicit loopback test source."""
+"""Service-wide gate for installing reviewed activities from the repository."""
 import copy
-import json
-from pathlib import Path
-import re
 import threading
-from urllib.parse import quote, unquote, urlsplit
-
-from backend.core.plugins.contracts import MAX_CATALOG_BYTES
-
-
-class LocalActivitySource:
-    def __init__(self, directory):
-        self.directory = Path(directory).resolve()
-        if not self.directory.is_dir() or not (self.directory / 'activity-catalog.json').is_file():
-            raise ValueError('本地测试活动源必须包含 activity-catalog.json')
-
-    def _catalog(self):
-        path = self.directory / 'activity-catalog.json'
-        if path.is_symlink() or path.stat().st_size > MAX_CATALOG_BYTES:
-            raise ValueError('本地测试活动目录无效')
-        value = json.loads(path.read_text(encoding='utf-8-sig'))
-        if not isinstance(value, dict) or not isinstance(value.get('packages'), list):
-            raise ValueError('本地测试活动目录格式无效')
-        return value
-
-    @staticmethod
-    def _filename(item):
-        if not isinstance(item, dict) or not isinstance(item.get('url'), str):
-            raise ValueError('本地测试活动包条目无效')
-        name = unquote(urlsplit(item.get('url', '')).path.rsplit('/', 1)[-1])
-        if not re.fullmatch(r'[A-Za-z0-9_.-]{1,180}\.zip', name):
-            raise ValueError('本地测试活动包文件名无效')
-        return name
-
-    def response(self, path, origin):
-        catalog = self._catalog()
-        if path == '/api/plugins/test/catalog':
-            for item in catalog['packages']:
-                name = self._filename(item)
-                item['url'] = origin + '/api/plugins/test/files/' + quote(name)
-            return json.dumps(catalog, ensure_ascii=False).encode('utf-8'), 'application/json; charset=utf-8'
-        if not path.startswith('/api/plugins/test/files/'):
-            raise ValueError('测试活动资源不存在')
-        name = unquote(path.removeprefix('/api/plugins/test/files/'))
-        allowed = {self._filename(item) for item in catalog['packages']}
-        if name not in allowed:
-            raise ValueError('测试活动资源不存在')
-        file = self.directory / name
-        if file.is_symlink() or not file.resolve().is_relative_to(self.directory) or not file.is_file():
-            raise ValueError('测试活动资源不存在')
-        from backend.core.plugins.contracts import MAX_ARCHIVE_BYTES
-        if file.stat().st_size > MAX_ARCHIVE_BYTES:
-            raise ValueError('测试活动包过大')
-        return file.read_bytes(), 'application/zip'
 
 
 class ActivityCatalogHub:
-    def _init_activity_catalog(self, test_activity_source_dir=None):
+    def _init_activity_catalog(self):
         self.catalog_gate = threading.RLock()
         self.plugin_busy = False
         self.plugin_thread = None
         self.plugin_operation = {}
         self.plugin_manager = None
-        self.plugin_source = LocalActivitySource(test_activity_source_dir) if test_activity_source_dir else None
         self._plugin_snapshot = {}
 
     def _manager(self, origin):
         with self.catalog_gate:
             if self.plugin_manager is None:
                 from backend.core.plugins.manager import PluginManager
-                self.plugin_manager = (PluginManager(catalog_url=origin + '/api/plugins/test/catalog', allow_local=True)
-                                       if self.plugin_source else PluginManager())
+                self.plugin_manager = PluginManager()
             return self.plugin_manager
 
     def plugins_snapshot(self, origin, refresh=False):
@@ -89,6 +35,11 @@ class ActivityCatalogHub:
         app, activity = checked_id(payload.get('app')), checked_id(payload.get('activity'))
         if action not in ('install', 'uninstall'):
             raise ValueError('活动操作无效')
+        source_commit = payload.get('source_commit')
+        if source_commit is not None:
+            import re
+            if not isinstance(source_commit, str) or not re.fullmatch(r'[0-9a-f]{40}', source_commit):
+                raise ValueError('活动源码提交标识无效，请刷新目录')
         with self.catalog_gate:
             if self.closing or self.plugin_busy:
                 raise ValueError('活动包正在更新或服务正在退出')
@@ -100,13 +51,25 @@ class ActivityCatalogHub:
             self.plugin_operation = dict(action=action, app=app, activity=activity, status='running',
                                          message='正在下载并检查活动包' if action == 'install' else '正在卸载活动')
             self.plugin_thread = threading.Thread(target=self._plugin_work,
-                                                  args=(manager, action, app, activity),
+                                                  args=(manager, action, app, activity, source_commit),
                                                   name='miao-activity-installer', daemon=False)
             self.plugin_thread.start()
 
-    def _plugin_work(self, manager, action, app, activity):
+    def open_activity_folder(self, origin):
+        import os
+        # Never accept a path from the browser; only open the resolved installation.
+        folder = self._manager(origin).root
+        if not hasattr(os, 'startfile'):
+            raise ValueError('此系统不支持打开文件夹，请按活动中心显示的路径访问')
+        os.startfile(str(folder))
+        return str(folder)
+
+    def _plugin_work(self, manager, action, app, activity, source_commit=None):
         try:
-            getattr(manager, action)(app, activity)
+            if action == 'install':
+                manager.install(app, activity, source_commit=source_commit)
+            else:
+                manager.uninstall(app, activity)
             from backend.core.plugins.manager import reload_plugin_registry
             from backend.core.registry import Registry
             reload_plugin_registry()

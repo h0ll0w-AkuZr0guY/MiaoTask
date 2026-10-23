@@ -13,6 +13,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  actions: write
 
 concurrency:
   group: prepare-release-${{ github.ref }}
@@ -20,7 +21,7 @@ concurrency:
 
 jobs:
   prepare:
-    if: github.ref_type == 'branch'
+    if: github.ref == 'refs/heads/main'
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
@@ -65,6 +66,9 @@ jobs:
           "@ | Set-Content -LiteralPath $bodyPath -Encoding utf8
           gh pr create --base $env:BASE_BRANCH --head $branch --title "chore(release): prepare $env:RELEASE_VERSION" --body-file $bodyPath
           if ($LASTEXITCODE -ne 0) { throw 'Cannot create review PR; enable Actions PR creation or use the patch artifact' }
+          # Explicit dispatch avoids an extra approval for a bot-created PR run.
+          gh workflow run ci.yml --ref $branch
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot start review checks; run Check pull request on the preparation branch' }
       - uses: actions/upload-artifact@v7
         if: always()
         with:

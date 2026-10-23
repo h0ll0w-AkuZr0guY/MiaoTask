@@ -29,8 +29,6 @@ def main():
     parser.add_argument('--output', help='自检 JSON 输出文件')
     parser.add_argument('--activity-package', help='仅用于 --self-test：安装并验证本地可信活动 ZIP')
     parser.add_argument('--activity-package-sha256', help='本地活动 ZIP 的预期 SHA256，须与包路径同时指定')
-    parser.add_argument('--test-activity-source-dir',
-                        help='网页模式显式启用本机测试活动目录（含 activity-catalog.json），不修改官方源')
     parser.add_argument('--port-file', help='将服务 URL 写入指定文件，供打包验证使用')
     parser.add_argument('--device', choices=['android', 'harmony'], default='android')
     parser.add_argument('--serial', help='USB 序列号或已连接的无线调试地址')
@@ -47,20 +45,13 @@ def main():
         parser.error('--activity-package 与 --activity-package-sha256 必须同时提供')
     if args.activity_package and not args.self_test:
         parser.error('本地活动包验证仅支持 --self-test')
-    test_source = None
-    if args.test_activity_source_dir:
-        if args.cli or args.self_test:
-            parser.error('--test-activity-source-dir 仅支持网页模式')
-        test_source = Path(args.test_activity_source_dir).expanduser().resolve()
-        if not test_source.is_dir() or not (test_source / 'activity-catalog.json').is_file():
-            parser.error('本机测试活动目录不存在或缺少 activity-catalog.json')
     from backend.core.runtime import data_dir
     handlers = [RotatingFileHandler(data_dir() / 'application.log', maxBytes=2_000_000,
                                    backupCount=2, encoding='utf-8')]
     if sys.stderr is not None:
         handlers.append(logging.StreamHandler())
     logging.basicConfig(level=getattr(logging, args.loglevel), handlers=handlers,
-                        format='%(asctime)s %(levelname)-7s %(message)s', datefmt='%H:%M:%S')
+                        format='%(asctime)s %(levelname)-7s %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
     if args.self_test:
         from backend.core.service.diagnostics import self_test
         result = self_test(args.output or str(data_dir() / 'self-test.json'),
@@ -88,8 +79,7 @@ def main():
     if not args.cli:
         from backend.core.service.panel import serve
         try:
-            serve(args.port, not args.no_browser, config, port_file=args.port_file, app=args.app, activity=args.activity,
-                  test_activity_source_dir=test_source)
+            serve(args.port, not args.no_browser, config, port_file=args.port_file, app=args.app, activity=args.activity)
         except OSError as exc:
             parser.exit(1, f'控制台启动失败：{exc}，可通过 --port 指定其他端口\n')
         return

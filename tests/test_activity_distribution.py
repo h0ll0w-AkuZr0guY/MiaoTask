@@ -4,10 +4,12 @@ import hashlib
 import importlib
 import json
 from pathlib import Path
+import shutil
 import stat
 import sys
 import tempfile
 import threading
+import types
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -15,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from backend.core.config.loader import load_config, load_framework_config, load_resolved
 from backend.core.plugins.contracts import FRAMEWORK_API, OFFICIAL_REPOSITORY
-from backend.core.plugins.manager import PluginManager, official_asset_url, validate_archive
+from backend.core.plugins.manager import PluginManager, official_asset_url, reload_plugin_registry, validate_archive
 from backend.core.registry import Registry
 from backend.core.runtime import ROOT
 
@@ -130,6 +132,49 @@ class ActivityDistributionTests(unittest.TestCase):
         self.install(version='0.1.2')
         self.assertFalse((self.manager.apps_dir / 'sample/utils/obsolete.py').exists())
 
+    def test_committed_upgrade_succeeds_when_old_windows_backup_cannot_be_removed(self):
+        self.install()
+        original = shutil.rmtree
+
+        def temporarily_locked(path, *args, **kwargs):
+            if Path(path).name.startswith('rollback-'):
+                if kwargs.get('ignore_errors'):
+                    return
+                raise PermissionError('synthetic old imported file is locked')
+            return original(path, *args, **kwargs)
+
+        with patch('backend.core.plugins.manager.shutil.rmtree', side_effect=temporarily_locked):
+            result = self.install(version='0.1.2')
+        self.assertEqual(result['version'], '0.1.2')
+        self.assertEqual(self.manager.installed()[0]['version'], '0.1.2')
+
+    def test_reload_only_preserves_exact_common_namespace_and_drops_app_attributes(self):
+        previous_modules = {name: module for name, module in list(sys.modules.items()) if name.startswith('backend.app.')}
+        previous_attributes = {name.split('.')[2]: getattr(self.package, name.split('.')[2])
+                               for name in previous_modules if hasattr(self.package, name.split('.')[2])}
+        common_name = 'backend.app.common.synthetic_distribution_marker'
+        app_name = 'backend.app.common_tools'
+        common = types.ModuleType(common_name)
+        stale = types.ModuleType(app_name)
+        sys.modules[common_name] = common
+        sys.modules[app_name] = stale
+        self.package.common_tools = stale
+        try:
+            with patch('backend.core.registry.default_registry') as default:
+                reload_plugin_registry()
+            self.assertIs(sys.modules.get(common_name), common)
+            self.assertNotIn(app_name, sys.modules)
+            self.assertFalse(hasattr(self.package, 'common_tools'))
+            default.cache_clear.assert_called_once()
+        finally:
+            sys.modules.pop(common_name, None)
+            sys.modules.pop(app_name, None)
+            if hasattr(self.package, 'common_tools'):
+                delattr(self.package, 'common_tools')
+            sys.modules.update(previous_modules)
+            for name, module in previous_attributes.items():
+                setattr(self.package, name, module)
+
     def test_failed_state_write_rolls_back_original_app_and_install_record(self):
         self.install()
         before = self.manager.state_path.read_bytes()
@@ -211,31 +256,33 @@ class ActivityDistributionTests(unittest.TestCase):
                 official_asset_url(bad)
 
     def test_catalog_compatibility_and_cached_offline_feedback(self):
+        self.manager = PluginManager(self.root / 'plugins', catalog_url='http://127.0.0.1:12345/catalog', allow_local=True)
         self.install()
         path, digest = self.make()
         entry = dict(app='sample', activity='daily', app_module='sample', activity_module='daily',
                      app_label='Sample', label='Daily', version='0.1.1', framework_api=FRAMEWORK_API,
                      python=f'{sys.version_info.major}.{sys.version_info.minor}', size=path.stat().st_size,
-                     sha256=digest, url=f'https://github.com/{OFFICIAL_REPOSITORY}/releases/download/activities-one/sample.zip')
+                     sha256=digest, url='http://127.0.0.1:12345/sample.zip')
         catalog = dict(schema=1, repository=OFFICIAL_REPOSITORY, packages=[entry])
         self.manager.cache_path.write_text(json.dumps(catalog), encoding='utf-8')
         result = self.manager.snapshot()
         self.assertTrue(result['packages'][0]['installed'])
         self.assertTrue(result['packages'][0]['compatible'])
-        with patch('backend.core.plugins.manager._download', side_effect=OSError('offline')):
+        with patch.object(self.manager, '_fetch', side_effect=OSError('offline')):
             result = self.manager.snapshot(refresh=True)
         self.assertTrue(result['cached'])
         self.assertIn('offline', result['error'])
         self.assertEqual(result['catalog'][0]['activities'][0]['id'], 'daily')
 
     def test_download_install_only_uses_catalog_digest_and_explicit_ids(self):
+        self.manager = PluginManager(self.root / 'plugins', catalog_url='http://127.0.0.1:12345/catalog', allow_local=True)
         path, digest = self.make()
         content = path.read_bytes()
         entry = dict(app='sample', activity='daily', app_module='sample', activity_module='daily', version='0.1.1',
                      framework_api=1, python=f'{sys.version_info.major}.{sys.version_info.minor}',
-                     sha256=digest, size=len(content), url=f'https://github.com/{OFFICIAL_REPOSITORY}/releases/download/activities-one/sample.zip')
+                     sha256=digest, size=len(content), url='http://127.0.0.1:12345/sample.zip')
         catalog = dict(schema=1, repository=OFFICIAL_REPOSITORY, packages=[entry])
-        with patch('backend.core.plugins.manager._download', side_effect=[json.dumps(catalog).encode(), content]):
+        with patch.object(self.manager, '_fetch', side_effect=[json.dumps(catalog).encode(), content]):
             result = self.manager.install('sample', 'daily')
         self.assertEqual(result['sha256'], digest)
 

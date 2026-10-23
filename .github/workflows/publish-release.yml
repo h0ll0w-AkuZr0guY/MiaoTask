@@ -97,7 +97,7 @@ jobs:
             $reader = [IO.StreamReader]::new($entry.Open())
             try { $manifest = $reader.ReadToEnd() | ConvertFrom-Json } finally { $reader.Dispose() }
           } finally { $zip.Dispose() }
-          if ($manifest.source_commit -ne $revision -or $manifest.version -ne $env:RELEASE_TAG -or -not $manifest.smoke_test_passed) {
+          if ($manifest.preview -or $manifest.source_dirty -or $manifest.source_commit -ne $revision -or $manifest.version -ne $env:RELEASE_TAG -or -not $manifest.smoke_test_passed) {
             throw 'Portable package provenance mismatch'
           }
           $publicNotes = Join-Path $env:RUNNER_TEMP 'miao-release-notes.md'

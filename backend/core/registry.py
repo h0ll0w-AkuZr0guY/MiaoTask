@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 
 from backend.core.device.profile import ApplicationProfile
-from backend.core.runtime import assets_dir, data_dir
+from backend.core.runtime import assets_dir, activities_dir
 
 
 def checked_id(value):
@@ -54,7 +54,7 @@ class Registry:
     def __init__(self, app_dir=None, *, plugin_dir=None):
         self.root = Path(app_dir) if app_dir is not None else assets_dir() / 'backend/app'
         self.plugin_root = (Path(plugin_dir) if plugin_dir is not None else
-                            data_dir() / 'plugins/apps' if app_dir is None else None)
+                            activities_dir() / 'apps' if app_dir is None else None)
         self._apps = {}
         self._activities = {}
 

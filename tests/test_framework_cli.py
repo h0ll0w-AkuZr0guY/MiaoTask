@@ -30,18 +30,18 @@ class FrameworkCliTests(unittest.TestCase):
             self.invalid('--cli', '--test-activity-source-dir', work)
             self.invalid('--self-test', '--test-activity-source-dir', work)
 
-    def test_explicit_source_is_passed_to_service_without_changing_global_catalog(self):
+    def test_ordinary_launch_uses_web_service_without_a_local_source(self):
         with tempfile.TemporaryDirectory() as work:
             source = Path(work) / 'source'
             source.mkdir()
             (source / 'activity-catalog.json').write_text('{}', encoding='utf-8')
-            with patch('sys.argv', ['main.py', '--no-browser', '--test-activity-source-dir', str(source)]), \
+            with patch('sys.argv', ['main.py', '--no-browser']), \
                     patch.dict(os.environ, {'MIAO_DATA_DIR': str(Path(work) / 'runtime')}), \
                     patch('backend.main.RotatingFileHandler'), patch('backend.main.logging.basicConfig'), \
                     patch('backend.core.registry.default_registry', return_value=SimpleNamespace(has_activities=False)), \
                     patch('backend.core.service.panel.serve') as serve:
                 main()
-            self.assertEqual(serve.call_args.kwargs['test_activity_source_dir'], source.resolve())
+            self.assertNotIn('test_activity_source_dir', serve.call_args.kwargs)
             self.assertFalse(serve.call_args.args[1])
 
 

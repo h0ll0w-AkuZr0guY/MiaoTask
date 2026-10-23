@@ -1400,7 +1400,7 @@ class LocalServerTests(unittest.TestCase):
 
     def test_local_page_and_state(self):
         with urlopen(self.base + '/') as response:
-            self.assertIn('双11'.encode(), response.read())
+                self.assertIn(b'MiaoTask', response.read())
         with urlopen(self.base + '/api/state') as response:
             state = json.load(response)
             self.assertEqual(state['token'], 'test-token')

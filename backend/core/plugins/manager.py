@@ -1,7 +1,7 @@
 """Install reviewed Python activities; this is deliberately not a code sandbox.
 
-Only the official repository's release assets can be fetched through the product
-API. An explicit local archive + digest entry point exists for offline build
+The product reads only the official repository's main source at a pinned commit.
+An explicit local archive + digest entry point exists for offline build
 verification. The service must hold its global idle gate while mutating packages.
 """
 import ast
@@ -26,7 +26,7 @@ import zipfile
 from backend.core.plugins.contracts import (ALLOWED_SUFFIXES, CATALOG_URL, FRAMEWORK_API,
     MAX_ARCHIVE_BYTES, MAX_CATALOG_BYTES, MAX_EXPANDED_BYTES, MAX_FILES,
     OFFICIAL_REPOSITORY, PACKAGE_SCHEMA, module_id, package_version)
-from backend.core.runtime import data_dir
+from backend.core.runtime import activities_dir
 
 _LOCK = threading.RLock()
 
@@ -195,6 +195,9 @@ def validate_archive(path, expected_sha256, *, expected_app=None, expected_activ
     app, activity = _public_id(manifest.get('app')), _public_id(manifest.get('activity'))
     app_module, activity_module = module_id(manifest.get('app_module')), module_id(manifest.get('activity_module'))
     package_version(manifest.get('version'))
+    if ('source_commit' in manifest and (not isinstance(manifest['source_commit'], str)
+            or manifest['source_commit'] and not re.fullmatch(r'[0-9a-f]{40}', manifest['source_commit']))):
+        raise ValueError('活动源码提交标识无效')
     if expected_app is not None and app != expected_app or expected_activity is not None and activity != expected_activity:
         raise ValueError('活动压缩包与所选应用或活动不一致')
     prefix = f'backend/app/{app_module}/'
@@ -239,8 +242,8 @@ def validate_archive(path, expected_sha256, *, expected_app=None, expected_activ
 
 
 class PluginManager:
-    def __init__(self, root=None, *, catalog_url=None, allow_local=False):
-        self.root = Path(root).resolve() if root is not None else data_dir() / 'plugins'
+    def __init__(self, root=None, *, catalog_url=None, allow_local=False, source_provider=None):
+        self.root = Path(root).resolve() if root is not None else activities_dir()
         self.apps_dir = self.root / 'apps'
         self.root.mkdir(parents=True, exist_ok=True)
         self.apps_dir.mkdir(parents=True, exist_ok=True)
@@ -249,10 +252,14 @@ class PluginManager:
         self.last_error = ''
         self.catalog_url = catalog_url or CATALOG_URL
         self.local_origin = _local_source_url(self.catalog_url) if allow_local else None
+        self.source_provider = None
         if not allow_local:
             if self.catalog_url != CATALOG_URL:
                 raise ValueError('正常运行只能使用内置官方活动目录')
-            official_asset_url(self.catalog_url)
+            from backend.core.plugins.repository import GitHubSourceProvider
+            self.source_provider = source_provider or GitHubSourceProvider()
+        elif source_provider is not None:
+            raise ValueError('本机验证源不能同时指定在线源码提供方')
 
     def _fetch(self, url, maximum):
         return (_download_local(url, maximum, self.local_origin) if self.local_origin is not None
@@ -271,7 +278,14 @@ class PluginManager:
             return [dict(item) for item in self._state()['packages']]
 
     @staticmethod
-    def _validate_catalog(value, *, local_origin=None):
+    def _validate_catalog(value, *, local_origin=None, source_only=False):
+        if isinstance(value, dict) and value.get('source') == 'github-source':
+            if local_origin is not None:
+                raise ValueError('本机验证源不能混入在线源码目录')
+            from backend.core.plugins.repository import validate_source_catalog
+            return validate_source_catalog(value)
+        if source_only:
+            raise ValueError('旧活动附件目录已停用，请读取官方 main 源码')
         if (not isinstance(value, dict) or value.get('schema') != PACKAGE_SCHEMA
                 or value.get('repository') != OFFICIAL_REPOSITORY or not isinstance(value.get('packages'), list)):
             raise ValueError('官方活动目录格式无效')
@@ -296,18 +310,20 @@ class PluginManager:
         return value
 
     def catalog(self, refresh=False):
-        """Read cache by default; refresh fetches only the fixed official catalog."""
+        """Read cache by default; explicit refresh resolves official main once."""
         with _LOCK:
             cached = None
             if self.cache_path.is_file():
                 try:
-                    cached = self._validate_catalog(json.loads(self.cache_path.read_text(encoding='utf-8')), local_origin=self.local_origin)
+                    cached = self._validate_catalog(json.loads(self.cache_path.read_text(encoding='utf-8')), local_origin=self.local_origin, source_only=self.source_provider is not None)
                 except (ValueError, OSError):
                     pass
             self.last_error = ''
             if refresh or cached is None:
                 try:
-                    value = self._validate_catalog(json.loads(self._fetch(self.catalog_url, MAX_CATALOG_BYTES)), local_origin=self.local_origin)
+                    value = (self.source_provider.catalog() if self.source_provider is not None
+                             else json.loads(self._fetch(self.catalog_url, MAX_CATALOG_BYTES)))
+                    value = self._validate_catalog(value, local_origin=self.local_origin, source_only=self.source_provider is not None)
                     _atomic_json(self.cache_path, value)
                     return value, False
                 except Exception as exc:
@@ -326,31 +342,59 @@ class PluginManager:
             local = by_id.get((item['app'], item['activity']))
             entry.update(id=item['activity'], installed=local is not None,
                          installed_version=local['version'] if local else '',
+                         installed_source_commit=local.get('source_commit', '') if local else '',
+                         installed_revision=local.get('source_commit', '')[:12] if local else '',
+                         update_available=bool(local and (local.get('source_commit') != item.get('source_commit')
+                             if item.get('source') == 'github-source' else local['version'] != item['version'])),
                          compatible=item['framework_api'] == FRAMEWORK_API
                          and item['python'] == f'{sys.version_info.major}.{sys.version_info.minor}',
-                         source='local-test' if self.local_origin else 'official')
+                         source='local-test' if self.local_origin else 'github-source')
             packages.append(entry)
             app = applications.setdefault(item['app'], {'id': item['app'], 'label': item.get('app_label', item['app']), 'activities': []})
             app['activities'].append(entry)
         return {'framework_api': FRAMEWORK_API, 'repository': OFFICIAL_REPOSITORY,
                 'catalog': list(applications.values()), 'packages': packages,
                 'installed': installed, 'error': self.last_error, 'cached': cached,
-                'source': 'local-test' if self.local_origin else 'official', 'test_source': self.local_origin is not None,
-                'code_notice': '活动包包含 Python 代码，仅安装经过审阅的官方活动；不提供沙箱隔离。'}
+                'source': 'local-test' if self.local_origin else 'github-source', 'test_source': self.local_origin is not None,
+                'source_commit': catalog.get('source_commit', ''), 'source_ref': catalog.get('source_ref', ''),
+                'revision': catalog.get('revision', ''), 'warnings': catalog.get('warnings', []),
+                'activities_dir': str(self.root), 'source_dir': str(self.apps_dir),
+                'code_notice': '活动来自官方源码，包含 Python 代码；安装前核对来源，不提供沙箱隔离。'}
 
-    def install(self, app, activity):
+    def install(self, app, activity, *, source_commit=None):
+        # A catalog request already in flight before the service's idle gate
+        # must not replace this provider's pinned tree during source download.
+        with _LOCK:
+            return self._install_selected(app, activity, source_commit=source_commit)
+
+    def _install_selected(self, app, activity, *, source_commit=None):
         app, activity = _public_id(app), _public_id(activity)
-        catalog, _ = self.catalog(refresh=True)
+        catalog, _ = self.catalog(refresh=self.source_provider is None)
+        if self.source_provider is not None and self.last_error:
+            raise ValueError(self.last_error)
         entry = next((p for p in catalog['packages'] if (p['app'], p['activity']) == (app, activity)), None)
         if entry is None:
             raise ValueError(self.last_error or '官方目录中没有此活动')
-        content = self._fetch(entry['url'], MAX_ARCHIVE_BYTES)
-        if len(content) != entry['size']:
-            raise ValueError('活动下载大小与官方目录不一致')
+        if self.source_provider is not None:
+            from backend.core.plugins.repository import commit_id
+            if source_commit is not None and commit_id(source_commit) != entry['source_commit']:
+                raise ValueError('已展示的源码目录已变化，请刷新后重新确认活动')
+            if self.source_provider.commit != entry['source_commit']:
+                pinned = self.source_provider.catalog(commit=entry['source_commit'])
+                entry = next((p for p in pinned['packages'] if (p['app'], p['activity']) == (app, activity)), None)
+                if entry is None:
+                    raise ValueError('当前固定提交中的活动声明已无效')
         with tempfile.TemporaryDirectory(prefix='download-', dir=self.root) as folder:
             archive = Path(folder) / 'activity.zip'
-            archive.write_bytes(content)
-            return self.install_local(archive, entry['sha256'], expected_app=app, expected_activity=activity)
+            if self.source_provider is not None:
+                digest = self.source_provider.build_archive(entry, archive)
+            else:
+                content = self._fetch(entry['url'], MAX_ARCHIVE_BYTES)
+                if len(content) != entry['size']:
+                    raise ValueError('活动下载大小与验证目录不一致')
+                archive.write_bytes(content)
+                digest = entry['sha256']
+            return self.install_local(archive, digest, expected_app=app, expected_activity=activity)
 
     def install_local(self, archive_path, expected_sha256, *, expected_app=None, expected_activity=None):
         """Explicit offline verifier entry point; never exposed as an arbitrary URL API."""
@@ -413,6 +457,9 @@ class PluginManager:
                 record['label'] = manifest.get('label', activity)
                 record['app_label'] = manifest.get('app_label', app)
                 record['shared_files'] = shared_files
+                for field in ('source', 'source_ref', 'source_commit'):
+                    if field in manifest:
+                        record[field] = manifest[field]
                 next_state = {'schema': 1, 'packages': [p for p in state['packages'] if (p['app'], p['activity']) != (app, activity)] + [record]}
                 self._swap(target, staged, next_state)
             return record

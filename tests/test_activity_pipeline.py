@@ -144,6 +144,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual([row['max_tasks'] for row in calls], [3, 3])
         self.assertEqual(controller.device.bound, ['org.example.alpha'])
         self.assertEqual([row['status'] for row in state['activity_pipeline']], ['finished', 'finished'])
+        self.assertEqual([row['stats']['completed'] for row in state['activity_pipeline']], [1, 1])
 
     def test_cross_app_round_trip_restores_each_apps_explicit_instance(self):
         controller = self.controller()
@@ -156,6 +157,30 @@ class PipelineTests(unittest.TestCase):
                          ['org.example.alpha@999', 'org.example.beta@999', 'org.example.alpha@999'])
         self.assertEqual([row['name'] for row in calls], ['alpha-first', 'beta-first', 'alpha-second'])
         self.assertEqual(controller.device.bound, ['org.example.alpha', 'org.example.beta', 'org.example.alpha'])
+        self.assertEqual(state['status'], 'finished')
+
+    def test_reconnecting_different_phone_never_reuses_previous_phones_clone_plan(self):
+        controller = self.controller(serial='synthetic-phone-a')
+        calls = []
+        with patch('backend.core.service.panel.CampaignRunner', self.runner_factory(calls)):
+            self.run_controller(controller, {'instance_ids': ['org.example.alpha@999']})
+            self.assertEqual(controller._app_instance_plans['alpha'], ['org.example.alpha@999'])
+            replacement = SyntheticDevice(controller.registration.app.profile, serial='synthetic-phone-b')
+            replacement.current_app = Mock(return_value={'package': 'org.example.alpha'})
+            replacement.display_size = (30, 60)
+            replacement.instance_warnings = []
+            with patch('backend.core.device.adapter.DeviceAdapter', return_value=replacement), \
+                    patch.object(controller, '_start_preview'):
+                controller.dispatch('connect', {'device_type': 'uiautomator2', 'serial': replacement.serial})
+                controller.thread.join(3)
+                self.assertFalse(controller.thread.is_alive())
+            self.assertEqual(controller.state['status'], 'ready')
+            self.assertEqual(controller._app_instance_plans, {})
+            self.assertEqual(controller.state['selected_instance'], 'org.example.alpha@0')
+            state = self.run_controller(controller)
+        self.assertEqual([row['serial'] for row in calls], ['synthetic-phone-a', 'synthetic-phone-b'])
+        self.assertEqual([row['instance'] for row in calls], ['org.example.alpha@999', 'org.example.alpha@0'])
+        self.assertNotIn('org.example.alpha@999', replacement.selections)
         self.assertEqual(state['status'], 'finished')
 
     def test_missing_remembered_instance_stops_without_account_fallback(self):

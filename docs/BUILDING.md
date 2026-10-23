@@ -1,42 +1,53 @@
 # 测试、打包与发布
 
-## 工具入口
+## 两条独立路径
 
-所有工具随源码一并维护在 GitHub。Windows x64 / Python 3.13 为便携包构建环境；从 Git 克隆仓库并保留干净提交，构建器会记录源码提交号。
+* 用户下载带运行环境的框架 ZIP；活动中心从官方 GitHub 仓库 main 按需获取应用与活动源码。活动更新不要求框架或活动 Release。
+* 维护者使用本地 **MiaoTask Release Builder**，提供最新源码 ZIP、目录或 GitHub 链接，生成可交付框架 ZIP。工具在副本汇总贡献、测试和构建，默认自动递增末位版本；不上传、不修改远端或原始源码。
 
-| 工具 | 用途 |
-| --- | --- |
-| `scripts/check_public_files.py` | 审计实际 Git 索引中的公开文件和敏感信息 |
-| `scripts/fetch_platform_tools.py` | 获取官方 Android platform-tools |
-| `scripts/package_windows.py`、`build.spec` | 独立目录构建 exe、运行自检并生成 ZIP |
-| `scripts/smoke_packaged.py` | 对解压后的 exe 检查运行环境、网页和退出 |
-| `scripts/prepare_release.py`、`scripts/release_notes.py` | 汇总待发布贡献、校验发布标记、提取已审阅版本正文 |
-| `scripts/check_contribution.py` | 检查 PR 标题、正文、贡献保留和版本变更边界 |
-| `scripts/export_icons.py` | 从统一母版导出 PNG / ICO |
-| `.github/workflows/ci.yml` | PR 审计与回归，不构建 exe |
-| `.github/workflows/prepare-release.yml` | 手动汇总贡献并创建发布准备 PR |
-| `.github/workflows/release-pipeline.yml` | 发布准备合并到 main 后自动测试、打包，等待确认后发布 |
-| `.github/workflows/release.yml`、`publish-release.yml` | 流水线复用的构建与发布；保留手动恢复入口 |
+GitHub PR CI 与维护者评审负责合入质量，具体活动的入口、任务和兼容仍应有对应回归。
+
+## 本地 Release Builder
+
+工具实现随源码放在 `scripts/`，本机独立的 `MiaoTask Release Builder/` 是启动与产物目录。双击 `Build.cmd` 打开窗口，或运行：
+
+```powershell
+.\.venv\Scripts\python.exe scripts/release_builder_gui.py --home "Builder目录"
+```
+
+1. 选择源码文件夹、ZIP 或 GitHub 链接。源码无需 `.git`，工具使用这份源码自己的业务与构建配置。
+2. 默认自动递增末位，例如 `0.1.1 → 0.1.2`。可选递增中位、保留版本或明确填写目标版本；成功记录参与下一次递增，预览和失败不占用版本，原始输入保持不变。
+3. 点击加载官方活动，勾选希望预装的项目；不选则生成纯框架包。目录与源码下载锁定同一 GitHub 提交，预装活动位于包根的 `activities/apps/`，仍可在客户端独立更新，不塞入 `_internal/`。
+4. 点击开始构建。工具清洁复制源码到 `runs/<编号>/source`，在副本设置目标版本、汇总 `UNRELEASED.md` 到 `RELEASES.md`，清空已收录条目，再运行回归、构建和实际 exe 自检。窗口持续显示日志。
+5. 完成后打开 `outputs/<编号>/`，检查带环境 ZIP、整理后源码 ZIP、发布正文、更新文档与 `build-result.json`。完整日志和源码副本留在 `runs/`，旧产物保留。
+
+命令行同样可用，具体可选参数以 `--help` 为准：
+
+```powershell
+.\.venv\Scripts\python.exe scripts/local_release.py "源码ZIP、目录或GitHub链接" --home "Builder目录" --summary "一句更新摘要"
+```
+
+默认复用配置的 Python 3.13 环境；可用 `--python` 指定解释器、`--adb-dir` 指定官方 platform-tools，或用 `--create-env` 按输入源码的 `requirements-windows.lock` 创建独立环境。Node.js 用于前端语法检查，Git 命令用于仓库工具的合成回归，输入源码本身无需提交或 GitHub 登录。
+
+默认不回写原始输入。目录输入可显式加 `--write-back-notes`，仅在成功后回写两份更新文档；目标版本与整理后源码保存在构建输出。发布前审阅这些记录，避免下次构建丢失历史。工具只处理已在所选源码中合并的贡献，不自动合并远端 PR。
+
+构建会执行输入源码及其测试，请使用已审阅的可信源码；独立工作目录用于隔离文件，不提供代码沙箱。源码、环境和产物分别管理，不收集开发机已下载的活动、设备信息、旧构建或个人日志。源码来源与验证结果记录在清单，无 Git 提交时不伪造提交号。
 
 ## 验证修改
 
-在开发环境运行：
+开发环境运行：
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -q
 .\.venv\Scripts\python.exe -m compileall -q main.py backend scripts tests
-node --check frontend/js/app.js
-node --check frontend/js/api.js
-node --check frontend/js/components/activity-selector.js
-node --check frontend/js/components/wifi-connect.js
-node --check frontend/js/components/device-manager.js
+Get-ChildItem frontend/js -Filter *.js -Recurse | ForEach-Object { node --check $_.FullName; if ($LASTEXITCODE -ne 0) { throw 'JavaScript check failed' } }
 ```
 
-Python 用例使用模拟设备，覆盖解析、任务更新、搜索提交、返回核验、重试、累计领奖、实例隔离、日记录、连接与公开文件边界。涉及界面脚本时再执行 Node 语法检查，并在浏览器检查相应交互。
+用例覆盖解析、搜索、返回、重试、领奖、分身、日记录、连接、坐标、多设备和活动安装；涉及界面交互再在浏览器核对。行为变化补回归，不删除或削弱原有断言；真机结果、模拟用例和冻结 exe 自检分开描述。设备码、地址、配对码和原始截图不提交。
 
-改变任务行为、配置字段或数据格式时，应验证原配置仍可加载、旧记录仍可延续，并补充对应回归。导航、分身或驱动修改宜补充真机复现和停止/恢复检查；不消耗无关任务，也不将未核验的访问计作成功。PR 中写明命令、结果与覆盖限制，要求见[贡献规范](CONTRIBUTING.md)。
+HyperOS 元数据回归检查 SDK shell 失效时的有界只读回退、未知状态与未安装区分、坏分身空间不阻断主空间、失效选择不换账号；本地用例通过不能写成已在问题设备真机复现。
 
-提交前明确选择要公开的文件，再运行：
+提交前明确选择公开文件，再运行：
 
 ```powershell
 .\.venv\Scripts\python.exe scripts/check_public_files.py
@@ -44,101 +55,47 @@ git diff --cached --check
 git diff --cached --stat
 ```
 
-审计读取暂存内容；仅修改工作区而未暂存的新文件不会纳入检查。本地已知设备标识可放在仓库外的 JSON 字符串数组，通过 `--forbid-file 文件路径` 额外检查。截图的视觉脱敏仍需人工核对。
+仓库审计读取实际 Git 索引。本地已知标识可用仓库外 JSON 数组配合 `--forbid-file` 检查，图像仍需人工脱敏。Release Builder 对其输入副本进行独立文件审计，不依赖输入含 Git 索引。
 
-## 构建 Windows 便携包
+## 仓库内直接构建
 
-使用独立的锁定环境，避免混入开发环境的临时依赖：
+已有开发环境且从 Git 工作区构建时，可继续使用底层工具：
 
 ```powershell
 python -m venv build/release-env
 .\build\release-env\Scripts\python.exe -m pip install -r requirements-windows.lock
 .\build\release-env\Scripts\python.exe scripts/fetch_platform_tools.py
-# 审阅并提交源码，确认 git status 无待提交修改后构建
 .\build\release-env\Scripts\python.exe scripts/package_windows.py --adb-dir build/vendor/platform-tools
 ```
 
-已有官方 platform-tools 可传入对应目录；必须包含 adb.exe、必要 DLL 和 NOTICE.txt。需要 HDC 时可传 `--hdc-dir`，默认包只包含 Android ADB。从源码 ZIP 开始构建时需先建立 Git 仓库并提交；不需要构建的用户直接下载便携 ZIP。
+默认直接构建要求干净提交；本地未提交候选可加 `--preview`，清单标记预览与实际文件摘要，输出 `-preview.zip`。Release Builder 使用独立的 `--local-source` 构建接口，对清洁副本审计并记录文件摘要，不要求 Git、提交或发布计划，也不伪造提交号；输出正常命名的带环境 ZIP。
 
-构建器先审计、运行用例，再从新目录执行 PyInstaller，包含当前入口可达代码、网页、公共配置、离线 OCR、ADB 和第三方许可。不会整体压缩项目目录或携带开发虚拟环境、个人日志、设备配置、旧 exe 和手机截图。
+默认框架包含网页、设备与执行组件、共用代码、公共配置、离线 OCR、ADB 及许可声明，排除具体应用与活动源码。`--include-activities` 仅用于离线兼容验收，生成 `-with-activities.zip`。不会整体压缩项目或塞入虚拟环境、旧 exe、个人日志和设备截图。HDC 可通过 `--hdc-dir` 另行提供，默认只带 Android ADB。
 
-输出为 `dist/<version>-windows-x64.zip`。包内包含：
+工具也支持已核验构建入口的 0.1.0 源码：仅适配无 Git 来源检查，仍使用该源码自身的业务、构建配置和自检，生成它原有的完整包。不会为旧源码注入新框架或在线活动能力；未知旧入口需使用对应构建器。
 
-* `MiaoTask.exe` 和 `_internal/` 运行环境。
-* `README.md`、`docs/` 使用、风险、发布与许可说明，以及根目录 `LICENSE`、`NOTICE` 和 `licenses/` 第三方声明。
-* `build-manifest.json` 的源码提交与依赖信息，`self-test.json` 的离线自检结果。
+包内有 `MiaoTask.exe`、`_internal/`、可选的独立 `activities/` 源码目录、使用与风险文档、许可和第三方声明、`build-manifest.json` 及 `self-test.json`。`bundle-policy.json` 记录框架/完整包模式。
 
-## 检查实际 ZIP
+## 检查实际 ZIP 与活动获取
 
-完整解压到新目录，不将新 exe 复制到旧运行库中：
+完整解压到新目录，保留 `_internal/`，不要混用新旧运行库。执行 `scripts/smoke_packaged.py <exe路径>` 可在 PATH 中移除 Python/ADB 后检查内置工具、OCR、HTTP、图标、重复启动和退出；活动样本也需在真正的冻结 exe 中安装、导入工厂，避免只验证源码环境。
 
-```powershell
-$releaseVersion = (Get-Content version.json -Raw | ConvertFrom-Json).version
-$verifyFolder = "dist/verify-$releaseVersion"
-if (Test-Path -LiteralPath $verifyFolder) { throw '请改用新的验证目录' }
-Expand-Archive -LiteralPath "dist/$releaseVersion-windows-x64.zip" -DestinationPath $verifyFolder
-.\build\release-env\Scripts\python.exe scripts/smoke_packaged.py "$verifyFolder/MiaoTask/MiaoTask.exe"
-```
+活动分发应覆盖：从官方 main 读取列表、一次安装固定到同一源码提交、只下载目标应用共享文件和所选活动、内容与路径核验、暂存导入失败保留原活动、全局忙碌时拒绝变更、卸载保留记录、断网仍能使用已安装活动。离线合成归档可供单元测试和打包自检使用，不作为用户需部署的下载服务。
 
-自检会从 PATH 中移除 Python / ADB，检查内置 ADB、离线 OCR、图标、HTTP、浏览器来源头、重复启动和退出，不操作手机。另检查随包文档和构建清单与发布提交一致；升级、托盘和涉及手机的变更按影响范围补充检查。SHA256 为可选完整性附件。
+多活动/多设备实测保持少量任务：先唤醒各设备确认预览归属，再限定每类 1～2 次。设备之间并行，同设备活动与实例串行；单台认证、停止或异常不继续该台后续活动，也不干扰其他设备。任务成功仍看返回核验，不以访问或跳转次数代替。未登录设备只验证公开入口，不代办授权。
 
-## 重构验证
+## GitHub 检查与可选云构建
 
-0.1.0 的原有回归用例保留业务断言，仅调整迁移后的导入和资源路径。`tests/fixtures/v009_contract.json` 来自基线提交的合成页面，比较完整配置及任务解析结果；不含真实设备或账号数据。架构测试覆盖新活动注册、生命周期、活动切换限制、命名空间、旧记录接续和坐标回映接口。
+仓库的普通 PR 自动运行只读 `check`，校验标题、正文、贡献条目、公开文件和回归。main 要求维护者/CODEOWNERS 评审、必需检查和已解决对话；唯一维护者的管理员旁路保留（`enforce_admins=false`）。CI 通过后仍需本人审核，不自动合并。
 
-多设备回归覆盖真实工作线程重叠、单台暂停和停止隔离、重复物理设备租约、失效工作区与部分批量失败、全局退出及日志归属。屏幕回归覆盖旋转、横屏 OCR 回映、系统安全区域、非主显示屏输入、逻辑/物理 ID 映射及黑屏登录保护。队列回归覆盖通用失败预算的重启延续、按天和实例隔离、任务替换、实时选择及认证/停止不计普通失败。无线接入回归覆盖地址校验、配对码不落盘、广播解析、受保护的 HTTP 接口、已有 USB 设备时指定无线连接，以及执行期间禁止换设备。实机验证记录保存在本地，手机地址、标识、配对码和原始截图不提交。本地通过不能代替各机型的入口、搜索、跳转、暂停恢复与分身验收；实验分支不发布正式 Release。
+GitHub 侧保留既有的发布准备、Windows 构建与审批发布工作流，作为维护者可选方式，与客户端源码活动下载无关，也不是本地 Builder 的依赖。只有维护者明确准备版本、满足发布标记并确认后才允许公开，普通 PR、活动更新或推送标签不会直接发布。
 
-## 多设备实测清单
+`release` 环境仅 main 可部署，需要维护者批准，允许批准本人发起的运行；Actions 默认只读并允许工作流建准备 PR。普通 PR 不持有发布 secrets，不用 `pull_request_target` 执行贡献者代码。外部首次贡献遵循 GitHub 工作流审批；本地尚未上传的显式准备分支 CI 调度优化不视为线上行为。
 
-* 先用「唤醒所选应用」确认各设备前台与预览匹配，再将本轮上限设为 1～2 次进行批量启动。记录各线程同时运行的阶段，不能用串行剪辑代替并行证据。
-* 未登录模拟器只验证公开页面和入口，登录或保护页出现后停止；不代替用户接受协议、授权或安全验证。
-* 已登录设备验证任务点击、完成反馈、返回及进度增加。访问或跳转次数不等于完成数。
-* 切换设备确认设置、日志、画面和诊断归属；单台停止、断连或异常时，其他设备应继续运行。
-* 实测证据放在忽略的本地目录，PR 只描述设备类别、比例、覆盖路径及结果。附图前脱敏。
+本地 Builder 不调用这些工作流，不创建分支、PR、标签或 Release，不移动标签、不覆盖附件。首次和后续活动更新都从 main 获取，无需建立额外活动 Release 渠道。官方机制参考 [工作流触发](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow) 与 [环境审批](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments)。
 
-## 版本规则
+## 版本与说明写法
 
-版本与标签使用 `MiaoTask-v0.0.9` 形式，去掉日期和活动限定；两个版本字段保持一致。功能优化递增末位（如 `0.0.9 → 0.0.10`），架构升级或扩展应用递增中位（如 `0.0.x → 0.1.0`）。`0.1.0` 以兼容原功能和配置的架构调整为基线，无线接入、多设备和队列选择先在本地候选包验证；暂不规划 `1.0.0` 定稿版本。历史标签保留。
+版本使用 `MiaoTask-v0.x.y`，Release Builder 默认递增末位并在构建副本同步两个字段；维护者也可选择递增中位、保留或手动指定。功能优化通常递增末位，架构或应用扩展可递增中位，暂不规划 1.0.0。普通 PR 不夹带版本变更，贡献写在 `UNRELEASED.md`；发布时在构建副本集中汇总，已发布历史不被无关修改覆盖。
 
-## 发布
-
-普通 PR 自动运行只读检查，维护者审阅合并后，贡献记录累积在 [UNRELEASED.md](UNRELEASED.md)。不按普通 PR 发版，推送标签也不会自动构建。发布由维护者决定收录范围，云端完成后续构建：
-
-1. **Prepare release for review**：在 Actions 选择 `main`，填写 `MiaoTask-v0.x.y` 和一句摘要。脚本将已合并的待发布条目按类别汇总到 `RELEASES.md` 顶部，清空已收录贡献，同步 `version.json`，并生成 `.github/release-plan.json`。创建独立发布准备 PR，不生成 exe。该 PR 不收录尚未合并的贡献。
-2. 审阅准备 PR 的内容和版本。必要时精简重复条目；若 main 又合入贡献，将其一并更新到准备 PR，避免打包代码与说明不一致。准备 PR 仅改以上四个文件，版本不能回退或覆盖历史版本。
-3. 审阅合并到 main 后，**Release reviewed version** 自动检查版本确实变化、标记与前后版本一致、说明存在且待发布区为空；随后锁定依赖、审计与回归、获取官方 ADB、构建带环境 ZIP 并执行 exe 自检。失败时停止，不创建 Release。
-4. 构建成功后，运行停在 **Review deployments → release**。维护者下载 `MiaoTask-windows-x64` 附件检查后点 **Approve and deploy**。流水线核对构建提交、包内清单、版本、完整性和已完成的构建任务，再发布 ZIP；标签只指向本次提交，已有公开版本不覆盖。
-
-只有 `main` 的版本变化会进入自动发布；普通代码合并、工作流修改、推送标签或单独修改活动不会触发框架发布。发布标记随源码保留供追溯，只有与版本变化配对的新标记才生效。构建、公开发布分离，因此不需要维护者本机安装 Python 或打包环境。
-
-### 仓库首次设置
-
-* **Settings → Actions → General**：允许所用官方 Actions；工作流默认权限使用只读，并勾选 **Allow GitHub Actions to create and approve pull requests**。创建发布准备 PR 的工作流按 job 显式申请必要的写权限，不向普通 PR 提供 secrets。
-* **Settings → Rules → Rulesets / Branches**：保护 `main`，要求 PR、通过 `check` 状态、解决评审对话和 CODEOWNERS 评审；禁止强推和删除。合并方式建议 squash。`.github/CODEOWNERS` 指向维护者，CI 通过不代表自动合并。管理员处理自己发起的 PR 时可保留明确的管理员旁路，其他贡献者不能绕过。
-* **Settings → Environments → release**：添加维护者为 Required reviewer；仅允许 `main` 部署。维护者既发起准备又确认发布时，关闭 Prevent self-review。公开仓库支持这项审批。没有配置审批时环境本身不会自动提供确认关卡，因此首次发布前必须完成该设置。
-
-仓库本次使用上述保护。`pull_request` 工作流保持 `contents: read` 且 checkout 不保留凭据，不使用 `pull_request_target` 执行贡献者代码。外部贡献者第一次运行可能仍需 GitHub 的工作流批准；机器人创建的准备 PR 也可能显示 **Approve workflows to run**，由维护者批准检查即可，无需个人访问令牌。
-
-### 恢复失败的发布
-
-优先在失败运行中 **Re-run failed jobs**，仍保留相同提交和环境确认。也可在 main 手动运行 **Release reviewed version**，它仍要求已审阅发布标记。已公开的版本会拒绝重复发布，避免意外替换旧附件。
-
-保留的分步入口适合构建与发布之间需要较长验收的情况：先运行 **Build Windows portable release**；验收附件后运行 **Publish verified release assets**，填写版本、成功构建运行 ID、完整 40 位提交 SHA 并勾选确认，公开前仍经过 `release` 环境审批。
-
-工作流需先合并到默认分支，GitHub 才显示手动入口。若准备阶段因创建 PR 权限失败，下载 `release-preparation` 补丁附件，审阅后本地应用并提 PR。参考 [手动运行工作流](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)、[工作流触发与机器人 PR](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)、[环境审批](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments)。
-
-本地等效准备命令：
-
-```powershell
-.\.venv\Scripts\python.exe scripts/prepare_release.py --version MiaoTask-v0.1.1 --summary "一句本次更新摘要"
-# 审阅四个修改文件，以发布准备 PR 提交并合并；然后按前文流程检查附件。
-```
-
-版本已存在、回退版本、空待发布区或条目格式错误时脚本拒绝覆盖。公开版本的同版本替换仅在维护者明确授权后单独处理，不由普通工作流自动覆盖附件或移动标签。当前本地候选包不意味着已经完成发布准备或远端验收。
-
-## 发布说明写法
-
-* 开头一句概括主题，随后用「【新增】」「【优化】」「【修复】」列出主要用户可见变化，通常不超过 5 条。
-* 结尾保留简短的下载、解压和启动说明，以及致谢、使用文档链接。必要的使用限制客观说明。
-* 不写调试过程、测试数量、重复版本命名说明或过时的临时停用提醒；不承诺随机滚动能够规避风控。
-* 同版本修复合并进现有小节，GitHub Release 正文始终从该小节提取，避免两处说明不一致。
+说明开头一句主题，随后用「【新增】」「【优化】」「【修复】」等列主要变化，通常不超过 5 条，保留简短下载解压、使用链接和致谢。不写调试流水、测试数量或过时停用提醒，不承诺随机滚动可以规避风控。历史版本仅在明确授权时修改。

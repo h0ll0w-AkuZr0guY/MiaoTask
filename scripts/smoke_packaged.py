@@ -72,7 +72,7 @@ def smoke(executable, output=None, *, activity_packages=()):
         windows = env.get('SystemRoot', r'C:\Windows')
         env['PATH'] = os.pathsep.join([str(Path(windows) / 'System32'), windows])
         env['MIAO_DATA_DIR'] = str(folder / 'data')
-        for key in ('PYTHONPATH', 'PYTHONHOME', 'ADBUTILS_ADB_PATH'):
+        for key in ('PYTHONPATH', 'PYTHONHOME', 'ADBUTILS_ADB_PATH', 'MIAO_ACTIVITIES_DIR'):
             env.pop(key, None)
         report = folder / 'self-test.json'
         self_check = subprocess.run([str(executable), '--self-test', '--output', str(report)], cwd=work,

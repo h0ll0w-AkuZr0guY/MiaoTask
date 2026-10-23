@@ -11,12 +11,12 @@ from backend.core.service.activity_hub import ActivityCatalogHub
 class DeviceHub(ActivityCatalogHub):
     limit = 8
 
-    def __init__(self, config=None, registry=None, app=None, activity=None, test_activity_source_dir=None):
+    def __init__(self, config=None, registry=None, app=None, activity=None):
         self.lock = threading.RLock()
         self.controllers = {}
         self.leases = {}
         self.closing = False
-        self._init_activity_catalog(test_activity_source_dir)
+        self._init_activity_catalog()
         self.defaults = dict(config=config, registry=registry, app=app, activity=activity)
         self.add('设备 1', key='default')
 

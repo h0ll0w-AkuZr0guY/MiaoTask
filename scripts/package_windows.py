@@ -35,20 +35,54 @@ def copy_documentation(destination, *, include_activities=False):
         '# MiaoTask\n\n'
         '双击 `MiaoTask.exe`，保留 `_internal/`。升级前先退出旧助手。\n\n'
         + activity_help +
+        '活动源码位于 exe 旁的 `activities/`，可在活动中心查看实际位置或打开文件夹；'
+        '日记录与设备信息另存于本机用户数据目录。\n\n'
         '[使用说明](docs/USAGE.md) · [风险与隐私](docs/SAFETY.md) · '
         '[发布记录](docs/RELEASES.md) · [许可与声明](docs/LICENSING.md)\n',
         encoding='utf-8')
 
 
-def source_commit():
+def source_commit(*, allow_dirty=False):
     """Record the public source revision and refuse an uncommitted release build."""
     commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
     status = subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=normal'],
                                      cwd=ROOT, text=True)
-    if status.strip():
+    if status.strip() and not allow_dirty:
         raise RuntimeError('Commit the clean source tree before building a release')
     subprocess.run([sys.executable, 'scripts/check_public_files.py'], cwd=ROOT, check=True)
     return commit
+
+
+def worktree_snapshot(*, local_source=False):
+    """Audit the actual candidate files, including new non-ignored source files."""
+    if __package__:
+        from .check_public_files import audit_file
+    else:
+        from check_public_files import audit_file
+    if local_source:
+        names = [path.relative_to(ROOT).as_posix() for path in ROOT.rglob('*') if path.is_file()
+                 and path.relative_to(ROOT).parts[0] not in {'build', 'dist', 'runtime', 'activities', '.local', '.venv', '.git'}
+                 and '__pycache__' not in path.parts]
+        if (ROOT / 'build/README.md').is_file():
+            names.append('build/README.md')
+    else:
+        names = subprocess.check_output(['git', 'ls-files', '-z', '--cached', '--others', '--exclude-standard'],
+                                        cwd=ROOT).decode('utf-8').split('\0')
+    digest = hashlib.sha256()
+    for name in sorted(set(names) - {''}):
+        path = ROOT / name
+        if path.is_symlink() or not path.resolve().is_relative_to(ROOT.resolve()):
+            raise RuntimeError('Unsafe source file: ' + name)
+        digest.update(name.encode('utf-8') + b'\0')
+        if not path.is_file():
+            digest.update(b'deleted\0')
+            continue
+        content = path.read_bytes()
+        reasons = audit_file(name, content)
+        if reasons:
+            raise RuntimeError('Public source audit failed: ' + name + ': ' + ', '.join(reasons))
+        digest.update(hashlib.sha256(content).digest())
+    return digest.hexdigest()
 
 
 def licenses(destination, adb_dir):
@@ -100,12 +134,20 @@ def main():
     parser.add_argument('--adb-dir', help='Folder containing adb.exe, DLLs and NOTICE.txt')
     parser.add_argument('--hdc-dir', help='Optional authorized HDC runtime folder')
     parser.add_argument('--skip-tests', action='store_true', help='Skip unit tests already run on this commit')
+    parser.add_argument('--preview', action='store_true',
+                        help='Local candidate only: audit uncommitted source, mark the manifest and ZIP as a preview')
+    parser.add_argument('--local-source', action='store_true',
+                        help='Build an audited isolated source copy without requiring Git or changing the version')
     parser.add_argument('--include-activities', action='store_true',
                         help='Bundle source activities for offline compatibility checks (default: framework only)')
     args = parser.parse_args()
     if sys.platform != 'win32' or platform.machine().lower() not in ('amd64', 'x86_64'):
         raise SystemExit('Build this package on Windows x64')
-    revision = source_commit()
+    if args.local_source and args.preview:
+        parser.error('--local-source and --preview are separate build modes')
+    revision = '' if args.local_source else source_commit(allow_dirty=args.preview)
+    snapshot = worktree_snapshot(local_source=args.local_source)
+    source_dirty = False if args.local_source else bool(subprocess.check_output(['git', 'status', '--porcelain'], cwd=ROOT, text=True).strip())
     adb = shutil.which('adb')
     adb_dir = Path(args.adb_dir).resolve() if args.adb_dir else Path(adb).parent if adb else ROOT / 'build/vendor/platform-tools'
     if not all((adb_dir / name).is_file() for name in ('adb.exe', 'AdbWinApi.dll', 'AdbWinUsbApi.dll', 'NOTICE.txt')):
@@ -136,13 +178,15 @@ def main():
     from smoke_packaged import smoke
     from package_activities import build_packages
     activity_folder = work / 'activity-smoke'
-    catalog = build_packages(ROOT, activity_folder, 'activity-smoke', version.split('-v')[-1])
+    catalog = build_packages(ROOT, activity_folder, 'activity-smoke', version.split('-v')[-1],
+                             require_clean=not args.preview, local_source=args.local_source)
     smoke_archives = [(activity_folder / entry['url'].rsplit('/', 1)[-1], entry['sha256'])
                       for entry in catalog['packages']]
     smoke_result = smoke(executable, package / 'self-test.json', activity_packages=smoke_archives)
     policy = json.loads((package / '_internal/bundle-policy.json').read_text(encoding='utf-8'))
     manifest = dict(version=version, platform='windows-x64', python=platform.python_version(),
                     source_commit=revision, source_repository='https://github.com/h0ll0w-AkuZr0guY/MiaoTask',
+                    preview=args.preview, local_source=args.local_source, source_dirty=source_dirty, source_tree_sha256=snapshot,
                     bundle_mode=policy['bundle_mode'], framework_api=policy['framework_api'],
                     embedded_activities=policy['embedded_activity_modules'],
                     verified_activity_imports=smoke_result['actual_activity_imports'],
@@ -151,7 +195,9 @@ def main():
                     adb_bundled=True, hdc_bundled=(package / '_internal/shared/tools/hdc.exe').exists(),
                     offline_models=True, smoke_test_passed=True)
     (package / 'build-manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
-    suffix = '-with-activities' if args.include_activities else ''
+    if snapshot != worktree_snapshot(local_source=args.local_source):
+        raise RuntimeError('Source changed during the build; rebuild the final candidate')
+    suffix = ('-with-activities' if args.include_activities else '') + ('-preview' if args.preview else '')
     archive = ROOT / 'dist' / f'{version}-windows-x64{suffix}.zip'
     with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as bundle:
         for path in sorted(package.rglob('*')):

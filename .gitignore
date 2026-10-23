@@ -19,6 +19,7 @@ htmlcov/
 
 # Device state, screenshots, OCR captures, logs, reports and backups
 /runtime/
+/activities/
 /private/
 /.local/
 /screenshots/

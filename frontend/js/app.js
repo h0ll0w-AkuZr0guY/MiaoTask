@@ -14,6 +14,12 @@ function el(tag, cls, text) {const n=document.createElement(tag);if(cls)n.classN
 function toast(text){$('toast').textContent=text;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,6000);}
 function config(){const swipes={};for(const name of ['distance','duration','interval','burst'])for(const bound of ['min','max'])swipes['swipe_'+name+'_'+bound]=Number($('swipe-'+name+'-'+bound).value)/(name==='distance'?100:1);return {...swipes,default_browse_seconds:Number($('browse-seconds').value),browse_extra_seconds:Number($('browse-extra').value),max_attempts:Number($('max-attempts').value),max_tasks:Number($('max-tasks').value),enabled_task_kinds:['browse','search','visit','claim'].filter(k=>$('kind-'+k).checked),allow_cross_app:$('cross-app').checked,ocr:$('ocr').checked,scroll_browse:$('scroll').checked,claim_rewards:$('claim').checked};}
 function defaultInstanceId(){const instances=state?.app_instances||[];return (instances.find(i=>i.user_id===0&&i.package===state?.catalog?.find(app=>app.id===state.app)?.package)||instances.find(i=>i.user_id===0)||instances[0])?.id||'';}
+function instanceProblem(){
+  if(!state?.connected||!state.catalog?.some(app=>app.activities?.length))return '';
+  if(!(state.app_instances||[]).length)return '未检测到当前应用的可执行实例。请刷新实例，并检查应用安装情况、USB 调试与安全设置权限。';
+  if(!state.selected_instance||!state.app_instances.some(item=>item.id===state.selected_instance))return '原选择的应用实例已失效。请打开应用分身，手动选择要执行的实例；不会自动切换到其他账号。';
+  return '';
+}
 function showSettings(name){
   settingsSection=name;
   for(const button of document.querySelectorAll('[data-settings-toggle]')){const active=button.dataset.settingsToggle===name;button.classList.toggle('is-open',active);button.setAttribute('aria-expanded',String(active));}
@@ -36,10 +42,11 @@ async function action(name, extra={}){
   if(!state&&name!=='shutdown'){toast('正在读取当前设备，请稍候');return;}
   if(['run','connect','configure'].includes(name)&&!validateSettingsForm())return;
   if(name==='run'&&!config().enabled_task_kinds.length){showSettings('tasks');toast('请至少选择一种本轮任务类型');return;}
+  if(name==='run'&&instanceProblem()){toast(instanceProblem());return;}
   requesting=true;
   try{const payload={app:state?.app,activity:state?.activity,...extra,auto_open:document.querySelector('input[name=mode]:checked').value==='auto'};
     if(['run','connect','configure'].includes(name))payload.config=config();
-    if(name==='run'){payload.activities=MiaoActivities.plan;if(!payload.activities.length)throw new Error('请先勾选至少一个活动');const queued=clonesEnabled&&$('sequence-instances').checked;if(payload.activities.length===1){payload.instance_ids=queued?queueOrder:[clonesEnabled?$('app-instance').value:defaultInstanceId()];if(!payload.instance_ids.length||payload.instance_ids.some(id=>!id))throw new Error('请至少选择一个应用实例');}if(queued)payload.auto_open=true;}
+    if(name==='run'){payload.activities=MiaoActivities.plan;if(!payload.activities.length)throw new Error('请先勾选至少一个活动');const queued=clonesEnabled&&$('sequence-instances').checked;if(payload.activities.length===1){payload.instance_ids=queued?queueOrder:[state.selected_instance];if(!payload.instance_ids.length||payload.instance_ids.some(id=>!id||!state.app_instances.some(item=>item.id===id)))throw new Error('所选应用实例已失效，请重新选择');}if(queued)payload.auto_open=true;}
     if(name==='connect'){payload.device_type=$('device-type').value;payload.serial=$('serial').value.trim();}
     const response=await fetch(MiaoAPI.url('/api/'+name),{method:'POST',headers:{'Content-Type':'application/json','X-Miao-Token':token},body:JSON.stringify(payload)});
     const result=await response.json();if(!response.ok)throw new Error(result.error||'操作失败');if(name==='shutdown'){toast('助手已退出，可以关闭此页面');return;}if(name==='configure')toast('执行设置已应用');await poll();
@@ -57,10 +64,10 @@ async function discover(){
 function renderInstances(busy){
   const instances=state.app_instances||[], hash=JSON.stringify(instances);
   $('toggle-instances').disabled=busy;$('instance-panel').hidden=!clonesEnabled;$('toggle-instances').setAttribute('aria-expanded',String(clonesEnabled));$('toggle-instances').classList.toggle('is-open',clonesEnabled);
-  const target=instances.find(i=>i.id===(busy||clonesEnabled?state.selected_instance:defaultInstanceId()));
+  const target=instances.find(i=>i.id===state.selected_instance);
   const queue=state.instance_queue||[],position=queue.findIndex(i=>i.status==='running');
-  $('instance-summary').textContent=(target?(busy?'执行中：':clonesEnabled?'已选：':'默认：')+target.label:'默认使用主应用')+(busy&&queue.length>1?` · 队列${position+1}/${queue.length}`:'');
-  if(hash!==instanceHash){instanceHash=hash;const select=$('app-instance');select.replaceChildren();for(const item of instances){const option=el('option','',item.label);option.value=item.id;select.append(option);}if(!instances.length){select.append(el('option','','未发现可用应用实例'));}queueOrder=queueOrder.filter(id=>instances.some(i=>i.id===id));if(!queueOrder.length&&instances.length)queueOrder=[state.selected_instance||instances[0].id];renderInstanceOptions(busy);}
+  $('instance-summary').textContent=(target?(busy?'执行中：':'已选：')+target.label:state.connected?'应用实例尚未确认':'连接后确认应用实例')+(busy&&queue.length>1?` · 队列${position+1}/${queue.length}`:'');
+  if(hash!==instanceHash){instanceHash=hash;const select=$('app-instance');select.replaceChildren();const placeholder=el('option','',instances.length?'请选择要执行的应用实例':'未发现可用应用实例');placeholder.value='';placeholder.disabled=true;select.append(placeholder);for(const item of instances){const option=el('option','',item.label);option.value=item.id;select.append(option);}queueOrder=queueOrder.filter(id=>instances.some(i=>i.id===id));if(!queueOrder.length&&instances.some(item=>item.id===state.selected_instance))queueOrder=[state.selected_instance];renderInstanceOptions(busy);}
   $('app-instance').value=state.selected_instance||'';$('app-instance').disabled=busy||!instances.length;
   $('refresh-instances').disabled=busy||!state.connected;$('sequence-instances').disabled=busy||instances.length<2;
   $('instance-hint').textContent=(state.instance_warnings||[]).join('；')||'运行期间锁定所选实例；统计、失败记录与不可用应用分别保存，不读取账号信息。';
@@ -102,12 +109,13 @@ function render(){for(const a of document.querySelectorAll('a[href^="/api/report
   $('connect').disabled=busy||!hasActivities||!hasPlan;$('connect').textContent=state.connected?'重新连接 ↗':'连接设备 ↗';
   for(const id of ['run','capture'])$(id).disabled=!state.connected||busy;
   $('run').textContent=busy?'正在处理…':MiaoActivities.plan.length>1?'▶ 执行活动流水线':clonesEnabled&&$('sequence-instances').checked?'▶ 按顺序执行':'▶ 开始自动执行';if(!(state.app_instances||[]).length||!hasActivities||!hasPlan||MiaoActivities.locked)$('run').disabled=true;
+  const instanceIssue=instanceProblem();$('instance-attention').hidden=!instanceIssue;$('instance-attention-message').textContent=instanceIssue;$('refresh-instances-visible').disabled=busy||requesting||!state.connected;$('choose-instance-visible').hidden=!(state.app_instances||[]).length;$('choose-instance-visible').disabled=busy||requesting;if(instanceIssue)$('run').disabled=true;
   $('pause').disabled=!running&&!paused;$('pause').textContent=paused?'▶ 继续':'Ⅱ 暂停';$('stop').disabled=!busy||state.status==='stopping';
   $('device-type').disabled=busy;$('serial').disabled=busy;
   $('save-settings').disabled=busy;
   $('phase-label').textContent=phaseLabels[state.phase]||'READY WHEN YOU ARE';
   $('execution-title').textContent=paused?'休息一下，进度还在':state.current_task||({disconnected:'准备好，再出发',ready:'手机已就绪',finished:'本轮任务已处理',needs_attention:'这一步，需要你来处理',error:'连接或执行遇到问题',stopped:'已停止执行'}[state.status]||statusLabels[state.status]);
-  $('message').textContent=hasActivities?state.message:'框架已就绪，请打开活动中心安装所需活动，勾选后连接设备。';$('countdown').hidden=!running||!state.remaining;$('remaining').textContent=state.remaining||0;
+  $('message').textContent=hasActivities?state.message:'框架已就绪，请打开活动中心从 GitHub 下载所需活动源码，勾选后连接设备。';$('countdown').hidden=!running||!state.remaining;$('remaining').textContent=state.remaining||0;
   document.querySelector('.execution-card').classList.toggle('is-active',running);document.querySelector('.execution-card').classList.toggle('needs-attention',['error','needs_attention'].includes(state.status));
   const round=state.stats||{},daily=state.daily,stats=daily?.stats||{};
   for(const [id,key] of [['completed','completed'],['claims','claims'],['cross','cross_app'],['skipped','skipped'],['failed','failed']])$('stat-'+id).textContent=stats[key]||0;
@@ -152,11 +160,13 @@ window.addEventListener('pagehide',()=>{pageActive=false;clearTimeout(pollTimer)
 window.addEventListener('pageshow',event=>{if(event.persisted){pageActive=true;pollLoop();previewLoop();}});
 for(const id of ['connect','run','capture','stop'])$(id).addEventListener('click',()=>action(id));
 for(const button of document.querySelectorAll('[data-settings-toggle]'))button.addEventListener('click',()=>showSettings(settingsSection===button.dataset.settingsToggle?null:button.dataset.settingsToggle));
-$('toggle-instances').addEventListener('click',()=>{clonesEnabled=!clonesEnabled;if(!clonesEnabled){$('sequence-instances').checked=false;$('instance-options').hidden=true;queueOrder=defaultInstanceId()?[defaultInstanceId()]:[];renderInstanceOptions();const busy=state&&(busyStates.has(state.status)||state.busy);if(state?.connected&&!busy&&state.selected_instance!==defaultInstanceId())action('select_instance',{instance_id:defaultInstanceId()});}if(state)render();else $('instance-panel').hidden=!clonesEnabled;});
+$('toggle-instances').addEventListener('click',()=>{clonesEnabled=!clonesEnabled;if(!clonesEnabled){$('sequence-instances').checked=false;$('instance-options').hidden=true;queueOrder=state?.selected_instance&&defaultInstanceId()?[defaultInstanceId()]:[];renderInstanceOptions();const busy=state&&(busyStates.has(state.status)||state.busy);if(state?.connected&&!busy&&state.selected_instance&&state.selected_instance!==defaultInstanceId())action('select_instance',{instance_id:defaultInstanceId()});}if(state)render();else $('instance-panel').hidden=!clonesEnabled;});
 $('settings-form').addEventListener('input',()=>{for(const name of ['distance','duration','interval','burst'])$('swipe-'+name+'-max').setCustomValidity('');updateSettingsSummary();});
 for(const input of document.querySelectorAll('input[name=mode]'))input.addEventListener('change',updateSettingsSummary);
 $('app-instance').addEventListener('change',()=>{if(!$('sequence-instances').checked){queueOrder=[$('app-instance').value];renderInstanceOptions();}action('select_instance',{instance_id:$('app-instance').value});});
 $('refresh-instances').addEventListener('click',()=>action('refresh_instances'));
+$('refresh-instances-visible').addEventListener('click',()=>action('refresh_instances'));
+$('choose-instance-visible').addEventListener('click',()=>{if(!state||state.busy||state.plugins_busy)return;clonesEnabled=true;render();$('instance-panel').scrollIntoView({behavior:'smooth',block:'center'});$('app-instance').focus();});
 $('sequence-instances').addEventListener('change',()=>{$('instance-options').hidden=!$('sequence-instances').checked;if($('sequence-instances').checked){document.querySelector('input[name=mode][value=auto]').checked=true;}renderInstanceOptions();if(state)render();});
 $('pause').addEventListener('click',()=>action(state?.status==='paused'?'resume':'pause'));
 $('save-settings').addEventListener('click',()=>action('configure'));
@@ -172,7 +182,7 @@ window.addEventListener('miaotask:device-selected',()=>{
   if(state?.workspace_id)deviceUIPreferences.set(state.workspace_id,{clonesEnabled,queueOrder:queueOrder.slice(),sequence:$('sequence-instances').checked,mode:document.querySelector('input[name=mode]:checked').value});
   initialized=false;taskHash=logsHash=instanceHash='';clonesEnabled=false;queueOrder=[];
   previewReady=false;lastPreviewSequence=null;$('phone-image').parentElement.style.aspectRatio='9/20';$('phone-image').closest('.phone').classList.remove('wide-screen');$('preview-time').textContent='—';$('phone-image').src='';$('phone-image').hidden=true;$('phone-placeholder').hidden=false;
-  state=null;for(const id of ['run','connect','capture','pause','stop'])$(id).disabled=true;$('serial').value='';$('device-hint').textContent='请连接当前工作区的设备';poll().then(poll);
+  state=null;for(const id of ['run','connect','capture','pause','stop','refresh-instances-visible','choose-instance-visible'])$(id).disabled=true;$('instance-attention').hidden=true;$('serial').value='';$('device-hint').textContent='请连接当前工作区的设备';poll().then(poll);
 });
 window.addEventListener('miaotask:batch',async event=>{
   if(event.detail.action==='run'&&!validateSettingsForm())return;
