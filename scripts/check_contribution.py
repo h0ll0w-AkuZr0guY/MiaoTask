@@ -1,4 +1,4 @@
-"""Validate PR metadata and contribution records without credentials or write access."""
+"""Protect release records and report helpful PR metadata suggestions."""
 import argparse
 from collections import Counter
 import json
@@ -15,13 +15,46 @@ ROOT = Path(__file__).resolve().parents[1]
 TITLE = re.compile(r'^(feat|fix|refactor|docs|test|chore)\([a-zA-Z0-9_.-]+\):\s+\S.+$')
 PROTECTED = {'version.json', 'docs/RELEASES.md', '.github/release-plan.json'}
 PREPARATION_FILES = PROTECTED | {'docs/UNRELEASED.md'}
+PENDING_MARKER = '## 待发布\n'
 
 
-def validate(event, base_files, head_files, changed, root=ROOT):
+def pending_lines(text):
+    """Keep every existing nonblank contribution, even if its style is imperfect."""
+    text = text.replace('\r\n', '\n')
+    if text.count(PENDING_MARKER) != 1:
+        raise ValueError('UNRELEASED.md must contain exactly one pending section')
+    return Counter(line.strip() for line in text.split(PENDING_MARKER, 1)[1].splitlines()
+                   if line.strip())
+
+
+def pending_warnings(text):
+    """Formatting helps the maintainer's rollup, but does not block a code PR."""
+    pending_lines(text)
+    try:
+        pending_entries(text.replace('\r\n', '\n'))
+    except ValueError:
+        return ['Contribution style: prefer one-line * 【新增/优化/修复/文档/维护】description entries in docs/UNRELEASED.md.']
+    return []
+
+
+def validate(event, base_files, head_files, changed, root=ROOT, *, metadata_advisory=False, warnings=None):
+    """Default strict mode remains available; CI opts into advisory prose checks.
+
+    Release identity, protected files and preservation are always mandatory.
+    ``warnings`` is an optional list populated with nonblocking suggestions.
+    """
     pr = event.get('pull_request', {})
     title, body = pr.get('title', ''), pr.get('body') or ''
-    if not TITLE.fullmatch(title):
-        raise ValueError('PR title must use type(scope): short description')
+    suggestions = warnings if warnings is not None else []
+
+    def suggest(message):
+        if metadata_advisory:
+            suggestions.append(message)
+        else:
+            raise ValueError(message)
+
+    if not isinstance(title, str) or not isinstance(body, str):
+        raise ValueError('Expected a PR title and body as text')
     owner = pr.get('base', {}).get('repo', {}).get('owner', {}).get('login')
     author = pr.get('user', {}).get('login')
     same_repository = pr.get('head', {}).get('repo', {}).get('full_name') == pr.get('base', {}).get('repo', {}).get('full_name')
@@ -43,33 +76,47 @@ def validate(event, base_files, head_files, changed, root=ROOT):
             protected_changes.remove('docs/RELEASES.md')
     if protected_changes:
         raise ValueError('Ordinary PRs must not change versions, published history or release plans')
+    if not TITLE.fullmatch(title):
+        suggest('PR title: prefer type(scope): short description; a clear equivalent is welcome.')
     for heading in ('## 问题与结果', '## 影响与兼容', '## 实际验证'):
         if heading not in body:
-            raise ValueError('Use the PR template: problem/result, compatibility and actual validation')
-    before = Counter(pending_entries(base_files['docs/UNRELEASED.md']))
-    after = Counter(pending_entries(head_files['docs/UNRELEASED.md']))
+            suggest('PR context: describe the problem/result, compatibility and actual validation; template headings are optional.')
+            break
+    if metadata_advisory:
+        before = pending_lines(base_files['docs/UNRELEASED.md'])
+        after = pending_lines(head_files['docs/UNRELEASED.md'])
+        suggestions.extend(pending_warnings(head_files['docs/UNRELEASED.md']))
+    else:
+        before = Counter(pending_entries(base_files['docs/UNRELEASED.md']))
+        after = Counter(pending_entries(head_files['docs/UNRELEASED.md']))
     if before - after:
         raise ValueError('Keep existing pending contributions; append your own entry')
     if not after - before:
-        raise ValueError('Append a contribution entry to docs/UNRELEASED.md')
+        suggest('Contribution record: consider appending a short entry to docs/UNRELEASED.md; the maintainer can add it before release.')
     return 'ordinary-contribution'
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--event', type=Path, required=True)
+    parser.add_argument('--advisory-metadata', action='store_true',
+                        help='Warn about prose/entry style; keep release and contribution-preservation protections mandatory')
     args = parser.parse_args()
     try:
         event = json.loads(args.event.read_text(encoding='utf-8'))
         pr = event['pull_request']
         base, head = pr['base']['sha'], pr['head']['sha']
-        if not all(re.fullmatch(r'[0-9a-f]{40}', value) for value in (base, head)):
+        if not all(isinstance(value, str) and re.fullmatch(r'[0-9a-f]{40}', value) for value in (base, head)):
             raise ValueError('Expected exact PR commit SHAs')
         changed = subprocess.check_output(['git', 'diff', '--name-only', base + '...' + head], cwd=ROOT, text=True).splitlines()
         names = ('version.json', 'docs/UNRELEASED.md', 'docs/RELEASES.md')
         base_files = {name: subprocess.check_output(['git', 'show', base + ':' + name], cwd=ROOT).decode('utf-8-sig') for name in names}
-        head_files = {name: (ROOT / name).read_text(encoding='utf-8-sig') for name in names}
-        print(validate(event, base_files, head_files, changed))
+        head_files = {name: subprocess.check_output(['git', 'show', head + ':' + name], cwd=ROOT).decode('utf-8-sig') for name in names}
+        warnings = []
+        print(validate(event, base_files, head_files, changed,
+                       metadata_advisory=args.advisory_metadata, warnings=warnings))
+        for warning in warnings:
+            print('::warning::' + warning)
     except (ValueError, KeyError, OSError, subprocess.CalledProcessError) as exc:
         parser.error(str(exc))
 

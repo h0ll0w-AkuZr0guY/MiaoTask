@@ -1,4 +1,6 @@
-<!-- 标题使用 type(scope): 简短说明。普通 PR 不修改版本、不构建或发布 Release。 -->
+<!-- 建议标题使用 type(scope): 简短说明。可自由调整分节与语言，说明改动及验证即可。
+普通 PR 不改版本、发布历史或发布计划，不删除已有待发布贡献，不构建 Release。
+本地预检：python scripts/check_project.py。无需真机或打包。 -->
 
 ## 问题与结果
 
@@ -16,7 +18,7 @@
 
 * [ ] 已阅读 AGENTS.md、docs/ARCHITECTURE.md、REUSABLE_INTERFACES.md 和 CONTRIBUTING.md。
 * [ ] 已按影响更新使用、架构或公共接口文档；公共组件变化与接口手册同步。
-* [ ] 已在 docs/UNRELEASED.md 追加简短贡献条目，保留其他条目。
+* [ ] 已在 docs/UNRELEASED.md 追加简短贡献条目，或请维护者协助补充；保留其他条目。
 * [ ] 已说明验证结果与限制，未删除或削弱既有回归断言。
 * [ ] 不含设备标识、地址、账号、配对码、私钥、原始截图、日志、环境和构建产物。
 * [ ] 未夹带版本、已发布历史、标签或 Release 修改。

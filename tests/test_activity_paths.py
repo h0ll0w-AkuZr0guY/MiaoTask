@@ -14,7 +14,7 @@ from backend.core.registry import Registry
 class ActivityPathsTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.env = patch.dict(os.environ, {'LOCALAPPDATA': str(self.root / 'private')})
         self.env.start()
         self.saved = {key: os.environ.pop(key, None) for key in ('MIAO_DATA_DIR', 'MIAO_ACTIVITIES_DIR')}

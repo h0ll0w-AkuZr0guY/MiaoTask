@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from scripts.check_contribution import validate, PREPARATION_FILES
+from scripts.check_contribution import validate, pending_warnings, PREPARATION_FILES
 from scripts.prepare_release import prepare
 
 
@@ -42,6 +42,41 @@ class ContributionChecksTests(unittest.TestCase):
                            head={'repo': {'full_name': 'contributor/MiaoTask'}, 'ref': 'codex/release-prepare-123'})
         with self.assertRaises(ValueError):
             validate(event, self.base, self.head, PREPARATION_FILES)
+
+    def test_advisory_mode_accepts_equivalent_titles_context_and_missing_entry(self):
+        warnings = []
+        result = validate(self.event(title='Improve task recovery', body='Issue #7; offline regression passed'),
+                          self.base, self.base, ['backend/core/models.py'],
+                          metadata_advisory=True, warnings=warnings)
+        self.assertEqual(result, 'ordinary-contribution')
+        self.assertEqual(len(warnings), 3)
+
+    def test_advisory_entry_style_does_not_block_but_existing_entries_are_preserved(self):
+        head = {'docs/UNRELEASED.md': self.base['docs/UNRELEASED.md'] + '- Improve task recovery (#7)\n'}
+        warnings = []
+        self.assertEqual(validate(self.event(), self.base, head, ['docs/UNRELEASED.md'],
+                                  metadata_advisory=True, warnings=warnings), 'ordinary-contribution')
+        self.assertEqual(len(warnings), 1)
+        # Once merged, even an imperfectly formatted entry belongs to its author.
+        with self.assertRaisesRegex(ValueError, 'Keep existing'):
+            validate(self.event(), head, self.head, ['docs/UNRELEASED.md'], metadata_advisory=True)
+
+    def test_advisory_mode_never_softens_release_or_preservation_rules(self):
+        for path in ('version.json', 'docs/RELEASES.md', '.github/release-plan.json'):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                validate(self.event(title='Any clear title', body=''), self.base, self.head, [path], metadata_advisory=True)
+        with self.assertRaisesRegex(ValueError, 'Keep existing'):
+            validate(self.event(), self.base, {'docs/UNRELEASED.md': '## 待发布\n'}, [], metadata_advisory=True)
+        with self.assertRaises(ValueError):
+            validate(self.event(title='chore(release): prepare MiaoTask-v0.1.1',
+                                head={'repo': {'full_name': 'contributor/MiaoTask'}, 'ref': 'codex/release-prepare-123'}),
+                     self.base, self.head, PREPARATION_FILES, metadata_advisory=True)
+
+    def test_pending_section_structure_stays_required_and_newlines_are_portable(self):
+        for malformed in ('No pending section', '## 待发布\n\n## 待发布\n'):
+            with self.subTest(text=malformed), self.assertRaises(ValueError):
+                pending_warnings(malformed)
+        self.assertEqual(pending_warnings('## 待发布\r\n\r\n* 【修复】Portable entry\r\n'), [])
 
     def test_repository_rename_only_can_correct_historical_links(self):
         old = 'https://github.com/h0ll0w-AkuZr0guY/' + 'tmall-miao-double11/releases'

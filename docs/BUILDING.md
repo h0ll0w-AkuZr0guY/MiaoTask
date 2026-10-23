@@ -35,13 +35,13 @@ GitHub PR CI 与维护者评审负责合入质量，具体活动的入口、任�
 
 ## 验证修改
 
-开发环境运行：
+开发环境运行统一预检，GitHub PR CI 使用同一个入口：
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -q
-.\.venv\Scripts\python.exe -m compileall -q main.py backend scripts tests
-Get-ChildItem frontend/js -Filter *.js -Recurse | ForEach-Object { node --check $_.FullName; if ($LASTEXITCODE -ne 0) { throw 'JavaScript check failed' } }
+.\.venv\Scripts\python.exe scripts/check_project.py
 ```
+
+该命令检查当前公开源码、待发布区结构，执行全部回归和 Python / JavaScript 语法检查；不会构建 exe 或创建 Release。修改尚未暂存也可检查，运行前按开发说明安装依赖与 Node.js。
 
 用例覆盖解析、搜索、返回、重试、领奖、分身、日记录、连接、坐标、多设备和活动安装；涉及界面交互再在浏览器核对。行为变化补回归，不删除或削弱原有断言；真机结果、模拟用例和冻结 exe 自检分开描述。设备码、地址、配对码和原始截图不提交。
 
@@ -86,7 +86,7 @@ python -m venv build/release-env
 
 ## GitHub 检查与可选云构建
 
-仓库的普通 PR 自动运行只读 `check`，校验标题、正文、贡献条目、公开文件和回归。main 要求维护者/CODEOWNERS 评审、必需检查和已解决对话；唯一维护者的管理员旁路保留（`enforce_admins=false`）。CI 通过后仍需本人审核，不自动合并。
+仓库的普通 PR 自动运行只读 `check`，复用本地预检。公开文件、代码测试、待发布区结构与发布文件保护属于必须通过的检查；标题、正文模板和新增贡献条目等写作要求给出提示，供维护者评审时补齐。只修改 PR 文字不重跑完整检查。main 要求维护者/CODEOWNERS 评审、必需检查和已解决对话；唯一维护者的管理员旁路保留（`enforce_admins=false`）。CI 通过后仍需本人审核，不自动合并。
 
 GitHub 侧保留既有的发布准备、Windows 构建与审批发布工作流，作为维护者可选方式，与客户端源码活动下载无关，也不是本地 Builder 的依赖。只有维护者明确准备版本、满足发布标记并确认后才允许公开，普通 PR、活动更新或推送标签不会直接发布。
 
