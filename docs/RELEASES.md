@@ -2,6 +2,20 @@
 
 按新到旧维护用户可见变化。GitHub Release 正文从对应的 `## 版本号` 小节提取，发布状态以 [Releases](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/releases) 为准。
 
+## MiaoTask-v0.1.3
+
+淘宝日常活动、设备工作台与框架稳定性更新。
+
+* 【新增】淘金币日常、芭芭农场、红包签到与成就中心独立活动，复用浏览、搜索、跳转返回和奖励核验；从活动中心按需获取源码。
+* 【优化】设备连接、改名与无线配对集中到左侧弹窗；分身默认关闭，开启后自动串行执行主应用与全部分身，各设备独立配置。
+* 【新增】本机排行榜按设备应用或活动汇总累计时长、完成、跳过与失败，沿用系统用户目录的日记录。
+* 【优化】紧凑活动计划、公共设置与悬浮预览，提供暖橙、湖蓝、午夜主题；统一弹窗关闭、无线表单与表格对齐。
+* 【修复】限制单驱动 UI RPC 与底层连接等待，补充指定显示屏和实例约束的系统输入，完善搜索、跳转确认与返回核验。
+
+Windows x64 ZIP 默认仅预装双11活动；其他活动在活动中心从源码仓库获取。完整解压后运行 `MiaoTask.exe`，保留 `_internal/` 和 `activities/`。升级前从托盘退出旧助手；日记录保留在系统用户目录。安全认证需本人处理，诊断截图分享前请脱敏。
+
+感谢 [MonsterNone/tmall-miao](https://github.com/MonsterNone/tmall-miao) 提供早期实现思路参考。[使用说明](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/blob/main/docs/USAGE.md) · [项目介绍](https://github.com/h0ll0w-AkuZr0guY/MiaoTask#readme)
+
 ## MiaoTask-v0.1.2
 
 活动源码按需更新、设备流水线与可视化打包。
