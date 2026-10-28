@@ -6,6 +6,8 @@ MiaoTask 采用 [Apache License 2.0](../LICENSE)，项目声明见 [NOTICE](../N
 
 感谢 [MonsterNone/tmall-miao](https://github.com/MonsterNone/tmall-miao) 原作者与贡献者提供的思路参考。
 
+淘宝日常入口与任务组织思路参考了 [czl0325/coin11-tb](https://github.com/czl0325/coin11-tb)（参考项目附 Apache 2.0 许可）。本次未直接引入其任务脚本、固定坐标或自动确认逻辑；具体适配使用 MiaoTask 的活动、读屏、搜索、浏览和记录组件实现。
+
 ## 随包保留的声明
 
 | 内容 | 许可材料与来源 |

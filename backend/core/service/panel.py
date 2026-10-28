@@ -381,6 +381,9 @@ class Controller(ActivityPipeline, PreviewWorker):
                     raise ValueError('配置字段无效')
                 config.update(overrides)
                 validate_config(config)
+                if action in ('configure', 'run') and 'all_instances' in payload:
+                    if not isinstance(payload['all_instances'], bool):
+                        raise ValueError('all_instances 必须为布尔值')
                 defer_instances = planned_run and (len(activities) > 1 or activities[0] != dict(app=self.state['app'], activity=self.state['activity']))
                 if not defer_instances and action in ('run', 'scan', 'select_instance') and isinstance(getattr(self.device, 'app_instances', None), list) and not self.state['app_instances']:
                     raise ValueError('未发现可用应用实例，请安装应用或刷新实例列表后重试')
@@ -399,8 +402,10 @@ class Controller(ActivityPipeline, PreviewWorker):
                         raise ValueError('顺序执行多个实例必须使用自动进入活动')
                     payload = dict(payload, instance_ids=ids)
                 if action == 'configure':
-                    self.update(config=config)
+                    self.update(config=config, **({'all_instances': payload['all_instances']} if 'all_instances' in payload else {}))
                 else:
+                    if action == 'run' and 'all_instances' in payload:
+                        self.state['all_instances'] = payload['all_instances']
                     self.control = RunControl()
                     self.update(config=config, status={'connect': 'connecting', 'wifi_pair': 'connecting', 'wifi_connect': 'connecting', 'scan': 'scanning',
                                                       'run': 'running', 'capture': 'scanning',
@@ -747,6 +752,30 @@ def make_handler(controller, token):
                     self.reply(500, {'error': '无法导出当天诊断记录，请检查本地数据目录是否可写'})
             elif path == '/api/stats':
                 self.reply(200, dict(daily=controller.snapshot()['daily']))
+            elif path == '/api/rankings':
+                from backend.core.storage.rankings import RankingStore
+                query = parse_qs(urlsplit(self.path).query)
+                try:
+                    result = RankingStore(data_dir()).snapshot(
+                        group=query.get('group', ['app'])[0], period=query.get('period', ['all'])[0],
+                        metric=query.get('metric', ['elapsed'])[0], catalog=controller.registry.catalog())
+                    if hasattr(root, 'controllers'):
+                        with root.lock:
+                            active = list(root.controllers.values())
+                    else:
+                        active = [controller]
+                    labels = {}
+                    for item in active:
+                        daily = item.snapshot().get('daily') or {}
+                        if daily.get('device_key'):
+                            labels[daily['device_key']] = getattr(item, 'workspace_label', '当前设备')
+                    for row in result['rows']:
+                        row['device_label'] = labels.get(row['device_key'], '')
+                    self.reply(200, result)
+                except ValueError as exc:
+                    self.reply(400, {'error': str(exc)})
+                except OSError:
+                    self.reply(500, {'error': '读取累计记录失败，请检查本地数据目录'})
             elif path == '/api/tasks':
                 self.reply(200, dict(tasks=controller.snapshot()['tasks']))
             elif path == '/api/apps':
@@ -809,6 +838,9 @@ def make_handler(controller, token):
                         self.reply(201, dict(id=key, devices=root.summaries()))
                     elif path == '/api/workspaces/remove':
                         root.remove(payload.get('id'))
+                        self.reply(200, dict(ok=True, devices=root.summaries()))
+                    elif path == '/api/workspaces/rename':
+                        root.rename(payload.get('id'), payload.get('label'))
                         self.reply(200, dict(ok=True, devices=root.summaries()))
                     elif path == '/api/workspaces/batch':
                         self.reply(202, dict(results=root.batch(payload)))

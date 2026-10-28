@@ -140,7 +140,7 @@ class ScopedDeviceTests(unittest.TestCase):
     def test_other_or_unknown_same_package_user_gets_no_click_swipe_back_or_text(self):
         for user in (0, None):
             for method, args in [('click', (100, 200)), ('swipe', (100, 400, 100, 200)),
-                                 ('go_back', ()), ('input_text', ('abc',)), ('press', ('enter',))]:
+                                 ('go_back', ()), ('input_text', ('abc',)), ('input_ascii', ('phone',)), ('press', ('enter',))]:
                 with self.subTest(user=user, method=method):
                     d = self.phone()
                     d.current_app = Mock(return_value=dict(package=PRIMARY.package, user_id=user))

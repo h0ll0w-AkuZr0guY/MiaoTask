@@ -27,7 +27,7 @@ def serialized(method):
         with getattr(self, 'io_lock', None) or nullcontext():
             mutating = method.__name__ not in {'screenshot', 'current_app', 'dump_hierarchy', 'installed_packages', 'refresh_app_instances'}
             if getattr(self, '_instance_guard_active', False) and method.__name__ in {
-                    'click', 'swipe', 'swipe_ext', 'go_back', 'input_text', 'clear_text', 'press'}:
+                    'click', 'swipe', 'swipe_ext', 'go_back', 'input_text', 'input_ascii', 'clear_text', 'press'}:
                 self.check_instance(self.current_app())
             if mutating:
                 self._screenshot_cache = None
@@ -102,14 +102,14 @@ class DeviceAdapter:
             from backend.core.device.discovery import prepare_android_connection
             self.serial = prepare_android_connection(self.serial, on_status=self.on_status)
             claimed_identity = self.on_resolved(self.device_type, self.serial) if self.on_resolved else None
-            # 设置HTTP超时（模块级常量）
-            u2.HTTP_TIMEOUT = 20
             if self.serial:
                 # serial 可以是 IP:PORT（无线）或设备序列号（USB）
                 logger.info(f'连接安卓设备: {self.serial}')
                 self._device = u2.connect(self.serial)
             else:
                 self._device = u2.connect()
+            from backend.core.device.rpc_limits import install_rpc_limits
+            install_rpc_limits(self._device)
             # 设置默认等待超时
             self._device.settings['wait_timeout'] = 3
             self._device.settings['operation_delay'] = (0.1, 0.1)
@@ -228,6 +228,20 @@ class DeviceAdapter:
                 edit.set_text(text, timeout=.25)
             else:
                 self._device(className='android.widget.EditText', focused=True).set_text(text, timeout=.25)
+
+    @serialized
+    def input_ascii(self, text):
+        """Type a short fixed ASCII token into an already confirmed field.
+
+        Does not install/switch an IME or use the accessibility selector tree.
+        The caller confirms/focuses the field; this adapter rechecks the instance
+        and routes system input to the current logical display.
+        """
+        if self.device_type != 'uiautomator2' or not isinstance(text, str) or not re.fullmatch(r'[A-Za-z0-9]{1,32}',text):
+            raise ValueError('系统输入仅支持 Android 上 1～32 位字母和数字')
+        display = getattr(self,'_display_id',0)
+        args = ['input'] + (['-d',str(display)] if display else []) + ['text',text]
+        self._checked_shell(args, timeout=8)
 
     @serialized
     def clear_text(self):
@@ -383,8 +397,8 @@ class DeviceAdapter:
                     raise RuntimeError(f'无法找到应用启动入口：{package_name}')
                 self._device.app_start(package_name, activity=component.split('/', 1)[1], stop=False)
 
-    def _checked_shell(self, args):
-        result = self._device.shell(args)
+    def _checked_shell(self, args, *, timeout=None):
+        result = self._device.shell(args) if timeout is None else self._device.shell(args, timeout=timeout)
         if result.exit_code != 0 or re.search(r'Error:|Exception|Permission Denial', result.output):
             raise RuntimeError('指定应用实例操作失败：' + result.output.strip()[:300])
         return result.output

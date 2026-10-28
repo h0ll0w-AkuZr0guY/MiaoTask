@@ -48,6 +48,15 @@ class DeviceHub(ActivityCatalogHub):
                 raise ValueError('设备工作区不存在，请重新选择')
             return self.controllers[key]
 
+    def rename(self, key, label):
+        """Change only the workspace caption, including the original workspace."""
+        if not isinstance(key, str) or not key or not isinstance(label, str) or not 1 <= len(label.strip()) <= 60:
+            raise ValueError('设备名称应为 1～60 个字符')
+        with self.lock:
+            if self.closing:
+                raise ValueError('助手正在退出')
+            self.resolve(key).workspace_label = label.strip()
+
     @property
     def thread(self):
         # Compatibility for callers that inspect the original default workspace.
@@ -79,6 +88,7 @@ class DeviceHub(ActivityCatalogHub):
             daily_stats = (state.get('daily') or {}).get('stats') or state['stats']
             result.append(dict(id=key, label=controller.workspace_label, status=state['status'],
                                connected=state['connected'], busy=bool(controller.thread and controller.thread.is_alive()),
+                               connection_issue=bool(state.get('preview_error')),
                                message=state['message'], stats=daily_stats, round_stats=state['stats'], display=state.get('display'),
                                app=state['app'], activity=state['activity']))
         return result

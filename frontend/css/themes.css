@@ -1,0 +1,87 @@
+/* Semantic palettes. Connection colors retain their meaning in every theme. */
+:root,[data-theme=warm]{
+ color-scheme:light;--canvas:#f7f5f1;--surface:#fff;--surface-soft:#faf8f4;--surface-raised:#fffdf9;--field:#fcfbf8;--line:#e7e3db;--line-strong:#d1cbbf;
+ --ink:#29362f;--muted:#6c7b70;--faint:#849085;--accent:#c96335;--accent-soft:#fff0e6;--accent-line:#edbca1;--on-accent:#fff;--success:#287a58;--success-soft:#ecf7ee;--success-line:#a3cdb1;--danger:#b84b50;--danger-soft:#fff1f1;--warning:#946b26;--warning-soft:#fff7df;--execution:#253f35;--execution-ink:#eef8f2;--radius:14px;--shadow:0 10px 30px #594d3210;
+}
+[data-theme=blue]{
+ --canvas:#f2f6fc;--surface:#fff;--surface-soft:#f4f8ff;--surface-raised:#fcfdff;--field:#f9fbff;--line:#dee7f2;--line-strong:#bbcfe5;
+ --ink:#23394f;--muted:#637b93;--faint:#7b90a5;--accent:#286fb6;--accent-soft:#eaf3ff;--accent-line:#a4c8ed;--on-accent:#fff;--success:#267959;--success-soft:#ebf7ef;--success-line:#9dccb1;--danger:#ba4b57;--danger-soft:#fff0f2;--warning:#8d6a26;--warning-soft:#fff7df;--execution:#234263;--execution-ink:#eef5ff;--radius:12px;--shadow:0 10px 30px #3154770d;
+}
+[data-theme=night]{
+ color-scheme:dark;--canvas:#121b27;--surface:#1c2939;--surface-soft:#223247;--surface-raised:#203044;--field:#162434;--line:#34465b;--line-strong:#526b86;
+ --ink:#deebf7;--muted:#aabdd0;--faint:#94abc2;--accent:#8ac4ff;--accent-soft:#233f5c;--accent-line:#527fab;--on-accent:#15293e;--success:#81d5ad;--success-soft:#203f37;--success-line:#487b66;--danger:#ff9ea6;--danger-soft:#492d39;--warning:#e8ca80;--warning-soft:#433d29;--execution:#264461;--execution-ink:#eef6ff;--radius:14px;--shadow:0 10px 35px #0000001c;
+}
+body{background:var(--canvas);color:var(--ink)}
+.topbar,.card,.device-rail{background:var(--surface);border-color:var(--line);box-shadow:var(--shadow)}
+.card,.device-rail{border-radius:var(--radius)}
+.topbar{box-shadow:none}
+.brand-name,h1,.section-heading h2,.device-rail-heading h2,.settings-panel h3,.settings-panel-heading h3,.execution-copy h2{color:var(--ink)}
+.page-heading p,.field-label,label,.dialog-context,.field-hint,.setup-summary,.campaign-name,.task-detail,.task-progress,.round-summary,.elapsed,.stats-context,.stats-context strong,footer,.top-meta,.device-rail-hint,.device-rail-heading>span{color:var(--muted)}
+.eyebrow,.preview-meta,.package-name,.preview-controls label,.preview-controls output,.preview-controls p,.device-batch #batch-selection{color:var(--faint)}
+.text-button,.feature-button,.button:not(.orange):not(.ghost),.application-tab,.task-choice,.filter,.tab{background:var(--surface);color:var(--muted);border-color:var(--line-strong)}
+.text-button:hover:enabled,.feature-button:hover:enabled,.application-tab:hover{background:var(--surface-soft);color:var(--accent);border-color:var(--accent-line)}
+.feature-button.is-open,.feature-button[aria-pressed=true],.application-tab.active,.task-choice.is-selected,.filter.active,.theme-choice[aria-pressed=true]{background:var(--accent-soft);color:var(--accent);border-color:var(--accent-line)}
+.button.orange,.button.dark,.settings-apply{background:var(--accent)!important;color:var(--on-accent)!important;border-color:var(--accent)!important}
+.button.orange:hover:enabled{filter:brightness(1.07)}
+input:not([type=checkbox],[type=radio],[type=range]),select{background:var(--field);color:var(--ink);border-color:var(--line-strong)}
+input::placeholder{color:var(--faint)}
+input[type=checkbox],input[type=radio],input[type=range]{accent-color:var(--accent)}
+input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.section-heading,.setup-divider,.results-header,.filters,.task-row,.preview-meta,.package-name,.preview-controls,.settings-scope,.ranking-toolbar,.ranking-footnote,.device-rail .device-batch{border-color:var(--line)}
+.activity-selection,.advanced-entry,.settings-panel,.wifi-manager,.instance-settings,.activity-folder{background:var(--surface-soft);border-color:var(--line)}
+.activity-selection h3,.pipeline-details>summary,.pipeline-expand-hint,.settings-panel-heading p,.settings-switch small,.swipe-range-row strong,.swipe-range-row small,.help-card p{color:var(--muted)}
+.activity-tile,.activity-pipeline-row,.activity-download-card{background:var(--surface);border-color:var(--line)}
+.activity-tile strong,.activity-download-card h4,.activity-source-group h3,.activity-pipeline-label strong,.task-title,.stat strong{color:var(--ink)}
+.activity-tile.selected{background:var(--accent-soft);border-color:var(--accent-line)}
+.activity-download-card p,.activity-center-note,.activity-incompatible{color:var(--muted)}
+#pipeline-count,.pipeline-number,.activity-source-badge,.application-initial{background:var(--accent-soft);color:var(--accent)}
+.pipeline-details,.pipeline-heading,.setup-summary,.swipe-range-row,.activity-center-note,.activity-source-toolbar{border-color:var(--line)}
+.execution-card{background:var(--execution);border-color:var(--execution)}
+.execution-card .execution-copy h2,.execution-card .execution-copy p,.execution-card .eyebrow,.execution-card .action-hint{color:var(--execution-ink)}
+.execution-card.needs-attention{background:var(--warning-soft);border-color:var(--warning)}
+.execution-card.needs-attention .execution-copy h2,.execution-card.needs-attention .execution-copy p,.execution-card.needs-attention .eyebrow{color:var(--warning)}
+.stats-grid{background:var(--surface);border-color:var(--line)}
+.stat{border-color:var(--line)}.stat>span,.stat small{color:var(--muted)}
+.status-pill{background:var(--surface-soft);border-color:var(--line);color:var(--muted)}
+.status-pill.connected{background:var(--success-soft);border-color:var(--success-line);color:var(--success)}
+.help-card{background:var(--surface-soft);border:1px solid var(--line)}
+.help-card>summary,.help-card h3{color:var(--muted)}.help-card>summary span,.help-line{color:var(--faint);border-color:var(--line)}
+.workbench-dialog,#activity-center,#preview-dialog{background:var(--surface);border-color:var(--line);color:var(--ink)}
+.workbench-dialog h2,.activity-center-heading h2{color:var(--ink)}
+#common-settings .settings-panel,.preview-expanded-body,.segmented{background:var(--surface-soft)}
+.segmented{border-color:var(--line)}.segmented button{color:var(--muted)}.segmented button[aria-pressed=true]{color:var(--accent);background:var(--surface)}
+.ranking-table th{background:var(--surface-soft);color:var(--muted)}.ranking-table th button{color:var(--muted)}.ranking-table th button[aria-pressed=true]{background:var(--accent-soft);color:var(--accent)}
+.ranking-table td{border-color:var(--line)}.ranking-place{color:var(--accent)}.ranking-device small,.ranking-footnote{color:var(--muted)}
+.log-list{background:var(--surface)}.log-text{color:var(--ink)}.log-line time,.log-level{color:var(--faint)}.log-line.WARNING .log-level,.task-status.manual{color:var(--warning)}.log-line.ERROR .log-level,.task-status.failed{color:var(--danger)}
+.task-status.done{background:var(--success-soft);color:var(--success)}.task-type{background:var(--surface-soft);color:var(--muted)}
+.diagnostics-card code{background:var(--surface-soft);color:var(--muted)}.diagnostics-card p,.diagnostics-actions span,.diagnostics-actions a{color:var(--muted)}
+.device-rail .device-tab{background:var(--surface-soft);border-color:var(--line);box-shadow:none}
+.device-rail .device-tab button{background:none;color:var(--ink)}
+.device-rail .device-tab button span{color:var(--muted)}
+.device-rail .device-tab.selected{outline:2px solid var(--accent);outline-offset:1px}
+.device-rail .device-tab[data-connection=connected]{background:var(--success-soft);border-color:var(--success-line)}
+.device-rail .device-tab[data-connection=connected] button span{color:var(--success)}
+.device-rail .device-tab[data-connection=lost]{background:var(--danger-soft);border-color:var(--danger)}
+.device-rail .device-tab[data-connection=lost] button span{color:var(--danger)}
+.device-rail .device-tab[data-connection=connecting]{background:var(--accent-soft);border-color:var(--accent-line)}
+.device-add{background:var(--surface);border-color:var(--line-strong);color:var(--muted)}
+.device-add:hover:enabled{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.danger-button{color:var(--danger);background:var(--danger-soft);border-color:var(--danger)}
+.device-editor-footer{border-top:1px solid var(--line);color:var(--muted)}
+#themes-dialog{width:min(610px,94vw)}
+.theme-choices{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:15px}
+.theme-choice{border:1px solid var(--line);border-radius:12px;background:var(--surface-soft);color:var(--ink);padding:12px;text-align:left;min-width:0}
+.theme-choice strong{font-size:15px;display:block;margin-top:12px}.theme-choice small{font-size:12px;display:block;color:var(--muted);line-height:1.6;margin-top:5px}
+.theme-swatch{height:60px;display:flex;align-items:center;justify-content:center;gap:7px;border-radius:7px;background:var(--swatch-bg)}
+.theme-swatch i{width:20px;height:30px;border-radius:4px;background:var(--swatch-card)}.theme-swatch i:last-child{background:var(--swatch-accent);height:20px}
+.swatch-warm{--swatch-bg:#efe9dc;--swatch-card:#fffdf8;--swatch-accent:#c96335}.swatch-blue{--swatch-bg:#e6effa;--swatch-card:#fff;--swatch-accent:#286fb6}.swatch-night{--swatch-bg:#121b27;--swatch-card:#34465b;--swatch-accent:#8ac4ff}
+@media(max-width:600px){.theme-choices{gap:7px}.theme-choice{padding:9px}.theme-swatch{height:45px;gap:4px}.theme-swatch i{width:14px;height:24px}}
+/* Complete the same palette inside task controls and compact status badges. */
+.task-kind-options label{background:var(--surface);border-color:var(--line);color:var(--muted)}
+.settings-switch>label,.queue-toggle,.queue-toggle span,.instance-heading>label{color:var(--ink)}
+.step{background:var(--accent-soft);border-color:var(--accent-line);color:var(--accent)}
+.application-tab small{background:var(--surface-soft);color:var(--muted)}
+.preview-controls input[type=range]{accent-color:var(--accent)}
+.theme-choice:focus-visible{outline-color:var(--accent)}
+.task-kind-options label:has(input:checked){background:var(--accent-soft);border-color:var(--accent-line);color:var(--accent)}
+#phone-placeholder{background:var(--surface-soft);color:var(--muted)}

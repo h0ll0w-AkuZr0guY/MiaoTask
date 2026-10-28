@@ -22,6 +22,7 @@ function instanceProblem(){
 }
 function showSettings(name){
   settingsSection=name;
+  if(name&&!$('common-settings').open)$('common-settings').showModal();
   for(const button of document.querySelectorAll('[data-settings-toggle]')){const active=button.dataset.settingsToggle===name;button.classList.toggle('is-open',active);button.setAttribute('aria-expanded',String(active));}
   for(const panel of document.querySelectorAll('[data-settings-panel]'))panel.hidden=panel.dataset.settingsPanel!==name;
   $('settings-save').hidden=!name;
@@ -44,10 +45,12 @@ async function action(name, extra={}){
   if(name==='run'&&!config().enabled_task_kinds.length){showSettings('tasks');toast('请至少选择一种本轮任务类型');return;}
   if(name==='run'&&instanceProblem()){toast(instanceProblem());return;}
   requesting=true;
-  try{const payload={app:state?.app,activity:state?.activity,...extra,auto_open:document.querySelector('input[name=mode]:checked').value==='auto'};
+  try{let connection;
+    if(name==='connect'){connection={device_type:$('device-type').value,serial:$('serial').value.trim()};const target=await MiaoDevices.prepare();if(!state||state.workspace_id!==target||MiaoAPI.device!==target)throw new Error('设备已切换，请重新连接');$('serial').value=connection.serial;$('device-type').value=connection.device_type;}
+    const payload={app:state?.app,activity:state?.activity,...extra,auto_open:document.querySelector('input[name=mode]:checked').value==='auto'};
     if(['run','connect','configure'].includes(name))payload.config=config();
-    if(name==='run'){payload.activities=MiaoActivities.plan;if(!payload.activities.length)throw new Error('请先勾选至少一个活动');const queued=clonesEnabled&&$('sequence-instances').checked;if(payload.activities.length===1){payload.instance_ids=queued?queueOrder:[state.selected_instance];if(!payload.instance_ids.length||payload.instance_ids.some(id=>!id||!state.app_instances.some(item=>item.id===id)))throw new Error('所选应用实例已失效，请重新选择');}if(queued)payload.auto_open=true;}
-    if(name==='connect'){payload.device_type=$('device-type').value;payload.serial=$('serial').value.trim();}
+    if(name==='run'){payload.all_instances=clonesEnabled;payload.activities=MiaoActivities.plan;if(!payload.activities.length)throw new Error('请先勾选至少一个活动');const queued=clonesEnabled&&$('sequence-instances').checked;if(payload.activities.length===1){payload.instance_ids=queued?queueOrder:[state.selected_instance];if(!payload.instance_ids.length||payload.instance_ids.some(id=>!id||!state.app_instances.some(item=>item.id===id)))throw new Error('所选应用实例已失效，请重新选择');}if(queued)payload.auto_open=true;}
+    if(name==='connect')Object.assign(payload,connection);
     const response=await fetch(MiaoAPI.url('/api/'+name),{method:'POST',headers:{'Content-Type':'application/json','X-Miao-Token':token},body:JSON.stringify(payload)});
     const result=await response.json();if(!response.ok)throw new Error(result.error||'操作失败');if(name==='shutdown'){toast('助手已退出，可以关闭此页面');return;}if(name==='configure')toast('执行设置已应用');await poll();
   }catch(error){toast(error.message);}finally{requesting=false;}
@@ -63,13 +66,13 @@ async function discover(){
 }
 function renderInstances(busy){
   const instances=state.app_instances||[], hash=JSON.stringify(instances);
-  $('toggle-instances').disabled=busy;$('instance-panel').hidden=!clonesEnabled;$('toggle-instances').setAttribute('aria-expanded',String(clonesEnabled));$('toggle-instances').classList.toggle('is-open',clonesEnabled);
+  $('toggle-instances').disabled=busy;$('instance-panel').hidden=false;$('toggle-instances').setAttribute('aria-expanded',String(clonesEnabled));$('toggle-instances').classList.toggle('is-open',clonesEnabled);
   const target=instances.find(i=>i.id===state.selected_instance);
   const queue=state.instance_queue||[],position=queue.findIndex(i=>i.status==='running');
   $('instance-summary').textContent=(target?(busy?'执行中：':'已选：')+target.label:state.connected?'应用实例尚未确认':'连接后确认应用实例')+(busy&&queue.length>1?` · 队列${position+1}/${queue.length}`:'');
-  if(hash!==instanceHash){instanceHash=hash;const select=$('app-instance');select.replaceChildren();const placeholder=el('option','',instances.length?'请选择要执行的应用实例':'未发现可用应用实例');placeholder.value='';placeholder.disabled=true;select.append(placeholder);for(const item of instances){const option=el('option','',item.label);option.value=item.id;select.append(option);}queueOrder=queueOrder.filter(id=>instances.some(i=>i.id===id));if(!queueOrder.length&&instances.some(item=>item.id===state.selected_instance))queueOrder=[state.selected_instance];renderInstanceOptions(busy);}
+  if(hash!==instanceHash){instanceHash=hash;const select=$('app-instance');select.replaceChildren();const placeholder=el('option','',instances.length?'请选择要执行的应用实例':'未发现可用应用实例');placeholder.value='';placeholder.disabled=true;select.append(placeholder);for(const item of instances){const option=el('option','',item.label);option.value=item.id;select.append(option);}queueOrder=clonesEnabled?instances.map(i=>i.id):queueOrder.filter(id=>instances.some(i=>i.id===id));if(!queueOrder.length&&instances.some(item=>item.id===state.selected_instance))queueOrder=[state.selected_instance];renderInstanceOptions(busy);}
   $('app-instance').value=state.selected_instance||'';$('app-instance').disabled=busy||!instances.length;
-  $('refresh-instances').disabled=busy||!state.connected;$('sequence-instances').disabled=busy||instances.length<2;
+  $('refresh-instances').disabled=busy||!state.connected;$('sequence-instances').disabled=busy;
   $('instance-hint').textContent=(state.instance_warnings||[]).join('；')||'运行期间锁定所选实例；统计、失败记录与不可用应用分别保存，不读取账号信息。';
   for(const element of $('instance-options').querySelectorAll('input,button'))element.disabled=busy||element.dataset.blocked==='true';
   const results=$('instance-results');results.replaceChildren();const labels={pending:'等待执行',running:'执行中',finished:'本轮已结束',stopped:'已停止',needs_attention:'需要处理，队列已暂停',error:'异常，队列已停止'};
@@ -99,8 +102,8 @@ function render(){for(const a of document.querySelectorAll('a[href^="/api/report
   if(!initialized){
     if(state.connected&&state.device?.serial){$('serial').value=state.device.serial;$('device-type').value=state.device.type;$('device-hint').textContent='当前工作区已连接 · '+state.device.serial;}
     const pref=deviceUIPreferences.get(MiaoAPI.device);
-    clonesEnabled=pref?.clonesEnabled??Boolean(state.selected_instance&&state.selected_instance!==defaultInstanceId());
-    queueOrder=pref?.queueOrder?.slice()||[];$('sequence-instances').checked=pref?.sequence||false;
+    clonesEnabled=Boolean(state.all_instances);
+    queueOrder=pref?.queueOrder?.slice()||[];$('sequence-instances').checked=clonesEnabled;
     document.querySelector('input[name=mode][value="'+(pref?.mode||'auto')+'"]').checked=true;
   }
   const busy=busyStates.has(state.status)||state.busy||state.plugins_busy;renderInstances(busy);const running=state.status==='running',paused=state.status==='paused';
@@ -113,6 +116,9 @@ function render(){for(const a of document.querySelectorAll('a[href^="/api/report
   $('pause').disabled=!running&&!paused;$('pause').textContent=paused?'▶ 继续':'Ⅱ 暂停';$('stop').disabled=!busy||state.status==='stopping';
   $('device-type').disabled=busy;$('serial').disabled=busy;
   $('save-settings').disabled=busy;
+  $('common-settings-open').disabled=false;
+  $('settings-device-label').textContent=(state.workspace_label||state.workspaces?.find(item=>item.id===MiaoAPI.device)?.label||'当前设备')+' · 所有已选活动共用';
+  $('current-device-name').textContent=state.workspaces?.find(item=>item.id===MiaoAPI.device)?.label||'当前设备';
   $('phase-label').textContent=phaseLabels[state.phase]||'READY WHEN YOU ARE';
   $('execution-title').textContent=paused?'休息一下，进度还在':state.current_task||({disconnected:'准备好，再出发',ready:'手机已就绪',finished:'本轮任务已处理',needs_attention:'这一步，需要你来处理',error:'连接或执行遇到问题',stopped:'已停止执行'}[state.status]||statusLabels[state.status]);
   $('message').textContent=hasActivities?state.message:'框架已就绪，请打开活动中心从 GitHub 下载所需活动源码，勾选后连接设备。';$('countdown').hidden=!running||!state.remaining;$('remaining').textContent=state.remaining||0;
@@ -130,7 +136,7 @@ function render(){for(const a of document.querySelectorAll('a[href^="/api/report
   $('last-failure').textContent=state.last_failure?`最近记录：${state.last_failure.reason||'执行未通过'}${failureTitle?' · '+failureTitle:''}`:'遇到验证、恢复失败或核验失败时记录现场，原始截图仅保存在本机。';
   $('package-name').textContent=state.package||'设备未连接';$('preview-source').textContent=state.source==='ocr'?'本地 OCR 识别':state.source==='ui'?'页面控件识别':'手机截图预览';
   if(!initialized){const c={...config(),...(state.config||{})};for(const name of ['distance','duration','interval','burst'])for(const bound of ['min','max']){const value=Number(c['swipe_'+name+'_'+bound]);if(Number.isFinite(value))$('swipe-'+name+'-'+bound).value=Number((value*(name==='distance'?100:1)).toFixed(3));}$('browse-seconds').value=c.default_browse_seconds;$('browse-extra').value=c.browse_extra_seconds;$('max-attempts').value=c.max_attempts;$('max-tasks').value=c.max_tasks;$('cross-app').checked=c.allow_cross_app;$('ocr').checked=c.ocr;$('scroll').checked=c.scroll_browse;$('claim').checked=c.claim_rewards;for(const k of ['browse','search','visit','claim'])$('kind-'+k).checked=(c.enabled_task_kinds||['browse','search','visit','claim']).includes(k);initialized=true;}
-  updateSettingsSummary();renderTasks();renderLogs();preview();
+  updateSettingsSummary();renderTasks();renderLogs();preview();MiaoDevices.refresh();
 }
 async function poll(){
   if(pollRequest)return pollRequest;
@@ -138,7 +144,7 @@ async function poll(){
   try{await pollRequest;}finally{pollRequest=null;}
 }
 async function preview(){
-  if(!state?.connected||document.hidden||previewRequest||!pageActive)return;const previewDevice=MiaoAPI.device;
+  if(!state?.connected||document.hidden||$('preview-sidebar').hidden||previewRequest||!pageActive)return;const previewDevice=MiaoAPI.device;
   const sequence=state.image_sequence,updatedAt=state.image_updated_at;
   if(sequence!==undefined&&sequence===lastPreviewSequence)return;
   // The visible image is replaced only after the previous load finishes.
@@ -159,26 +165,31 @@ document.addEventListener('visibilitychange',()=>{clearTimeout(pollTimer);clearT
 window.addEventListener('pagehide',()=>{pageActive=false;clearTimeout(pollTimer);clearTimeout(previewTimer);});
 window.addEventListener('pageshow',event=>{if(event.persisted){pageActive=true;pollLoop();previewLoop();}});
 for(const id of ['connect','run','capture','stop'])$(id).addEventListener('click',()=>action(id));
-for(const button of document.querySelectorAll('[data-settings-toggle]'))button.addEventListener('click',()=>showSettings(settingsSection===button.dataset.settingsToggle?null:button.dataset.settingsToggle));
-$('toggle-instances').addEventListener('click',()=>{clonesEnabled=!clonesEnabled;if(!clonesEnabled){$('sequence-instances').checked=false;$('instance-options').hidden=true;queueOrder=state?.selected_instance&&defaultInstanceId()?[defaultInstanceId()]:[];renderInstanceOptions();const busy=state&&(busyStates.has(state.status)||state.busy);if(state?.connected&&!busy&&state.selected_instance&&state.selected_instance!==defaultInstanceId())action('select_instance',{instance_id:defaultInstanceId()});}if(state)render();else $('instance-panel').hidden=!clonesEnabled;});
+MiaoDialogs.bind($('common-settings'));
+$('common-settings-open').addEventListener('click',()=>showSettings(settingsSection||'tasks'));
+for(const button of document.querySelectorAll('[data-open-settings]'))button.addEventListener('click',()=>{if(state)showSettings(settingsSection||'tasks');});
+$('common-settings-close').addEventListener('click',()=>$('common-settings').close());
+for(const button of document.querySelectorAll('[data-settings-toggle]'))button.addEventListener('click',()=>showSettings(button.dataset.settingsToggle));
+$('toggle-instances').addEventListener('click',()=>{clonesEnabled=!clonesEnabled;if(!clonesEnabled){$('sequence-instances').checked=false;$('instance-options').hidden=true;queueOrder=state?.selected_instance&&defaultInstanceId()?[defaultInstanceId()]:[];renderInstanceOptions();const busy=state&&(busyStates.has(state.status)||state.busy);if(state?.connected&&!busy&&state.selected_instance&&state.selected_instance!==defaultInstanceId())action('select_instance',{instance_id:defaultInstanceId()});}if(state)render();else $('instance-panel').hidden=false;});
 $('settings-form').addEventListener('input',()=>{for(const name of ['distance','duration','interval','burst'])$('swipe-'+name+'-max').setCustomValidity('');updateSettingsSummary();});
 for(const input of document.querySelectorAll('input[name=mode]'))input.addEventListener('change',updateSettingsSummary);
 $('app-instance').addEventListener('change',()=>{if(!$('sequence-instances').checked){queueOrder=[$('app-instance').value];renderInstanceOptions();}action('select_instance',{instance_id:$('app-instance').value});});
 $('refresh-instances').addEventListener('click',()=>action('refresh_instances'));
 $('refresh-instances-visible').addEventListener('click',()=>action('refresh_instances'));
-$('choose-instance-visible').addEventListener('click',()=>{if(!state||state.busy||state.plugins_busy)return;clonesEnabled=true;render();$('instance-panel').scrollIntoView({behavior:'smooth',block:'center'});$('app-instance').focus();});
-$('sequence-instances').addEventListener('change',()=>{$('instance-options').hidden=!$('sequence-instances').checked;if($('sequence-instances').checked){document.querySelector('input[name=mode][value=auto]').checked=true;}renderInstanceOptions();if(state)render();});
+$('choose-instance-visible').addEventListener('click',()=>document.querySelector('.device-tab.selected .device-edit')?.click());
+$('sequence-instances').addEventListener('change',async()=>{clonesEnabled=$('sequence-instances').checked;queueOrder=clonesEnabled?(state?.app_instances||[]).map(i=>i.id):[defaultInstanceId()].filter(Boolean);if(!clonesEnabled&&defaultInstanceId()&&state?.selected_instance!==defaultInstanceId())await action('select_instance',{instance_id:defaultInstanceId()});await action('configure',{all_instances:clonesEnabled});if(state)render();});
 $('pause').addEventListener('click',()=>action(state?.status==='paused'?'resume':'pause'));
 $('save-settings').addEventListener('click',()=>action('configure'));
-$('shutdown').addEventListener('click',()=>action('shutdown'));
-$('discover').addEventListener('click',discover);
+
 $('settings-form').addEventListener('submit',event=>event.preventDefault());
 for(const button of document.querySelectorAll('[data-filter]'))button.addEventListener('click',()=>{filter=button.dataset.filter;document.querySelectorAll('[data-filter]').forEach(b=>b.classList.toggle('active',b===button));if(state)renderTasks(true);});
 for(const name of ['tasks','logs'])$(name+'-tab').addEventListener('click',()=>{for(const other of ['tasks','logs']){const selected=name===other;$(other+'-tab').classList.toggle('active',selected);$(other+'-tab').setAttribute('aria-selected',String(selected));$(other+'-panel').hidden=!selected;}});
 window.addEventListener('miaotask:activity-changed',()=>{initialized=false;taskHash=logsHash=instanceHash='';poll();});
 window.addEventListener('miaotask:plan-changed',()=>{taskHash=instanceHash='';poll();});
+window.addEventListener('miaotask:workspaces-changed',()=>poll());
 window.addEventListener('miaotask:error',event=>toast(event.detail));
 window.addEventListener('miaotask:device-selected',()=>{
+  if($('common-settings').open)$('common-settings').close();$('common-settings-open').disabled=true;
   if(state?.workspace_id)deviceUIPreferences.set(state.workspace_id,{clonesEnabled,queueOrder:queueOrder.slice(),sequence:$('sequence-instances').checked,mode:document.querySelector('input[name=mode]:checked').value});
   initialized=false;taskHash=logsHash=instanceHash='';clonesEnabled=false;queueOrder=[];
   previewReady=false;lastPreviewSequence=null;$('phone-image').parentElement.style.aspectRatio='9/20';$('phone-image').closest('.phone').classList.remove('wide-screen');$('preview-time').textContent='—';$('phone-image').src='';$('phone-image').hidden=true;$('phone-placeholder').hidden=false;

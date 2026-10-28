@@ -21,15 +21,22 @@
       input.addEventListener('keydown',event=>{if(event.key==='Backspace'&&!input.value&&i>0){event.preventDefault();const previous=fields[i-1];previous.value=previous.value.slice(0,-1);previous.focus();}if((event.key==='.'||event.key===':')&&i<4){event.preventDefault();fields[i+1].focus();fields[i+1].select();}if(event.key==='Enter'){event.preventDefault();submit(kind==='pair');}});
       input.addEventListener('paste',event=>{const value=event.clipboardData.getData('text').trim();if(/^\d+\.\d+\.\d+\.\d+(?::\d+)?$/.test(value)){event.preventDefault();setAddress(kind,value);}});
     }
-    const advanced=document.createElement('details'),summary=document.createElement('summary');summary.textContent='完整地址 / IPv6';advanced.append(summary,raw,options);container.append(group,advanced);
-    advanced.addEventListener('toggle',()=>{if(advanced.open&&!raw.value.startsWith('[')&&fields.every(field=>field.value)){raw.value=fields.slice(0,4).map(field=>field.value).join('.')+':'+fields[4].value;}});
+    const advanced=document.createElement('div');advanced.append(raw,options);container.append(group,advanced);advanced.hidden=true;
     const choices=document.createElement('div');choices.className='address-choices';container.append(choices);
     raw.addEventListener('change',()=>{const match=/^(\d+)\.(\d+)\.(\d+)\.(\d+):(\d+)$/.exec(raw.value.trim());if(match)fields.forEach((field,i)=>field.value=match[i+1]);});
-    addresses[kind]={raw,fields,advanced,choices};
+    addresses[kind]={raw,fields,advanced,choices,group};
   }
+  function addressMode(full){
+    for(const editor of Object.values(addresses)){
+      if(full&&!editor.advanced.open&&editor.fields.every(field=>field.value))editor.raw.value=editor.fields.slice(0,4).map(field=>field.value).join('.')+':'+editor.fields[4].value;
+      if(!full){const match=/^(\d+)\.(\d+)\.(\d+)\.(\d+):(\d+)$/.exec(editor.raw.value.trim());if(match)editor.fields.forEach((field,i)=>field.value=match[i+1]);}
+      editor.advanced.open=full;editor.advanced.hidden=!full;editor.group.hidden=full;
+    }
+  }
+  byId('wifi-full-address').addEventListener('change',()=>addressMode(byId('wifi-full-address').checked));
   function setAddress(kind,value,ipOnly=false){
     const editor=addresses[kind],match=/^(\d+)\.(\d+)\.(\d+)\.(\d+)(?::(\d+))?$/.exec(value||'');
-    editor.raw.value=ipOnly?(match?match.slice(1,5).join('.')+':'+editor.fields[4].value:(value||'').replace(/:\d+$/,':')):value||'';editor.advanced.open=Boolean(value&&!match);
+    editor.raw.value=ipOnly?(match?match.slice(1,5).join('.')+':'+editor.fields[4].value:(value||'').replace(/:\d+$/,':')):value||'';if(value&&!match){byId('wifi-full-address').checked=true;addressMode(true);}
     editor.fields.forEach((field,i)=>{if(!ipOnly||i<4)field.value=match?.[i+1]||'';});
   }
   function getAddress(kind){
@@ -39,7 +46,7 @@
     return values.slice(0,4).map(Number).join('.')+':'+Number(values[4]);
   }
   function render() {
-    const busy = !snapshot || requesting || snapshot?.busy || ['running','connecting','scanning','paused','stopping'].includes(snapshot?.status);
+    const busy = !snapshot || requesting || window.MiaoDevices?.preparing || !window.MiaoDevices?.creating&&(snapshot?.busy || ['running','connecting','scanning','paused','stopping'].includes(snapshot?.status));
     for (const id of ids) byId(id).disabled = Boolean(busy || id === 'wifi-discover' && finding);
     for(const editor of Object.values(addresses))for(const field of [...editor.fields,...editor.choices.querySelectorAll('button')])field.disabled=Boolean(busy);
   }
@@ -65,9 +72,11 @@
       payload = {connect_address:address};
     }
     } catch(error){status.textContent=error.message;return;}
-    const expectedDevice=MiaoAPI.device;
+    let expectedDevice=MiaoAPI.device;
     requesting = true; render();
     try {
+      const target=await MiaoDevices.prepare();expectedDevice=target;
+      if(MiaoAPI.device!==target||snapshot?.workspace_id!==target)throw new Error('设备已切换，请重新提交连接');
       await MiaoAPI.request('/api/wifi/' + (pair ? 'pair' : 'connect'), {
         method:'POST', token:snapshot?.token, payload, device:expectedDevice,
       });
@@ -112,7 +121,7 @@
     snapshot = event.detail; render();
     if(pendingPair&&snapshot.wifi_paired&&!snapshot.busy&&snapshot.phase!=='connecting'&&snapshot.phase!=='connect_failed'){setAddress('connect',pendingPair,true);pendingPair='';(addresses.connect.advanced.open?addresses.connect.raw:addresses.connect.fields[4]).focus();}
     if (snapshot.phase === 'connecting' || snapshot.phase === 'connect_failed' || snapshot.wifi_paired && snapshot.status === 'disconnected') status.textContent = snapshot.message;
-    if (snapshot.connected && snapshot.status === 'ready' && snapshot.device?.serial?.includes(':')) {
+    if (!window.MiaoDevices?.creating && snapshot.connected && snapshot.status === 'ready' && snapshot.device?.serial?.includes(':')) {
       status.textContent = '无线设备已就绪，可以开始自动执行。日统计与同一手机的 USB 连接共用。';
       if (reflectedSerial !== snapshot.device.serial) {
         reflectedSerial = snapshot.device.serial;
@@ -128,6 +137,11 @@
     snapshot=undefined;reflectedSerial='';pendingPair='';render();byId('wifi-code').value='';
     const saved=drafts.get(MiaoAPI.device);
     for(const [kind,editor] of Object.entries(addresses)){editor.fields.forEach((field,i)=>field.value=saved?.[kind]?.values[i]||'');editor.raw.value=saved?.[kind]?.raw||'';editor.advanced.open=saved?.[kind]?.advanced||false;editor.choices.replaceChildren();}
+    byId('wifi-full-address').checked=Object.values(addresses).some(editor=>editor.advanced.open);addressMode(byId('wifi-full-address').checked);
     status.textContent='请为当前设备工作区填写连接信息。';
+  });
+  window.addEventListener('miaotask:editor-mode',event=>{
+    if(event.detail.creating){byId('wifi-full-address').checked=false;addressMode(false);for(const kind of ['pair','connect'])setAddress(kind,'');byId('wifi-code').value='';pendingPair='';status.textContent='在手机开启无线调试，填写配对或连接地址。';}
+    render();
   });
 })();

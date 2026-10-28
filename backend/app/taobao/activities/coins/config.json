@@ -1,0 +1,25 @@
+{
+  "name": "淘金币日常",
+  "search_keyword": "淘金币",
+  "entry_labels": [
+    "领淘金币",
+    "淘金币"
+  ],
+  "task_entry_labels": [
+    "赚更多金币",
+    "去赚金币",
+    "回日常版",
+    "日常版"
+  ],
+  "daily_page": {
+    "reset_list_scroll": true,
+    "list_markers": "赚金币抵钱|今日累计奖励|金币任务|今日速赚",
+    "landing_markers": "淘金币首页|升级赛车拿钱|赚更多金币|日常版",
+    "inline_claims": [],
+    "reward_rows": true,
+    "browse_counter": "浏览([0-9]{1,2})秒可领",
+    "expand_label": "展开",
+    "expand_context": "更多金币等你赚"
+  },
+  "max_scroll_pages": 4
+}

@@ -1,0 +1,38 @@
+{
+  "name": "红包签到",
+  "search_keyword": "红包签到",
+  "entry_labels": [
+    "红包签到"
+  ],
+  "task_entry_labels": [
+    "赚元宝"
+  ],
+  "daily_page": {
+    "inline_only": true,
+    "main_view_markers": "累计签到奖励|再攒",
+    "list_support_markers": "累计签到奖励|再攒",
+    "remaining_reward_balance": "再攒[●]?([0-9]+)(?:元宝)?提现",
+    "promotion_markers": "送你.{0,10}(?:提现机会|限时折扣|优惠)|无门槛下单|连续打卡必得|累计签到7天|浏览商品\\d+秒",
+    "browse_reward": {
+      "prompt": "浏览商品(\\d+)秒",
+      "button": "去领元宝"
+    },
+    "list_markers": "累计签到奖励|签到[·・]领现金|红包签到[·・]领现金",
+    "landing_markers": "红包签到|累计签到奖励|元宝",
+    "inline_claims": [
+      {
+        "title": "每日红包签到",
+        "action": "立即签到|点击签到",
+        "done": "明日再来|今日已签到|已签到|明天再来|明日签到|已领取今日奖励"
+      },
+      {
+        "title": "签到定时奖励",
+        "action": "\\+?\\d+元宝[，,]?点击领取",
+        "amount_label": "\\+[1-9]\\d*",
+        "exclude_left_labels": "游戏乐园|视频奖励",
+        "done": "\\d{1,2}:\\d{2}:\\d{2}后[可领领取]*"
+      }
+    ]
+  },
+  "max_scroll_pages": 1
+}

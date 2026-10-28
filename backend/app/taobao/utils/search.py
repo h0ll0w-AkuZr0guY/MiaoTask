@@ -2,9 +2,32 @@
 import logging
 import re
 from backend.core.models import TextNode, normalize, bounds_of
+from backend.core.errors import NeedsAttention
 logger = logging.getLogger('backend.execution')
 
 class SearchPolicy:
+    def check_search_context(self, screen, *, live=False):
+        expected = self.origin or self.application.package_for(self.device.device_type)
+        valid = screen.package == expected
+        current = getattr(self.device, 'current_app', None)
+        if valid and live and callable(current):
+            foreground = current()
+            valid = isinstance(foreground, dict) and foreground.get('package') == expected
+        if not valid:
+            reason = '搜索过程中已离开所选应用，已停止输入与提交，请确认前台后重新开始'
+            saved = self.report_failure(reason, phase='searching')
+            raise NeedsAttention(reason, evidence_saved=saved)
+
+    def search_edit(self, screen, edits):
+        return next((e for e in edits if e.get('focused') in (True, 'true')),
+                    edits[0] if len(edits) == 1 else None)
+
+    def search_tree(self):
+        return self.device.dump_hierarchy()
+
+    def fill_search_field(self, query, edit):
+        self.device.input_text(query)
+
     @staticmethod
     def search_results_ready(screen):
         if screen.find(r'^历史搜索$|^搜索发现$|^猜你想搜$|^搜索推荐$'):
@@ -56,6 +79,7 @@ class SearchPolicy:
     def open_home_search(self, screen):
         """Wait for an actual editable field after the homepage search tap."""
         self.guard(screen)
+        self.check_search_context(screen, live=True)
         entry = screen.find(r'^搜索栏$|^搜索框$')
         if not entry:
             return False
@@ -80,12 +104,12 @@ class SearchPolicy:
         def result_ready(value):
             return bool(self.official_activity_entry(value)) if activity_search else self.search_results_ready(value)
 
+        self.check_search_context(screen)
         if result_ready(screen):
             return True
-        tree = screen.tree if screen.tree is not None else self.device.dump_hierarchy()
+        tree = screen.tree if screen.tree is not None else self.search_tree()
         edits, _ = self.search_controls(tree)
-        edit = next((e for e in edits if e.get('focused') in (True, 'true')),
-                    edits[0] if len(edits) == 1 else None)
+        edit = self.search_edit(screen, edits)
         if not edit:
             logger.warning('没有可确认的输入框，不开始浏览计时')
             self.report_failure('搜索页没有可确认的输入框', phase='searching')
@@ -95,8 +119,9 @@ class SearchPolicy:
             if self.device.device_type == 'hmdriver2':
                 self.click(TextNode('', bounds_of(edit.get('bounds', edit.get('rect')))))
             self.control.check()
+            self.check_search_context(screen, live=True)
             # set_text replaces the field without installing/switching the IME.
-            self.device.input_text(query)
+            self.fill_search_field(query, edit)
             self.control.wait(.2)
         self.update('searching', message='提交搜索并确认活动入口' if activity_search else '提交搜索并确认商品结果页')
         deadline = self.control.now() + self.config['page_timeout']
@@ -107,16 +132,18 @@ class SearchPolicy:
             if self.control.now() >= next_submit and submitted < 3:
                 # Always relocate after input or a failed click; the reward header
                 # can move the button and a landing overlay can replace the page.
-                fresh_tree = self.device.dump_hierarchy()
+                fresh_tree = self.search_tree()
                 _, native_buttons = self.search_controls(fresh_tree)
                 native = [n for n in self._submit_buttons(result, native_buttons)
                           if n in native_buttons]
                 if not native:
                     result = self.read(force_ocr=bool(self.config['ocr']))
                     self.guard(result)
+                    self.check_search_context(result)
                     if result_ready(result):
                         return True
                 buttons = native or self._submit_buttons(result)
+                self.check_search_context(result, live=True)
                 if submitted < 2 and buttons:
                     # Prefer the native position, then the rightmost visible action.
                     button = max(buttons, key=lambda n: n.center[0])
@@ -130,6 +157,7 @@ class SearchPolicy:
             self.control.wait(.35)
             result = self.read(force_ocr=bool(self.config['ocr']))
             self.guard(result)
+            self.check_search_context(result)
             self.check_destination(result)
             if result_ready(result):
                 logger.info('已确认搜索结果中的官方活动入口' if activity_search else '已确认进入搜索结果页，开始浏览计时')

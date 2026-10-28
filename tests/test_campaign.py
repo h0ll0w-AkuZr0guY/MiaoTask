@@ -894,6 +894,46 @@ class RunnerTests(unittest.TestCase):
         r.device.input_text.assert_called_once_with('手机壳')
         r.device.clear_text.assert_not_called()
 
+    def test_search_never_inputs_or_submits_on_another_application(self):
+        r = self.clock_runner()
+        screen, tree = self.search_page('手机壳')
+        screen.package = 'org.example.chat'
+        with self.assertRaisesRegex(NeedsAttention, '已离开所选应用'):
+            r.handle_search(screen)
+        r.device.input_text.assert_not_called()
+        r.device.click.assert_not_called()
+        r.device.press.assert_not_called()
+
+    def test_search_stops_after_first_submit_if_foreground_changes(self):
+        r = self.clock_runner()
+        screen, tree = self.search_page('手机壳')
+        r.device.dump_hierarchy.return_value = tree
+        foreign = Screen([node('发送',1200,2400)],1440,3200,'org.example.chat')
+        r.read = Mock(return_value=foreign)
+        with self.assertRaisesRegex(NeedsAttention, '已离开所选应用'):
+            r.handle_search(screen)
+        self.assertEqual(r.device.click.call_count,1)
+        r.device.input_text.assert_not_called()
+        r.device.press.assert_not_called()
+
+    def test_search_rechecks_foreground_after_slow_hierarchy_before_enter(self):
+        r = self.clock_runner()
+        screen, tree = self.search_page('手机壳')
+        foreground = {'package':r.origin}
+        r.device.current_app.side_effect=lambda:dict(foreground)
+        calls=[]
+        def hierarchy():
+            calls.append(1)
+            if len(calls)==2:
+                foreground['package']='org.example.chat'
+            return tree
+        r.device.dump_hierarchy.side_effect=hierarchy
+        with self.assertRaisesRegex(NeedsAttention, '已离开所选应用'):
+            r.handle_search(screen)
+        r.device.input_text.assert_not_called()
+        r.device.click.assert_not_called()
+        r.device.press.assert_not_called()
+
     def test_existing_fixed_query_is_submitted_without_retyping(self):
         r = self.clock_runner()
         screen, tree = self.search_page('手机壳')
@@ -1108,6 +1148,7 @@ class RunnerTests(unittest.TestCase):
     def runner(self):
         device = Mock()
         device.device_type = 'uiautomator2'
+        device.current_app.return_value = {'package':'com.taobao.taobao'}
         runner = CampaignRunner(device)
         runner.origin = 'com.taobao.taobao'
         runner.control.wait = Mock()

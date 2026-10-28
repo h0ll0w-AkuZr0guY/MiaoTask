@@ -26,6 +26,46 @@ from backend.app.taobao.utils.task_rules import classify
 
 
 class HubTests(unittest.TestCase):
+    def test_automatic_instances_uses_current_list_and_off_clears_remembered_queue(self):
+        hub=DeviceHub();c=hub.resolve();main={'id':'main','user_id':0};clone={'id':'clone','user_id':999}
+        c.update(app_instances=[main,clone],selected_instance='main')
+        plan=[{'app':c.state['app'],'activity':c.state['activity']}]
+        with patch.object(c,'_execute_current_activity') as execute:
+            c._run_activity_pipeline('run',{'activities':plan,'all_instances':True},c.state['config'])
+            self.assertEqual(execute.call_args.args[1]['instance_ids'],['main','clone'])
+            c._run_activity_pipeline('run',{'activities':plan,'all_instances':False},c.state['config'])
+            self.assertEqual(execute.call_args.args[1]['instance_ids'],['main'])
+        c.dispatch('configure',{'all_instances':True})
+        self.assertTrue(c.snapshot()['all_instances'])
+        with self.assertRaises(ValueError):c.dispatch('configure',{'all_instances':'true'})
+
+    def test_rename_changes_only_workspace_label_and_accepts_original_device(self):
+        hub=DeviceHub();second=hub.add('Other');controller=hub.resolve('default')
+        controller.thread=Mock(is_alive=lambda:True)
+        before=controller.snapshot()
+        hub.rename('default','  My tablet  ')
+        self.assertEqual(controller.workspace_label,'My tablet')
+        self.assertEqual(controller.snapshot(),before)
+        self.assertEqual(hub.resolve(second).workspace_label,'Other')
+        for key,label in [('missing','New'),(None,'New'),('default',''),('default',' '*4),('default','a'*61),('default',3)]:
+            with self.assertRaises(ValueError):hub.rename(key,label)
+        hub.closing=True
+        with self.assertRaises(ValueError):hub.rename('default','New')
+
+    def test_preview_failure_status_is_observational_and_recovers_on_image(self):
+        hub=DeviceHub();c=hub.resolve();device=object();c.device=device;c.update(connected=True)
+        before=c.snapshot()['stats']
+        for _ in range(2):c._preview_failed(device)
+        self.assertFalse(hub.summaries()[0]['connection_issue'])
+        c._preview_failed(device)
+        self.assertTrue(hub.summaries()[0]['connection_issue'])
+        self.assertTrue(c.snapshot()['connected'])
+        self.assertEqual(c.snapshot()['stats'],before)
+        c.on_image(Image.new('RGB',(30,60)))
+        self.assertFalse(hub.summaries()[0]['connection_issue'])
+        for _ in range(3):c._preview_failed(object())
+        self.assertFalse(hub.summaries()[0]['connection_issue'])
+
     def test_three_workers_overlap_and_stopping_one_does_not_stop_others(self):
         hub=DeviceHub();keys=['default',hub.add('second'),hub.add('third')]
         entered=threading.Barrier(4);release=threading.Event()
@@ -105,6 +145,9 @@ class HubTests(unittest.TestCase):
         def post(path,body,token='test-token'):
             return urlopen(Request(base+path,data=json.dumps(body).encode(),headers={'Content-Type':'application/json','X-Miao-Token':token}))
         try:
+            with post('/api/workspaces/rename',{'id':'default','label':'Renamed original'}):pass
+            self.assertEqual(hub.resolve('default').workspace_label,'Renamed original')
+            self.assertEqual(hub.resolve(second).workspace_label,'second')
             with post('/api/configure?device='+second,{'config':{'max_tasks':3}}):pass
             self.assertEqual(hub.resolve(second).state['config']['max_tasks'],3)
             self.assertEqual(hub.resolve('default').state['config']['max_tasks'],80)

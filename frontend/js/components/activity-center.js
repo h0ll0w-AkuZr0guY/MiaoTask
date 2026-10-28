@@ -3,6 +3,7 @@
   const $=id=>document.getElementById(id), dialog=$('activity-center');
   const node=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
   let snapshot=null, catalog=null, loading=false, polling=null, operation=false, listSignature='';
+  MiaoDialogs.bind(dialog);
   const message=value=>{$('activity-center-message').textContent=value;};
   const operationText=value=>typeof value==='string'?value:value?.message||'';
   function render(){
@@ -16,8 +17,14 @@
     const signature=JSON.stringify([catalog?.catalog,catalog?.installed,locked,loading&&!catalog]);
     if(signature===listSignature)return;listSignature=signature;
     const list=$('activity-center-list');list.replaceChildren();
-    for(const app of catalog?.catalog||[]){const group=node('section','activity-source-group');group.append(node('h3','',app.label));const cards=node('div','activity-center-grid');
+    const groups=new Map(),visible=new Set();
+    function groupFor(id,label){
+      if(!groups.has(id)){const group=node('section','activity-source-group'),cards=node('div','activity-center-grid');group.append(node('h3','',label),cards);list.append(group);groups.set(id,cards);}
+      return groups.get(id);
+    }
+    for(const app of catalog?.catalog||[]){const cards=groupFor(app.id,app.label);
       for(const activity of app.activities||[]){
+        visible.add(app.id+'/'+activity.id);
         const installed=(catalog.installed||[]).find(item=>item.app===app.id&&item.activity===activity.id);
         const available=activity.revision||activity.source_commit?.slice(0,10)||activity.version;
         const local=activity.installed_revision||activity.installed_source_commit?.slice(0,10)||installed?.source_commit?.slice(0,10)||activity.installed_version;
@@ -26,11 +33,9 @@
         const actions=node('div','activity-download-actions');const button=node('button','feature-button',activity.installed?(newer?'更新源码':'重新安装'):'下载活动源码');button.type='button';button.disabled=locked||!activity.compatible;button.addEventListener('click',()=>operate('install',app.id,activity.id,activity.source_commit));actions.append(button);
         if(activity.installed){const remove=node('button','text-button','卸载');remove.type='button';remove.disabled=locked;remove.addEventListener('click',()=>operate('uninstall',app.id,activity.id));actions.append(remove);}card.append(actions);if(!activity.compatible)card.append(node('small','activity-incompatible','此活动需要其他版本的框架或运行环境，请先升级框架。'));cards.append(card);
       }
-      group.append(cards);list.append(group);
     }
-    if(!catalog?.catalog?.length)list.append(node('p','activity-center-empty',loading?'正在读取活动目录…':'暂时没有可下载活动，请检查网络或刷新目录。'));
-    const visible=new Set((catalog?.packages||[]).map(item=>item.app+'/'+item.activity));
-    for(const installed of catalog?.installed||[]){if(visible.has(installed.app+'/'+installed.activity))continue;const row=node('article','activity-download-card');row.append(node('h4','',installed.label||installed.activity),node('p','',`本地已安装 ${installed.version} · 暂未列入当前目录`));const remove=node('button','text-button','卸载');remove.type='button';remove.disabled=locked;remove.addEventListener('click',()=>operate('uninstall',installed.app,installed.activity));row.append(remove);list.append(row);}
+    for(const installed of catalog?.installed||[]){if(visible.has(installed.app+'/'+installed.activity))continue;const row=node('article','activity-download-card');row.append(node('h4','',installed.label||installed.activity),node('p','',`本地已安装 ${installed.version} · 暂未列入当前目录`));const actions=node('div','activity-download-actions'),remove=node('button','text-button','卸载');remove.type='button';remove.disabled=locked;remove.addEventListener('click',()=>operate('uninstall',installed.app,installed.activity));actions.append(remove);row.append(actions);const app=snapshot?.catalog?.find(item=>item.id===installed.app);groupFor(installed.app,app?.label||installed.app).append(row);}
+    if(!groups.size)list.append(node('p','activity-center-empty',loading?'正在读取活动目录…':'暂时没有可下载活动，请检查网络或刷新目录。'));
   }
   async function load(refresh=false){
     if(loading)return;loading=true;if(refresh)message('正在更新活动目录…');render();
@@ -44,7 +49,7 @@
     catch(error){message(error.message);}
     finally{operation=false;render();}
   }
-  function open(){if(!dialog.open)dialog.showModal();load(true);}
+  function open(){if(!dialog.open)dialog.showModal();load();}
   $('activity-center-open').addEventListener('click',open);$('activity-center-close').addEventListener('click',()=>dialog.close());$('activity-center-refresh').addEventListener('click',()=>load(true));
   $('activity-folder-open').addEventListener('click',async()=>{
     if(!snapshot)return;

@@ -14,11 +14,20 @@ class PreviewWorker:
         output = io.BytesIO()
         preview.save(output, format='JPEG', quality=78)
         with self.lock:
+            self._preview_failures = 0
+            self.state['preview_error'] = False
             self.image = output.getvalue()
             self.state['image_sequence'] += 1
             self.state['display'] = dict(width=image.width,height=image.height)
             self.state['image_updated_at'] = datetime.now().astimezone().isoformat(timespec='milliseconds')
         self._preview_last = time.monotonic()
+
+    def _preview_failed(self, device):
+        """Report observed transport trouble without interrupting a task."""
+        with self.lock:
+            if self.device is device:
+                self._preview_failures = getattr(self, '_preview_failures', 0) + 1
+                self.state['preview_error'] = self._preview_failures >= 3
 
     @device_scoped
     def _preview_loop(self):
@@ -43,6 +52,7 @@ class PreviewWorker:
             except Exception:
                 # A preview failure does not interrupt an ongoing recovery.
                 self._preview_last = time.monotonic()
+                self._preview_failed(device)
                 logger.debug('后台截图预览失败', exc_info=True)
             finally:
                 io_lock.release()

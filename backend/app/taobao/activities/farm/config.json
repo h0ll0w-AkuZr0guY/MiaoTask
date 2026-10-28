@@ -1,0 +1,30 @@
+{
+  "name": "芭芭农场",
+  "search_keyword": "芭芭农场",
+  "entry_labels": [
+    "芭芭农场"
+  ],
+  "task_entry_labels": [
+    "集肥料",
+    "领肥料",
+    "赚肥料",
+    "做任务领肥料"
+  ],
+  "daily_page": {
+    "search_page_markers": "^搜索有福利$|^搜索有惊喜$",
+    "search_reward_markers": "(?:滑动)?浏览(?:得|领)(?:肥料|奖励)",
+    "browse_counter_context": "(?:滑动)?浏览(?:得|领)(?:肥料|奖励)",
+    "reset_list_scroll": true,
+    "promotion_markers": "品质农场上新季|看看更多新品|今日[0-9]+点可领|提醒我来领肥料|昨日施肥奖励",
+    "list_markers": "肥料明细|做任务[，,]?集肥料|做任务[，,]?领肥料",
+    "landing_markers": "芭芭农场|集肥料|领肥料|game-canvas-fuguo",
+    "inline_claims": [
+      {
+        "title": "农场每日签到",
+        "action": "去签到|立即签到",
+        "done": "已签到|今日已签到|明日再来"
+      }
+    ]
+  },
+  "max_scroll_pages": 4
+}

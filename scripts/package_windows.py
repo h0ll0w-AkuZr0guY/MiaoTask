@@ -129,6 +129,13 @@ def licenses(destination, adb_dir):
     shutil.copy2(adb_notice, destination / 'Android-platform-tools-NOTICE.txt')
 
 
+def selected_packages(catalog, choices):
+    available = {item['app'] + '/' + item['activity']: item for item in catalog['packages']}
+    if len(set(choices)) != len(choices) or any(name not in available for name in choices):
+        raise ValueError('Choose distinct registered activities as app/activity')
+    return [available[name] for name in choices]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--adb-dir', help='Folder containing adb.exe, DLLs and NOTICE.txt')
@@ -140,11 +147,15 @@ def main():
                         help='Build an audited isolated source copy without requiring Git or changing the version')
     parser.add_argument('--include-activities', action='store_true',
                         help='Bundle source activities for offline compatibility checks (default: framework only)')
+    parser.add_argument('--preinstall-activity', action='append', default=[], metavar='APP/ACTIVITY',
+                        help='Preinstall a selected source activity beside the exe; repeat for multiple selections')
     args = parser.parse_args()
     if sys.platform != 'win32' or platform.machine().lower() not in ('amd64', 'x86_64'):
         raise SystemExit('Build this package on Windows x64')
     if args.local_source and args.preview:
         parser.error('--local-source and --preview are separate build modes')
+    if args.include_activities and args.preinstall_activity:
+        parser.error('Use either embedded activities or selected external preinstallation')
     revision = '' if args.local_source else source_commit(allow_dirty=args.preview)
     snapshot = worktree_snapshot(local_source=args.local_source)
     source_dirty = False if args.local_source else bool(subprocess.check_output(['git', 'status', '--porcelain'], cwd=ROOT, text=True).strip())
@@ -194,6 +205,29 @@ def main():
                     packages={d.metadata['Name']: d.version for d in metadata.distributions()},
                     adb_bundled=True, hdc_bundled=(package / '_internal/shared/tools/hdc.exe').exists(),
                     offline_models=True, smoke_test_passed=True)
+    selections = selected_packages(catalog, args.preinstall_activity)
+    if selections:
+        from backend.core.plugins.manager import PluginManager
+        manager = PluginManager(root=package / 'activities')
+        installed = []
+        for entry in selections:
+            path = activity_folder / entry['url'].rsplit('/', 1)[-1]
+            manager.install_local(path, entry['sha256'])
+            installed.append({key: entry[key] for key in ('app', 'activity', 'version', 'sha256')})
+        report = work / 'preinstalled-self-test.json'
+        check_env = dict(env, MIAO_DATA_DIR=str(work / 'preinstalled-check-data'), MIAO_ACTIVITIES_DIR=str(package / 'activities'))
+        subprocess.run([str(executable), '--self-test', '--output', str(report)], env=check_env,
+                       creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), timeout=120, check=True)
+        proof = json.loads(report.read_text(encoding='utf-8'))
+        if not proof.get('ok') or not proof.get('frozen') or proof['checks']['registered_activities'] != len(selections):
+            raise RuntimeError('Selected activity preinstallation failed frozen validation')
+        manifest.update(preinstalled_activities=installed, preinstalled_activity_self_test=True)
+        smoke_result['preinstalled'] = proof
+        (package / 'self-test.json').write_text(json.dumps(smoke_result, ensure_ascii=False, indent=2), encoding='utf-8')
+        help_path = package / 'README.md'
+        help_path.write_text(help_path.read_text(encoding='utf-8').replace(
+            '默认仅包含框架与运行环境。首次打开网页，在「活动中心」下载需要的应用与活动。',
+            '本包预装：' + '、'.join(item['app'] + '/' + item['activity'] for item in installed) + '。其他活动从「活动中心」按需获取。'), encoding='utf-8')
     (package / 'build-manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
     if snapshot != worktree_snapshot(local_source=args.local_source):
         raise RuntimeError('Source changed during the build; rebuild the final candidate')
@@ -201,7 +235,7 @@ def main():
     archive = ROOT / 'dist' / f'{version}-windows-x64{suffix}.zip'
     with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as bundle:
         for path in sorted(package.rglob('*')):
-            if path.is_file():
+            if path.is_file() and '__pycache__' not in path.parts and path.suffix != '.pyc':
                 if path.is_symlink() or not path.resolve().is_relative_to(package.resolve()):
                     raise RuntimeError(f'Unsafe package member: {path.name}')
                 bundle.write(path, Path('MiaoTask') / path.relative_to(package))

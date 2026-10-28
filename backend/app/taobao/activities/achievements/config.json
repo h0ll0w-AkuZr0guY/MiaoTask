@@ -1,0 +1,33 @@
+{
+  "name": "淘宝成就中心",
+  "search_keyword": "淘宝成就",
+  "entry_labels": [
+    "成就中心",
+    "淘宝成就"
+  ],
+  "task_entry_labels": [
+    "我的成就",
+    "做任务领成就",
+    "做任务",
+    "赚成就点",
+    "成就任务"
+  ],
+  "daily_page": {
+    "browse_counter_context": "浏览得奖励",
+    "earned_reward_balance": "我的成就点([0-9]+)",
+    "list_markers": "^淘宝成就$|^成就中心$|成就任务",
+    "list_support_markers": "^(?:签到|已签到|成就点|每日签到|今日签到|领取今日奖励)$|[([][0-9]+/[0-9]+[)\\]]",
+    "official_entry_labels": ["开启我的淘宝成就"],
+    "manual_entry_markers": "点此设置默认地址|请先选择地址",
+    "manual_entry_message": "成就中心需要本人先设置收货地址并开启签到；助手不会修改地址或参与抽奖，请处理后重新开始",
+    "landing_markers": "淘宝成就|成就中心|成就点",
+    "inline_claims": [
+      {
+        "title": "成就每日签到",
+        "action": "签到|立即签到",
+        "done": "已签到|今日已签到|明日再来"
+      }
+    ]
+  },
+  "max_scroll_pages": 4
+}

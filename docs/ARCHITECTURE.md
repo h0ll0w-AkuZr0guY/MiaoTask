@@ -41,15 +41,13 @@ MiaoTask/
 │       └── taobao/
 │           ├── manifest.py       # 应用包名、用户空间与旧记录策略
 │           ├── configs/base.json
-│           ├── utils/            # 搜索与任务分类规则
-│           └── activities/double11/
-│               ├── manifest.py   # 注册元数据
-│               ├── config.json   # 活动配置
-│               ├── activity.py   # 策略组合
-│               ├── entry.py      # 入口与赚能量菜单
-│               ├── tasks.py      # 解析规则装配
-│               ├── actions.py    # 执行策略
-│               └── verify.py     # 核验策略
+│           ├── utils/            # 搜索、浏览动作、核验和日常页面策略
+│           └── activities/       # 各自持有 manifest、配置与工厂
+│               ├── double11/    # 原有赚能量入口与规则
+│               ├── coins/       # 淘金币日常
+│               ├── farm/        # 芭芭农场
+│               ├── cash_signin/ # 红包签到
+│               └── achievements/ # 成就中心
 ├── frontend/                     # 原生 HTML/CSS/JS，无 npm 构建
 ├── shared/                       # 公共静态资源约定；打包工具由构建流程填充
 ├── scripts/                      # 构建、审计与验证入口
@@ -67,6 +65,8 @@ MiaoTask/
 
 `core` 不导入具体平台包，也不包含平台包名或活动名。注册表读取本地 manifest，再按声明的工厂装配活动。文本几何放在 core，避免读屏层反向依赖业务层。平台之间通过 `app/common` 共享业务算法。
 
+SDK 传输超时和系统输入属于设备层：UI RPC 及其底层 socket 在每个驱动实例上限制，不能靠修改全局导出的超时常量。活动只负责确认可见输入框和任务查询语义，再调用可选 ASCII 或原生 Unicode 输入；实例核对、显示屏路由与命令边界由适配器保持。
+
 允许的依赖方向：`frontend → HTTP → service → registry / execution / device / storage`，`app → core`，具体活动还可以依赖本应用工具和 `app/common`。core 通过配置、回调和活动方法使用业务能力，不能反向导入某个 app。`backend/bootstrap.py` 与根 `main.py` 保留既有导入和启动入口，应用适配不应再增加一套入口。
 
 任务行配对、状态机和恢复流程按职责拆分，保留原有分支与默认值。活动入口和核验存在较多当前页面特征，继续留在活动包；没有强行把这些判断推广成所有平台的默认规则。
@@ -74,6 +74,10 @@ MiaoTask/
 ## 注册一个活动
 
 平台目录包含 `manifest.py` 和 `configs/base.json`，活动目录包含 manifest、config 及活动实现。以现有 `taobao/activities/double11` 为实际参考。
+
+同应用的不同业务分别注册活动，不能把所有淘宝流程塞进原双11活动的开关。日常页面复用 `taobao/utils/daily.py`，差异词表与入口要求来自各活动的 `daily_page` 配置；浏览、原生搜索、跳转可用性和核验复用应用工具与框架。`double11/actions.py` 和 `verify.py` 保留原导入路径，转出同一实现，不依赖日常活动已安装。
+
+普通列表按行配对；淘金币的中心面板按任务标题与同排奖励圆钮配对，清单使用实际卡片区域。缺少进度的签到页只生成一次性任务契约，完成仍须页面反馈或奖励余额变化。日常核验不会把 UI/OCR 文案差异当领奖成功；定时奖励在本轮核验后不再重复选择。页面策略、状态与观察均由当前活动实例持有，不共享设备状态。
 
 ```python
 from backend.core.registry import ActivityMeta
@@ -177,15 +181,21 @@ runtime/apps/<app>/activities/<activity>/daily/<date>/<device_hash>/instances/<i
 
 * `GET /api/workspaces`：工作区概要；`POST /api/workspaces`：添加。
 * `POST /api/workspaces/remove`：移除空闲工作区；`/api/workspaces/batch`：向显式设备列表提交并行操作。
+* `POST /api/workspaces/rename`：修改显式工作区名称，包括默认工作区；不改变设备身份和执行目标。
 * `GET /api/inventory`、`/api/emulators`：已连接设备去重与 MuMu 实例发现。
 * `POST /api/wifi/pair|connect`：当前工作区无线配对与连接；`/api/open_app` 仅唤醒所选实例。
 * `/api/session/status|start|pause|resume|stop`、`/api/preview` 为既有别名，`/api/stats` 和 `/api/tasks` 返回指定工作区快照。
+* `GET /api/rankings` 只读汇总数据根下的活动日记录，支持设备＋应用或设备＋应用＋活动分组、今日/全部日期与指标降序；不另建累计计数、不更改任务记录。历史数据使用匿名设备键，当前工作区名称仅在响应时补充。
 * `POST /api/task_skip|task_execute` 调整当天队列选择，不启动线程；`task_scope` 变化后旧请求无效。
 * `GET /api/plugins` 返回官方 main 的活动目录、源码提交、安装情况、实际 `activities_dir/source_dir` 与操作进度；`POST /api/plugins/install` 提交显式应用/活动 ID 与页面展示的完整 `source_commit`，由全局门控制固定提交安装；卸载提交应用/活动 ID。`POST /api/plugins/open-folder` 使用同样的写请求校验，仅打开服务已解析的活动目录，不接受浏览器指定路径。
 * `POST /api/select_pipeline` 保存指定工作区的有序活动列表；`run` 可携带同结构 `activities`，每项必须有有效 `app` 和 `activity` 字符串，未知或空身份拒绝执行。
 * `/api/shutdown` 退出整个服务；所有写操作仍校验 Host、Origin 与令牌。工作区 ID 不构成授权凭据。
 
 前端 `device-manager.js` 管理设备标签和批量选择，`api.js` 统一附加设备 ID；任务判断和坐标留在后端。只为当前展示设备提供额外预览；后台任务按自己的观察周期取图。标签切换不新开端口或浏览器页面。旧静态路径保留，所有资源由固定白名单提供。
+
+顶部导航提供全局入口，左侧设备栏负责工作区切换与批量操作，中央负责当前设备的活动和任务，右侧提供可收起的预览。公共设置沿用当前设备表单，原生弹窗仍在该表单中，校验失败时先打开对应分类再定位字段；切换工作区关闭弹窗，避免将旧设备编辑误认为新设备配置。排行榜独立按需读取，不加入高频状态轮询。
+
+连接表单集中到左侧设备编辑弹窗，USB、模拟器与 Wi-Fi 共用原有连接接口；新增后必须等待新工作区快照，再提交已捕获的地址。应用导航与活动选择在中央相邻展示，避免应用增多挤占全局导航。主题通过独立语义色样式与浏览器偏好实现，不进入后台配置模型；预览连续失败仅产生展示诊断状态，不改变任务线程行为。
 
 ## 变更时需要同步的契约
 

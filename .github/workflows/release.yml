@@ -46,7 +46,7 @@ jobs:
       - name: Fetch official ADB runtime
         run: python scripts/fetch_platform_tools.py
       - name: Test, build, and verify the portable package
-        run: python scripts/package_windows.py --adb-dir build/vendor/platform-tools
+        run: python scripts/package_windows.py --adb-dir build/vendor/platform-tools --preinstall-activity taobao/double11
       - uses: actions/upload-artifact@v7
         with:
           name: MiaoTask-windows-x64

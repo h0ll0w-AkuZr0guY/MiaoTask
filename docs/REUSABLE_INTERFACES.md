@@ -212,6 +212,40 @@ Session(device, config=None, control=None, emit=None, on_image=None,
 
 默认 `guard(screen)` 核对身份并检查认证、登录、支付与不可读画面。页面有被遮挡的登录广告等例外时，必须在本活动中有可验证的判定，不能关闭全局守卫。恢复优先逐层 Back 并每次重读；到桌面后才用同一恢复预算内的一次冷启动。
 
+### 淘宝应用内策略
+
+实现：`backend/app/taobao/utils/`，不属于跨平台 core API。
+
+| 组件 | 可复用契约与边界 |
+| --- | --- |
+| `SearchPolicy` | 原生输入框填字、重新定位右上搜索键与回车兜底；填写和每次提交前复查所选应用前台，页面切到其他应用时停止而不继续回车；`official_activity_entry` 由活动确认官方入口，不把查询文字当结果 |
+| `TaskActions.execute(task, before)` | 点击已解析任务，再观察跳转；复用可停止浏览、随机滚动和当前活动的 `recover` |
+| `TaskActions.browse_destination(task, screen)` | 已打开并确认目标页后开始观察与浏览，返回 `(after_screen, explicit, cross)`；不再次点击任务，不直接累加完成数 |
+| `VerificationPolicy` | 原有任务进度与行收缩证据；每日领奖采用 `DailyActivity.verify` 的更严格规则，不将按钮标签差异作为奖励凭据 |
+| `DailyActivity` | 继承 `Activity`，共用有界日常导航、弹窗关闭、任务解析、领取与余额核验；具体活动只提供独立 manifest、配置与 `default_config` |
+
+`daily_page` 为淘宝活动的本地配置：必需 `list_markers/landing_markers`；可选 `inline_claims`（`title/action/done`）、`inline_only`、`reward_rows`、`list_support_markers`、`official_entry_labels`。`browse_reward` 只允许显式的浏览提示及对应按钮，`manual_entry_markers/manual_entry_message` 表示须本人初始化的页面。现金页通过 `main_view_markers/list_support_markers` 区分奖励面板与下方商品区；商品区最多四次向顶部滚动，重新观察后才领取。`inline_claims.exclude_left_labels` 排除与游戏/视频入口同排相邻的歧义领取按钮。现金页可用 `remaining_reward_balance` 提取待攒元宝整数，OCR 拆分的前缀与数字只按顶部同排组合；只在金额变化达到本任务标注奖励时核验，不能把其他余额或倒计时当到账。
+
+`reset_list_scroll` 为日常列表的可选开关。开启后，`ensure_list(auto_open=True)` 按实际任务行区域最多向列表顶部滚动四次（仍受 `max_scroll_pages` 限制），每次重读并检查停止和安全状态；重复视口即结束。用于从中断后的列表底部开始完整队列。`recover()` 不执行这一步，避免打断刚执行任务的返回核验。定时领取行的“12点可领”等状态只在显式进度已满时视为完成，未满则等待，不把时间标签当奖励证据。
+
+`earned_reward_balance` 可提取页面顶部明确累计到账的整数（例如成就点），必须增长至少本任务 `+N` 标注的金额才作为领取证据；余额在下方商品或说明中出现时不采用。与现金页的 `remaining_reward_balance` 递减证据分别配置，不把进度满但仍标“领取奖励”的行当作已经领取。余额核验仍要求回到已确认任务列表，不据单独奖励弹窗计数。
+
+淘金币余额同时支持顶部抵现金额和与“淘金币”标题同排的整数。没有显式计数的快捷任务完成后可能换标题、只留下灰色勾选；只有返回已确认列表、原任务不再可执行且余额精确增加本任务标注的金币数，才补充核验，不把更大的延迟到账当作这次成功。“今日速赚”和“更多专享福利”分别解析，合并语义相同的镜像任务；分隔标题滚出屏幕后仍解析普通任务。
+
+搜索导航优先配对活动名称与其右侧同排“去看看 / 去查看 / 进入”动作；查询栏与联想词中的高亮片段不作为入口。首页与全部频道的图标须先确认当前页面，只保留当前尺寸、安全区域内的可见候选；原生控件与画面尺寸或安全范围不一致时保留画面匹配，商品抵扣标识不能充当活动入口。“你关注的商品都可抵”等已确认的浏览条目仅在说明明确为浏览且无新增关注要求时执行，实际关注操作仍排除。
+
+`DestinationPolicy.launch_confirmation(screen)` 使用公共 `JUMP_WORDS` 与应用配置 `jump_words` 的追加词表，先确认应用打开/跳转场景，再匹配“允许、本次允许、确认、打开”等短按钮，优先本次授权。持续授权、安装、付款等标签不采用，登录与其他权限场景不匹配。同一打开步骤最多确认两次；已确认的跳转可在三倍页面等待硬上限内获得加载余量；无法确认时返回并持久化当前任务的跳过原因，不把同应用其他任务一起封禁。日常导航先返回关闭中断遗留的跳转弹窗，再接受其下方的任务列表。`DailyActivity.recover()` 先逐层退出外部页面，再在确认桌面后恢复所选实例，保留停止和身份核验。
+
+`TaskActions` 可选 `destination_ready(screen)` 钩子决定是否已出现目标内容；日常活动不把仅有状态栏文字的白屏当作搜索页。未实现钩子的原活动保持原有等待判定。已确认推广但关闭图标不可读时，可用一次 Back 关闭，再重读；不点击折扣/提现主按钮作为关闭兜底。
+
+`TaskActions` 的可选钩子 `browse_countdown(screen)` 返回当前页剩余秒数或 `None`，只可在原有任务硬上限内延长观察；`browse_observation_interval(scrolling)` 决定下次读屏前的连续滑动窗口。未提供钩子的原活动保持一秒观察间隔。日常活动在滚动时连续操作约三秒再读屏，每个手势仍检查暂停、停止与实例，避免高耗时 OCR 反复打断浏览计数。
+
+`search_page_markers/search_reward_markers` 分别匹配顶部搜索活动标题与奖励提示，并结合右上搜索按钮和至少两处商品价格确认结果；历史搜索、联想页和仅有标题的页面均不接受。农场“搜索有福利 / 滑动浏览得肥料”等差异只需扩展这些词表。
+
+`browse_counter` 配置当前页面的倒计时正则；`browse_counter_context` 为数字与文案分离的奖励徽标提供场景词表，只配对顶部右侧同排、紧邻左侧的短整数，不采用商品价格、购物车数或下方推荐内容。淘金币在完整画面未读到彩色任务横幅时复用 `ScreenReader.enrich_regions` 读取本帧顶部区域，保留原几何与安全标记，不混用旧截图。任务名写“搜索”但已直接到奖励商品网格时，确认倒计时和商品证据后沿用该页。实际搜索表单通过 `SearchPolicy.search_edit(screen, edits)` 和 `fill_search_field(query, edit)` 定位与填字；新日常活动先核定可见搜索页并聚焦，普通任务使用固定数字，避免字母停在原输入法的组合候选区、点击提交时被清空。活动入口仍使用实际 Unicode 名称；旧驱动保留原生聚焦填写路径。有多个不明确的原生输入框时不能用 OCR 绕过歧义。
+
+日常导航使用当前控件区域与 OCR 文字框，不按参考设备的像素坐标点击；已确认前进的步骤可获得加载时间，总预算、点击次数、返回和重启仍有上限。HyperOS 控件树明确抛 `RPCStackOverflowError` 时，在本活动内改读本地 OCR，保留停止与实例守卫；其他错误继续按框架边界处理。不安装输入法、不替换全局守卫、不接受脱离跳转场景的确认按钮。现有四个日常活动仅声明 Android，成就中心未初始化时不会选择地址或参加抽奖。
+
 ## 7. 今日队列与持久化
 
 实现：[task_policy.py](../backend/core/execution/task_policy.py)、[retry.py](../backend/core/execution/retry.py)、[daily_state.py](../backend/core/storage/daily_state.py)、[namespace.py](../backend/core/storage/namespace.py)。
@@ -242,6 +276,7 @@ store.diagnostics(report)
 ```text
 DeviceHub(config=None, registry=None, app=None, activity=None)
 hub.add(label='', key=None)                       # workspace_id
+hub.rename(key, label)                            # 只改名称，原工作区也可；不改任务/设备身份
 hub.resolve(key=None)                            # Controller；未知 ID 报错
 hub.batch(payload)                               # 各设备 {id, ok, error?}
 hub.remove(key)                                  # 仅空闲，至少保留一个工作区
@@ -255,6 +290,34 @@ controller.snapshot()                            # 独立状态副本
 新增线程若产生设备日志或 OCR 状态，使用 `workspace_scope` 设置归属，或在拥有 `workspace_id` 的实例方法上使用 `@device_scoped`；不能另设全局“当前设备”。注意 `ContextVar` 不应依赖自动传入新线程，现有设备工作和预览入口均显式设置。
 
 网页复用现有请求层，读写都带 `?device=<workspace_id>`，写操作带本服务令牌并接受 Host / Origin 校验。失效 ID 不回退其他设备；切换后迟到响应不能覆盖当前页。任务按钮还需 `task_id/task_scope`。完整路由分组见[架构文档](ARCHITECTURE.md#http-与前端)，用户流程见 [USAGE](USAGE.md)。
+
+前端通用弹窗使用 [dialogs.js](../frontend/js/components/dialogs.js) 的 `MiaoDialogs.bind(dialog)`：对已有原生 `<dialog>` 注册一次外侧关闭交互；仅指针按下和点击均位于弹窗边界外时关闭，从内部拖出不关闭。内部按钮、原生 Esc 与焦点管理沿用 `<dialog>`，关闭弹窗不取消已提交的后端操作。
+
+[preview-controls.js](../frontend/js/components/preview-controls.js) 管理预览宽度、显隐和放大显示，不修改任务配置或主动请求截图。宽度 160～280 px，默认 220 px，浏览器偏好键 `miaotask.preview-width.v1`；存储不可用时仍可操作。放大图复用当前截图地址，只有画面已加载且 URL 的 `device` 等于当前 `MiaoAPI.device` 才可打开；收到 `miaotask:device-selected` 时关闭并清除大图，迟到的旧设备加载不能启用。新增组件脚本需同步 `service/static.py` 的显式静态白名单。
+
+侧栏显示偏好键为 `miaotask.preview-visible.v1`，默认显示。`preview-controls.js` 同步 `hidden`、工作区布局与按钮 `aria-pressed`；`app.js` 在侧栏隐藏时停止额外预览请求，不改变后台执行观察。设备新增与公共设置弹窗同样复用 `MiaoDialogs.bind`；公共设置字段保留在 `settings-form` 内，运行/连接/批量启动校验失败时自动打开对应分类。设备切换关闭设置，随后按原有初始化流程读取目标配置。
+
+`POST /api/workspaces/rename` 接受 `{id, label}`，按原有令牌、Host 和 Origin 校验；名称去空白后为 1～60 字符。只修改当前服务中该工作区的展示名称，允许执行期间改名；不改连接、运行配置、租约或日记录，失效 ID 和退出中的服务拒绝修改。
+
+`device-manager.js` 的 `MiaoDevices.prepare()` 用于连接提交前保存名称和解析目标。新增时先创建、选择并等待该工作区的 `miaotask:state`，最长 10 秒，再返回 ID；已有编辑仅重命名显式 ID，发生工作区切换时拒绝误投。USB/Wi-Fi 调用方在准备前捕获用户填写的地址，准备后再次核定当前工作区；无线配对码仍仅用于当前请求。`creating/preparing` 为只读界面状态，`refresh()` 在主页面渲染后同步弹窗控件。`miaotask:editor-mode` 通知无线编辑器清理新建设备的旧地址。设备名称与工作区一样保留在本次服务期间，不把原始地址保存到浏览器偏好。
+
+工作区摘要新增 `connection_issue`，由预览连续三次失败产生；成功 `on_image` 清零，旧设备的迟到失败忽略。这是展示诊断标志，不改 `connected`、统计、执行目标或停止状态，也不触发重连。卡片同时显示颜色和文字，不能以颜色作为任务是否可执行的后端依据。
+
+主题资源为 [themes.css](../frontend/css/themes.css) 与 [themes.js](../frontend/js/components/themes.js)。语义色变量集中定义背景、表面、文本、强调、成功、危险等角色，支持 `warm/blue/night`；根节点 `data-theme` 在页面解析前从偏好键 `miaotask.theme.v1` 恢复，未知值和存储异常回退 `warm`。外观按钮在 DOM 就绪后绑定原生弹窗，同浏览器 `storage` 事件同步其他标签。主题不保存或修改设备、活动及任务配置。新增界面优先使用已有语义色，保持连接异常和成功的语义与对比。
+
+### 本机排行榜
+
+实现：[rankings.py](../backend/core/storage/rankings.py)、[rankings.js](../frontend/js/components/rankings.js)。
+
+```python
+RankingStore(root).snapshot(group='app', period='all', metric='elapsed', catalog=())
+# group: app | activity；period: all | today
+# metric: elapsed | completed | skipped | failed（降序）
+```
+
+HTTP 为 `GET /api/rankings?group=activity&period=today&metric=completed`，设备参数仍经统一请求层附加与校验。返回 `rows/records/ignored/local_only/storage_dir/updated_at`；每行有完整匿名 `device_key`、应用/活动 ID 与标签、`rank/days/stats`，服务可为在线设备补 `device_label`。不返回原始设备序列号。未知分组、日期范围或指标返回 400。
+
+统计按数据根的 `apps/*/activities/*/daily/*/*/instances/*/state.json` 读取，校验文件身份、日期、设备键与 schema，沿用日记录计数净化；按设备合并实例、按所选层级合并活动和日期。只读汇总，不写第二套计数；旧根目录迁移副本不重复计入。最多检查 50,000 个文件、单文件上限 8 MiB，跳过损坏、身份不符、链接或超限文件，`ignored` 非零提示未完整计入，原文件保留。读取原子替换后的日记录，不扫描事件日志或截图；没有记录返回空列表。前端只在打开、切换范围/排序或手动刷新时请求，并丢弃关闭后或旧筛选的迟到响应。
 
 ## 9. 预留扩展与维护要求
 
@@ -328,3 +391,18 @@ controller.dispatch('run', {'auto_open': True})
 实现：[read_shell.py](../backend/core/device/read_shell.py)。`AdbReadShell(serial, *, timeout=8, budget=24)` 是绑定明确设备的可调用只读通道，返回 `ReadResult(output, exit_code)`。仅接受用户空间、包列表和显示/焦点查询白名单，通过 ADB `exec-out` 避开 SDK shell 哨兵/PTY 处理；不能用于点击、启动、输入或任意 shell 命令。
 
 实例枚举使用总计最多 24 秒预算，安装列表与焦点回退分别限定 12 秒、8 秒；调用方复用预算对象，不能每个回退重新开始无限等待。空输出、诊断文本和失败按未知处理，不能据此记录应用未安装；确认可读的用户空间单独保留，坏分身空间通过 warning 报告，不推测额外用户或实例。已选实例失效仍停止，不能因读取失败转而执行主账号。本轮属于本地回归覆盖，未声称已在 Issue #7 的设备上复现验证。
+
+## 12. Android UI 调用与可选系统输入
+
+实现：[rpc_limits.py](../backend/core/device/rpc_limits.py)、[adapter.py](../backend/core/device/adapter.py)。
+
+`install_rpc_limits(driver, timeout=12)` 在单个 SDK 驱动上约束 RPC 参数及其 ADB 隧道 socket。不会修改全局 SDK 常量，也不为超时留下仍会操作手机的后台线程。每次连接的 UI socket 上限默认 12 秒；SDK 重连和其他 ADB 操作有各自预算，不能把单次 socket 限制描述成整段恢复的总耗时。
+
+`DeviceAdapter.input_ascii(text)` 是可选能力，仅 Android 接受 1～32 位 ASCII 字母或数字；调用者先确认和聚焦可见输入框，适配器再次检查所选实例，按当前逻辑显示屏执行系统输入，命令预算 8 秒。它不清空任意文本、不安装或切换输入法，不接受空格、Shell 字符或 Unicode；通用 Unicode 输入继续使用 `input_text`。旧框架及其他后端未必有此能力，活动应使用 `getattr` 检查，不把它列为所有 `DeviceBackend` 的强制方法。
+
+
+### 自动分身与无线表单
+
+`configure/run` 可携带布尔 `all_instances`，保存在当前服务工作区的状态中，默认关闭。流水线在每个活动装配后，开启时从当前 `app_instances` 重新生成全部 ID；显式关闭时选主应用，不继承上次的全部分身队列。批量启动沿用各工作区自身开关，不复制发起设备的选择；原有显式 `instance_ids` API 保留。身份核对、串行执行、异常中断及日记录隔离继续生效。
+
+无线表单统一用 `wifi-full-address` 控制两项地址的四段 IPv4/完整地址模式，保留独立的配对与连接端口；切换模式同步已填值，设备切换恢复该工作区草稿。表单布局不再套用通用连接网格的跨列按钮规则。退出操作统一由系统托盘提供，未加入浏览器关闭自动退出，避免刷新或关闭一个标签时停止其他设备。

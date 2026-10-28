@@ -6,6 +6,9 @@ MiaoTask is licensed under the Apache License, Version 2.0. See LICENSE.
 Thanks to MonsterNone/tmall-miao and its contributors for ideas and inspiration:
 https://github.com/MonsterNone/tmall-miao
 
+Thanks to czl0325/coin11-tb for Taobao daily workflow ideas:
+https://github.com/czl0325/coin11-tb
+
 Bundled dependencies, device tools and OCR models retain their own licenses
 and notices. See docs/LICENSING.md and licenses/ in the portable distribution.
 This project is not endorsed by the upstream author or the supported apps.
