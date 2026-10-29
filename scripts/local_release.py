@@ -20,7 +20,7 @@ TOOL_ROOT = Path(__file__).resolve().parents[1]
 if str(TOOL_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOL_ROOT))
 from scripts.check_public_files import (ROOT_FILES, SOURCE_DIRS, SOURCE_SUFFIXES,
-    PRIVATE_PARTS, PUBLIC_IMAGES, audit_file)
+    PRIVATE_PARTS, is_maintainer_asset, audit_file)
 from scripts.prepare_release import MARKER, pending_entries
 from scripts.release_notes import extract_notes
 
@@ -39,7 +39,7 @@ def public_name(name):
     if path.name.startswith(('.env', 'adbkey')) or re.search(
             r'(^|[._-])(device|devices|local|private|credentials)([._-]|$)', path.name, re.I) and path.suffix in {'.json', '.txt', '.xml', '.yaml', '.yml'}:
         return False
-    return name in PUBLIC_IMAGES or path.suffix in SOURCE_SUFFIXES
+    return is_maintainer_asset(name) or path.suffix in SOURCE_SUFFIXES
 
 
 def checked_write(destination, name, content):

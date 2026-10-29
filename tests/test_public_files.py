@@ -18,15 +18,22 @@ class PublicFilesTests(unittest.TestCase):
         for name in ('configs/device.local.json', 'configs/devices.json', '.env', 'adbkey'):
             self.assertTrue(audit_file(name, b'private configuration'))
 
-    def test_only_reviewed_image_paths_and_signatures_are_allowed(self):
-        png = b'\x89PNG\r\n\x1a\n\0public illustration'
-        webp = b'RIFF\0\0\0\0WEBPpublic screenshot'
-        self.assertEqual(audit_file('frontend/assets/miaotask-128.png', png), [])
-        self.assertEqual(audit_file('docs/assets/feature-wifi.webp', webp), [])
-        self.assertTrue(audit_file('docs/assets/phone-private.png', png))
-        self.assertTrue(audit_file('frontend/assets/miaotask-128.png', b'not a PNG'))
-        self.assertTrue(audit_file('docs/assets/feature-wifi.webp', png))
-        self.assertTrue(audit_file('frontend/assets/miaotask-128.png', png + b'x' * 2_000_000))
+    def test_public_images_and_readme_are_outside_content_audit(self):
+        # Direct maintainer edits must not block a subsequent unrelated PR.
+        content = b'\0' * 4_000_001 + b'-----BEGIN ' + b'PRIVATE KEY-----'
+        for name in ('README.md', 'docs/assets/new-name.png', 'docs/assets/nested/image.JPG',
+                     'docs/assets/feature-wifi.webp', 'frontend/assets/new-icon.ico',
+                     'frontend/assets/new-illustration.svg'):
+            with self.subTest(name=name):
+                self.assertEqual(audit_file(name, content, forbidden=['PRIVATE']), [])
+
+    def test_asset_exemption_keeps_path_and_source_protections(self):
+        for name in ('docs/assets/../../outside.png', 'docs/assets/private/image.png',
+                     'docs/assets/file.exe', 'frontend/assets/unknown.bin', 'screenshots/phone.png'):
+            with self.subTest(name=name):
+                self.assertTrue(audit_file(name, b'\0binary'))
+        self.assertTrue(audit_file('docs/example.md', b'x' * 2_000_001))
+        self.assertTrue(audit_file('scripts/example.py', b'\0binary'))
 
     def test_tokens_are_rejected_without_echoing_the_value(self):
         token = b'gh' + b'p_' + b'x' * 36

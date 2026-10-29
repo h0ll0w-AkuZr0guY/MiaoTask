@@ -75,6 +75,30 @@ class LocalReleaseTests(unittest.TestCase):
             extract_source(bad, self.root / 'bad-output')
         self.assertFalse((self.root / 'outside.py').exists())
 
+    def test_directly_maintained_readme_and_new_images_survive_copy_and_zip(self):
+        files = {
+            'README.md': b'maintainer documentation\0' + b'x' * 2_000_001,
+            'docs/assets/new-name.PNG': b'\0image' + b'x' * 4_000_001,
+            'frontend/assets/nested/new-icon.svg': b'<svg/>',
+        }
+        for name, content in files.items():
+            path = self.source / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        copied = self.root / 'asset-copy'
+        copy_source(self.source, copied)
+        archive = self.root / 'assets.zip'
+        with zipfile.ZipFile(archive, 'w') as bundle:
+            for path in self.source.rglob('*'):
+                if path.is_file():
+                    bundle.write(path, 'MiaoTask-main/' + path.relative_to(self.source).as_posix())
+        extracted = self.root / 'asset-extract'
+        extract_source(archive, extracted)
+        for destination in (copied, extracted):
+            for name, content in files.items():
+                with self.subTest(destination=destination.name, name=name):
+                    self.assertEqual((destination / name).read_bytes(), content)
+
     def test_same_version_collects_contributions_without_bump_or_release_plan(self):
         metadata = (self.source / 'version.json').read_bytes()
         self.assertEqual(rollup_local(self.source, '更新概述。'), ('MiaoTask-v0.1.1', 2))

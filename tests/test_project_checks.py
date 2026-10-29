@@ -22,7 +22,7 @@ class ProjectChecksTests(unittest.TestCase):
                 self.assertIn('--others', git.call_args.args[0])
                 self.assertIn('--exclude-standard', git.call_args.args[0])
             # A secret in an unstaged edit still fails before publishing.
-            (root / 'README.md').write_text('-----BEGIN ' + 'PRIVATE KEY-----', encoding='utf-8')
+            (root / 'scripts/new.py').write_text('-----BEGIN ' + 'PRIVATE KEY-----', encoding='utf-8')
             with patch('scripts.check_project.subprocess.check_output', return_value=names), redirect_stderr(io.StringIO()), self.assertRaises(ValueError):
                 audit_worktree(root)
 

@@ -194,8 +194,14 @@ Session(device, config=None, control=None, emit=None, on_image=None,
 | `verify(task, before, after, explicit=False)` | 返回布尔值，以进度、完成文案或奖励状态等页面证据为依据 |
 | `ensure_list(auto_open=False)` / `recover(cold_start=False)` | 返回已确认的任务列表 `Screen`；无法恢复抛明确异常，必须有限 |
 | `setup()` / `teardown()` | 运行前准备 / `finally` 收尾；默认空实现 |
+| `view_signature(screen)` | 可选的可见内容指纹，返回可比较值；默认 `None`，保留已有列表扫描逻辑 |
+| `alt_swipe(screen)` | 可选的反向滚动，执行后返回 `True`；默认 `False` |
+| `next_list_page(screen)` | 可选的换批按钮，返回可点击节点；默认 `None`。通用循环在滚动无新任务时尝试换批，最多 `max_scroll_pages` 次 |
+| `return_to_home(screen)` | 正常结束时返回应用首页并返回观察；默认原样返回。停止、认证及实例错误继续向上传递 |
 
 `run(auto_open=False)` 保留通用调度、失败预算、重新读表和统计；`scan(auto_open=False)` 只进入并解析，返回任务记录列表。复杂活动优先替换策略方法，避免复制整个循环。
+
+换批后无候选任务时，通用循环按 `empty_batch_stop`（默认 1，最小 1）结束扫描。支付宝月月赚使用这些可选钩子完成列表换批及返回首页；旧框架虽可导入活动源码，但不具备新增的调度行为，完整换批与结束返回需要包含本次框架实现的版本。原有活动不覆写钩子时保持默认行为，框架接口版本仍为 1。
 
 默认 `Navigator` 除上表外还调用入口策略钩子：`_accept_list`、`launcher_screen`、`launch_screen`、`homepage_visible`、`activity_landing`、`activity_entry`、`official_activity_entry`、`task_panel_entry`、`task_panel_visible`、`enter_task_panel`、`open_task_panel`、`panel_loading`、`open_home_search`、`unavailable_landing`、`remember_missing_destination`。当前实现分别位于淘宝入口、搜索和公共跳转策略；新页面若没有同样结构，应覆盖 `ensure_list/recover` 并维持相同停止与恢复预算，不能仅实现抽象方法就假定默认导航可用。
 
