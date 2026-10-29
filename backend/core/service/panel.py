@@ -98,6 +98,8 @@ class Controller(ActivityPipeline, PreviewWorker):
         self.registration = self.registry.get(app, activity) if self.registry.has_activities else None
         self.persist_preferences = persist_preferences
         self._app_instance_plans = {}
+        # Installed by DeviceHub to persist caption/last device/task settings.
+        self.persist_workspace = None
         self.lock = threading.RLock()
         self.device = None
         self.control = RunControl()
@@ -123,6 +125,7 @@ class Controller(ActivityPipeline, PreviewWorker):
                           config=config or load_config(registry=self.registry, app=self.registration.app.id if self.registration else None, activity=self.registration.activity.id if self.registration else None), device={}, logs=[], updated_at='',
                           daily=None, task_scope='', last_failure=None, image_sequence=0, image_updated_at='',
                           app_instances=[], selected_instance='', instance_warnings=[], instance_queue=[],
+                          last_connection={},
                           app=self.registration.app.id if self.registration else '',
                           activity=self.registration.activity.id if self.registration else '',
                           catalog=self.registry.catalog(),
@@ -153,6 +156,37 @@ class Controller(ActivityPipeline, PreviewWorker):
         with self.lock:
             result = copy.deepcopy(self.state)
         return result
+
+    def apply_restored_settings(self, saved):
+        """Apply persisted workspace caption/device/settings at startup."""
+        if saved.get('label'):
+            self.workspace_label = saved['label']
+        with self.lock:
+            config = saved.get('config')
+            if isinstance(config, dict):
+                merged = dict(self.state['config'])
+                merged.update({key: copy.deepcopy(value) for key, value in config.items()
+                               if key in self.state['config']})
+                try:
+                    validate_config(merged)
+                    self.state['config'] = merged
+                except (ValueError, TypeError):
+                    logger.warning('工作区 %s 的已保存设置失效，使用默认值', self.workspace_id)
+            if saved.get('device_type') or saved.get('serial'):
+                self.state['last_connection'] = {
+                    'type': saved.get('device_type', 'uiautomator2'),
+                    'serial': saved.get('serial', '')}
+            if isinstance(saved.get('auto_instances'), bool):
+                self.state['all_instances'] = saved['auto_instances']
+
+    def _save_workspace_settings(self, **fields):
+        callback = self.persist_workspace
+        if callback is None:
+            return
+        try:
+            callback(fields)
+        except Exception:
+            logger.warning('保存工作区设置失败', exc_info=True)
 
 
     def _ensure_daily(self):
@@ -429,9 +463,14 @@ class Controller(ActivityPipeline, PreviewWorker):
         if control_action:
             self.log('INFO', {'pause': '用户暂停', 'resume': '用户继续', 'stop': '用户停止'}[action])
             self._persist_state()
-        elif action == 'configure':
-            self._save_preferences(config)
-            self.log('INFO', '执行设置已应用并保存')
+        elif action in ('configure', 'run'):
+            if action == 'configure':
+                self._save_preferences(config)
+                self.log('INFO', '执行设置已应用并保存')
+            fields = {'config': config}
+            if 'all_instances' in payload:
+                fields['auto_instances'] = payload['all_instances']
+            self._save_workspace_settings(**fields)
 
     @device_scoped
     def _work(self, action, payload, config):
@@ -495,11 +534,14 @@ class Controller(ActivityPipeline, PreviewWorker):
                             app_instances=[i.to_dict() for i in device.app_instances],
                             selected_instance=device.selected_instance.id if device.selected_instance else '',
                             instance_warnings=device.instance_warnings,
+                            last_connection=dict(type=kind, serial=device.serial or ''),
                             tasks=[], message='设备已连接，请确认应用实例后开始自动执行')
                 self._preview_stop.clear()
                 self._start_preview()
                 self._instance_availability('设备已连接，请确认应用实例后开始自动执行')
                 self.log('INFO', f'设备连接成功：{device}')
+                self._save_workspace_settings(
+                    device_type=kind, **({'serial': device.serial} if device.serial else {}))
             elif action == 'reset_tasks':
                 self._ensure_daily()
                 self.task_policy.reset()

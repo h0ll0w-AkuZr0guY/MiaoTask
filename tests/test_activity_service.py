@@ -2,6 +2,7 @@
 import hashlib
 import importlib
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -39,6 +40,9 @@ class ActivityServiceTests(unittest.TestCase):
         self.old_marker = getattr(self.app_package, '_miaotask_plugin_paths', ())
         self.asset_patch = patch('backend.core.registry.assets_dir', return_value=self.folder / 'empty')
         self.asset_patch.start()
+        self.data_patch = patch.dict(os.environ, {'MIAO_DATA_DIR': str(self.folder / 'data')})
+        self.data_patch.start()
+        self.addCleanup(self.data_patch.stop)
         registry = Registry(plugin_dir=self.folder / 'plugins/apps').discover()
         self.hub = DeviceHub(registry=registry)
         base_handler = make_handler(self.hub, 'test-token')

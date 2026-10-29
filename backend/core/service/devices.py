@@ -17,10 +17,13 @@ class DeviceHub(ActivityCatalogHub):
         self.leases = {}
         self.closing = False
         self._init_activity_catalog()
+        from backend.core.storage.workspaces import WorkspaceStore
+        self.workspace_store = WorkspaceStore()
         self.defaults = dict(config=config, registry=registry, app=app, activity=activity, persist_preferences=persist_preferences)
         self.add('设备 1', key='default')
+        self._restore_workspaces()
 
-    def add(self, label='', key=None):
+    def add(self, label='', key=None, saved=None):
         from backend.core.service.panel import Controller
         if not isinstance(label, str) or len(label) > 60:
             raise ValueError('设备名称应不超过 60 个字符')
@@ -38,8 +41,30 @@ class DeviceHub(ActivityCatalogHub):
             controller.release_device = lambda: self.release(key)
             controller.catalog_gate = self.catalog_gate
             controller.catalog_busy = lambda: self.plugin_busy
+            controller.persist_workspace = lambda fields, _key=key: self._persist_workspace(_key, fields)
             self.controllers[key] = controller
+            if saved:
+                controller.apply_restored_settings(saved)
             return key
+
+    def _restore_workspaces(self):
+        entries = sorted(self.workspace_store.all(),
+                         key=lambda item: (item['id'] != 'default', item.get('label', '')))
+        for entry in entries:
+            key = entry['id']
+            if key in self.controllers:
+                self.controllers[key].apply_restored_settings(entry)
+                continue
+            try:
+                self.add(entry.get('label', ''), key=key, saved=entry)
+            except (ValueError, OSError):
+                continue
+
+    def _persist_workspace(self, key, fields):
+        with self.lock:
+            if self.closing or key not in self.controllers:
+                return
+        self.workspace_store.update(key, **fields)
 
     def resolve(self, key=None):
         with self.lock:
@@ -55,7 +80,9 @@ class DeviceHub(ActivityCatalogHub):
         with self.lock:
             if self.closing:
                 raise ValueError('助手正在退出')
-            self.resolve(key).workspace_label = label.strip()
+            controller = self.resolve(key)
+            controller.workspace_label = label.strip()
+        self.workspace_store.update(key, label=label.strip())
 
     @property
     def thread(self):
@@ -111,6 +138,7 @@ class DeviceHub(ActivityCatalogHub):
             del self.controllers[key]
             self.release(key)
         controller._persist_state()
+        self.workspace_store.remove(key)
 
     def batch(self, payload):
         keys, action = payload.get('devices'), payload.get('action', 'run')

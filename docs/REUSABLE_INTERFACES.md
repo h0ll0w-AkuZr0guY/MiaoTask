@@ -303,6 +303,8 @@ controller.snapshot()                            # 独立状态副本
 
 `DeviceHub` 上限 8 个工作区，每台控制器各有线程、配置、`RunControl`、记录、预览和队列。批量操作 `payload` 包含显式 `devices` 和 `action`，可附 `config/auto_open/app/activity/activities`；支持 `run/scan/open_app/pause/resume/stop`。逐台提交给独立线程，某台忙碌或离线不阻止其他台；同一物理设备的连接别名不能重复租用。批量活动计划与设置可以复制，各设备的实例选择仍独立。
 
+`hub.workspace_store`（`storage/workspaces.WorkspaceStore`，文件为 `data_dir()/workspaces.json`）按工作区持久化 `label/device_type/serial/auto_instances/config`：连接成功、`configure`、`run`（带 `all_instances` 时）、重命名同步写入，移除工作区同步删除。构造 `DeviceHub` 时按存储记录恢复工作区（含 default 之外的条目，上限 16 条、坏条目跳过），由 `Controller.apply_restored_settings` 合并：配置只覆盖当前活动配置中同名字段并重新校验，失效字段回退默认。重启只恢复数据，**不自动连接设备**；上次地址进入 `state.last_connection`（`{type, serial}`）供界面预填，设备会话、预览、任务、配对码不落盘。存储字段白名单固定，配对码/凭据等未知字段直接拒绝。测试构造 `DeviceHub` 必须用临时 `MIAO_DATA_DIR` 隔离。
+
 新增线程若产生设备日志或 OCR 状态，使用 `workspace_scope` 设置归属，或在拥有 `workspace_id` 的实例方法上使用 `@device_scoped`；不能另设全局“当前设备”。注意 `ContextVar` 不应依赖自动传入新线程，现有设备工作和预览入口均显式设置。
 
 网页复用现有请求层，读写都带 `?device=<workspace_id>`，写操作带本服务令牌并接受 Host / Origin 校验。失效 ID 不回退其他设备；切换后迟到响应不能覆盖当前页。任务按钮还需 `task_id/task_scope`。完整路由分组见[架构文档](ARCHITECTURE.md#http-与前端)，用户流程见 [USAGE](USAGE.md)。
@@ -313,9 +315,9 @@ controller.snapshot()                            # 独立状态副本
 
 侧栏显示偏好键为 `miaotask.preview-visible.v1`，默认显示。`preview-controls.js` 同步 `hidden`、工作区布局与按钮 `aria-pressed`；`app.js` 在侧栏隐藏时停止额外预览请求，不改变后台执行观察。设备新增与公共设置弹窗同样复用 `MiaoDialogs.bind`；公共设置字段保留在 `settings-form` 内，运行/连接/批量启动校验失败时自动打开对应分类。设备切换关闭设置，随后按原有初始化流程读取目标配置。
 
-`POST /api/workspaces/rename` 接受 `{id, label}`，按原有令牌、Host 和 Origin 校验；名称去空白后为 1～60 字符。只修改当前服务中该工作区的展示名称，允许执行期间改名；不改连接、运行配置、租约或日记录，失效 ID 和退出中的服务拒绝修改。
+`POST /api/workspaces/rename` 接受 `{id, label}`，按原有令牌、Host 和 Origin 校验；名称去空白后为 1～60 字符。修改当前服务中该工作区的展示名称并同步写入 `workspaces.json`，允许执行期间改名；不改运行状态、租约或日记录，失效 ID 和退出中的服务拒绝修改。
 
-`device-manager.js` 的 `MiaoDevices.prepare()` 用于连接提交前保存名称和解析目标。新增时先创建、选择并等待该工作区的 `miaotask:state`，最长 10 秒，再返回 ID；已有编辑仅重命名显式 ID，发生工作区切换时拒绝误投。USB/Wi-Fi 调用方在准备前捕获用户填写的地址，准备后再次核定当前工作区；无线配对码仍仅用于当前请求。`creating/preparing` 为只读界面状态，`refresh()` 在主页面渲染后同步弹窗控件。`miaotask:editor-mode` 通知无线编辑器清理新建设备的旧地址。设备名称与工作区一样保留在本次服务期间，不把原始地址保存到浏览器偏好。
+`device-manager.js` 的 `MiaoDevices.prepare()` 用于连接提交前保存名称和解析目标。新增时先创建、选择并等待该工作区的 `miaotask:state`，最长 10 秒，再返回 ID；已有编辑仅重命名显式 ID，发生工作区切换时拒绝误投。USB/Wi-Fi 调用方在准备前捕获用户填写的地址，准备后再次核定当前工作区；无线配对码仍仅用于当前请求。`creating/preparing` 为只读界面状态，`refresh()` 在主页面渲染后同步弹窗控件。`miaotask:editor-mode` 通知无线编辑器清理新建设备的旧地址。设备名称与上次连接地址由服务端保存在本机 `workspaces.json`（不写浏览器偏好），重启后名称恢复、地址在连接弹窗预填；不会自动连接设备。无线配对码仍只用于当前请求、不落盘。
 
 工作区摘要新增 `connection_issue`，由预览连续三次失败产生；成功 `on_image` 清零，旧设备的迟到失败忽略。这是展示诊断标志，不改 `connected`、统计、执行目标或停止状态，也不触发重连。卡片同时显示颜色和文字，不能以颜色作为任务是否可执行的后端依据。
 

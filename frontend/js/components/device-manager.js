@@ -18,8 +18,8 @@
     editorId=id;creating=!id;wanted='';
     const row=snapshot?.workspaces?.find(item=>item.id===id),draft=drafts.get(id);
     $('new-device-name').value=row?.label||'';
-    $('serial').value=creating?'':snapshot?.device?.serial||draft?.serial||'';
-    $('device-type').value=creating?'uiautomator2':snapshot?.device?.type||draft?.type||'uiautomator2';
+    $('serial').value=creating?'':snapshot?.device?.serial||draft?.serial||snapshot?.last_connection?.serial||'';
+    $('device-type').value=creating?'uiautomator2':snapshot?.device?.type||draft?.type||snapshot?.last_connection?.type||'uiautomator2';
     $('add-device-title').textContent=creating?'添加设备':'设备连接';
     $('confirm-add-device').textContent=creating?'仅创建设备':'保存名称';
     $('add-device-message').textContent='';

@@ -1,4 +1,6 @@
 """Real worker concurrency with synthetic devices; no external connections."""
+import os
+import tempfile
 from contextlib import ExitStack
 import json
 import logging
@@ -26,6 +28,14 @@ from backend.app.taobao.utils.task_rules import classify
 
 
 class HubTests(unittest.TestCase):
+    def setUp(self):
+        # Workspace settings persist into data_dir; keep every hub test private.
+        self._data_tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._data_tmp.cleanup)
+        self._data_patch = patch.dict(os.environ, {'MIAO_DATA_DIR': self._data_tmp.name})
+        self._data_patch.start()
+        self.addCleanup(self._data_patch.stop)
+
     def test_automatic_instances_uses_current_list_and_off_clears_remembered_queue(self):
         hub=DeviceHub();c=hub.resolve();main={'id':'main','user_id':0};clone={'id':'clone','user_id':999}
         c.update(app_instances=[main,clone],selected_instance='main')
