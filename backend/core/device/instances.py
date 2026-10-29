@@ -28,6 +28,9 @@ def parse_foreground(output):
     # Window focus is the visible surface, not any background activity record.
     patterns = (
         r'mCurrentFocus=Window\{[^\n]*?\bu(\d+)\s+([\w.]+)/([\w.$]+)',
+        # 部分机型（OPPO/ColorOS）下拉通知栏或有系统浮层时，mCurrentFocus 落在
+        # NotificationShade 等非应用窗口上，只有 mFocusedApp 仍指向真实前台应用。
+        r'mFocusedApp=ActivityRecord\{[^\n]*?\bu(\d+)\s+([\w.]+)/([\w.$]+)',
         r'topResumedActivity=ActivityRecord\{[^\n]*?\bu(\d+)\s+([\w.]+)/([\w.$]+)',
         r'mResumedActivity[:=]\s*ActivityRecord\{[^\n]*?\bu(\d+)\s+([\w.]+)/([\w.$]+)',
     )

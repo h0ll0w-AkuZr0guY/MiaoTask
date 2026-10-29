@@ -1,0 +1,19 @@
+{
+  "name": "月月赚",
+  "ocr": false,
+  "search_keyword": "",
+  "task_search_keyword": "月月赚",
+  "enabled_task_kinds": ["browse"],
+  "entry_labels": ["月月赚"],
+  "task_entry_labels": ["做任务", "任务中心", "去赚钱"],
+  "go_complete_label": "去完成",
+  "claim_label": "领取",
+  "more_tasks_label": "更多任务",
+  "done_labels": ["已完成", "已领取", "任务已完成", "已领取奖励"],
+  "reward_popup_text": "恭喜获得",
+  "popup_close_labels": ["关闭", "取消", "✕", "×"],
+  "list_title_labels": ["月月赚", "赚现金", "天天赚现金", "任务中心"],
+  "browse_shortcut_seconds": 5,
+  "max_scroll_pages": 16,
+  "empty_batch_stop": 1
+}
