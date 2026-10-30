@@ -117,7 +117,7 @@ GitHub 侧保留既有的发布准备、Windows 构建与审批发布工作流�
 说明开头一句主题，随后用「【新增】」「【优化】」「【修复】」等列主要变化，通常不超过 5 条，保留简短下载解压、使用链接和致谢。不写调试流水、测试数量或过时停用提醒，不承诺随机滚动可以规避风控。历史版本仅在明确授权时修改。
 
 
-发布分发预装使用 `scripts/package_windows.py --preinstall-activity taobao/double11`，从本次源码生成并校验目标活动，放入 exe 旁的 `activities/`；其他活动仍排除在框架和 ZIP 外。参数可重复，但不能和 `--include-activities` 混用。GitHub Windows 发布构建使用同一命令；普通 PR 不构建 Release。纯框架与 Release Builder 的可选预装机制仍保留。实际 exe 必须核验只注册所选预装活动；源码 ZIP 保留全部活动代码。
+GitHub Windows 发布构建使用 `scripts/package_windows.py --preinstall-all`，从本次源码生成并校验全部活动，放入 exe 旁的 `activities/`，同时保留离线恢复副本。只预装部分活动时改用可重复的 `--preinstall-activity taobao/double11`；两种预装方式不能同时使用，也不能和 `--include-activities` 混用。不传预装参数仍生成纯框架，Release Builder 的可选预装机制保留。实际 exe 必须核验只注册所选预装活动；源码 ZIP 保留全部活动代码。普通 PR 不构建 Release。
 
 框架候选还需验证：分支切换不会复用另一分支离线缓存、打开活动中心可发现新应用及更新；配置跨安装路径重启保留但不跨工作区改写运行快照；日完成标记跨进程保留并按日/实例隔离；浏览一次预算重启保留，认证不消耗次数；收工重扫不重复计成功；ADB 只清理本次新增同路径进程。测试包可预装全部源码活动，用实际冻结 EXE 验证应用导航、活动工厂、更新与退出，记录本地候选状态，不自动发布。
 
