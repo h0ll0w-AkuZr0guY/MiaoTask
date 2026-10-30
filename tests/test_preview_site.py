@@ -24,6 +24,7 @@ class PreviewSiteTests(unittest.TestCase):
             self.assertIn('不能连接手机或执行任务', html)
             self.assertIn('src="./demo/adapter.js"', html)
             self.assertNotIn('src="/', html)
+            self.assertIn('href="/api/report"', html)
             self.assertEqual(json.loads((site / 'demo/catalog.json').read_text(encoding='utf-8')), result)
             self.assertEqual(len(result['catalog']), 2)
             self.assertIn('demo/phone.svg', (site / 'js/api.js').read_text(encoding='utf-8'))
