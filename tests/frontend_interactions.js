@@ -23,7 +23,7 @@ class Element {
 function environment(saved='220'){
   const nodes=new Map(),get=id=>{if(!nodes.has(id))nodes.set(id,new Element());return nodes.get(id);};
   const window=new Element(),values=new Map([['miaotask.preview-width.v1',saved]]),card=new Element();
-  const context=vm.createContext({window,document:{documentElement:new Element(),getElementById:get,createElement:tag=>new Element(tag),querySelector:()=>card},
+  const context=vm.createContext({window,document:{documentElement:new Element(),getElementById:get,createElement:tag=>new Element(tag),querySelector:()=>card,querySelectorAll:()=>[]},
     localStorage:{getItem:key=>values.get(key),setItem:(key,value)=>values.set(key,value)},
     MiaoAPI:{device:'alpha'},Event:class{constructor(type){this.type=type;}},CustomEvent:class{constructor(type,options){this.type=type;this.detail=options.detail;}},location:{origin:'http://127.0.0.1:9917'},URL,
     requestAnimationFrame:callback=>callback(),setTimeout:()=>1,clearTimeout:()=>{}});
@@ -65,17 +65,19 @@ function checkPreview(){
   blocked.load('preview-controls.js');blocked.get('preview-size').fire('input');assert.equal(blocked.get('preview-size').value,'220');
 }
 async function checkActivityGrouping(){
-  const e=environment(),requests=[];
+  const e=environment(),requests=[],timers=[];
+  e.context.setTimeout=(fn,delay)=>{timers.push(delay);return 1;};
   const installed=Array.from({length:5},(_,i)=>({app:'sample',activity:'activity-'+i,label:'Local '+i,version:'0.0.1'}));
   const catalog={catalog:[{id:'sample',label:'Sample',activities:[{id:'activity-0',label:'Remote',installed:true,compatible:true,version:'0.0.1'}]}],installed};
-  e.context.MiaoAPI.request=async url=>{requests.push(url);return catalog;};
+  e.context.MiaoAPI.request=async url=>{if(url==='/api/plugins/branches')return {branches:['main','dev']};requests.push(url);return catalog;};
   e.load('activity-center.js');e.window.fire('miaotask:state',{detail:{token:'synthetic',catalog:[{id:'sample',label:'Sample'}],workspaces:[]}});
   e.get('activity-center-open').fire('click');await new Promise(resolve=>setImmediate(resolve));
   const groups=e.get('activity-center-list').children;
   assert.equal(groups.length,1);assert.equal(groups[0].children[1].children.length,5,'unlisted local activities use the same grid');
-  assert.equal(requests[0],'/api/plugins','opening reuses the catalog instead of forcing a remote refresh');
+  assert.equal(requests[0],'/api/plugins?refresh=1','opening must discover new branches/apps and activity revisions');
   e.get('activity-center-refresh').fire('click');await new Promise(resolve=>setImmediate(resolve));
   assert.equal(requests[1],'/api/plugins?refresh=1');
+  assert.deepEqual(timers,[],'idle activity center must not poll or refresh remote metadata');
 }
 async function checkRankings(){
   const e=environment(),dialog=e.get('rankings-dialog'),requests=[];
@@ -122,4 +124,18 @@ async function checkDevicePreparation(){
   api.device='alpha';await assert.rejects(e.window.MiaoDevices.prepare(),/设备已切换/);
   assert.equal(requests.length,2,'stale editors must not mutate another workspace');
 }
-(async()=>{checkDialogs();checkPreview();checkThemes();await checkActivityGrouping();await checkRankings();await checkDevicePreparation();console.log('PASS dialogs, preview, themes, catalog, rankings, device preparation/isolation');})().catch(error=>{console.error(error);process.exitCode=1;});
+function checkActivityInfo(){
+  const e=environment(),requests=[];e.context.MiaoAPI.request=async(...args)=>{requests.push(args);return {};};
+  e.load('activity-selector.js');
+  e.window.fire('miaotask:state',{detail:{workspace_id:'alpha',token:'synthetic',status:'ready',app:'sample',activity:'plain',activity_plan:[],catalog:[{id:'sample',label:'Sample',activities:[{id:'plain',label:'Plain'},{id:'notes',label:'Noted',description:'<b>plain text</b>\nLine two'}]}]}});
+  const tiles=e.get('activity-tiles').children;
+  assert.equal(tiles[0].tagName,'label','missing description keeps original control without info button');
+  const group=tiles[1],info=group.children[1],dialog=e.get('activity-info');
+  assert.equal(info.textContent,'!');info.fire('click');
+  assert.equal(dialog.open,true);assert.equal(e.get('activity-info-content').textContent,'<b>plain text</b>\nLine two');
+  assert.equal(requests.length,0,'viewing information must not change plan or start tasks');
+  e.get('activity-info-close').fire('click');assert.equal(dialog.open,false);
+  info.fire('click');e.window.fire('miaotask:device-selected');assert.equal(dialog.open,false);
+}
+
+(async()=>{checkActivityInfo();checkDialogs();checkPreview();checkThemes();await checkActivityGrouping();await checkRankings();await checkDevicePreparation();console.log('PASS dialogs, preview, themes, catalog, rankings, device preparation/isolation');})().catch(error=>{console.error(error);process.exitCode=1;});

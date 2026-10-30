@@ -326,3 +326,16 @@ main{margin:0 0 0 204px;width:calc(100% - 204px);max-width:none;padding:26px 28p
 @media(max-width:600px){#wifi-pair-panel>.connection-grid{grid-template-columns:minmax(0,1fr)!important}#wifi-pair-panel>.connection-grid>label{max-width:180px}#wifi-manager .wifi-connect-grid{grid-template-columns:minmax(0,1fr)}#wifi-manager .wifi-connect-grid>.button{justify-self:end}#wifi-manager .ipv4-fields{grid-template-columns:repeat(4,minmax(0,1fr) 4px) minmax(55px,1.4fr);gap:1px}}
 /* Captions align with native form labels in both address modes. */
 #wifi-manager .address-field{font-size:13.75px;color:var(--muted)}
+/* Branch controls remain compact on desktop and wrap inside narrow dialogs. */
+.activity-source-toolbar{flex-wrap:wrap;justify-content:flex-start}
+#activity-source-branch{width:210px;max-width:100%;min-width:130px;flex:0 1 210px}
+#activity-branches-refresh,#activity-center-refresh{flex:none;white-space:nowrap}
+.activity-source-toolbar .activity-source-badge{max-width:100%;margin-left:auto;white-space:nowrap;overflow-wrap:normal}
+@media(max-width:600px){.activity-source-toolbar .activity-source-badge{margin-left:0;white-space:normal;flex-basis:100%}}
+.activity-choice{display:inline-flex;align-items:center;gap:5px;max-width:100%;min-width:0}
+.activity-choice .activity-tile{min-width:0}
+.activity-info-button{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;flex:none;padding:0;border:1px solid currentColor;border-radius:50%;background:transparent;color:var(--accent,#cc6535);font-size:16px;font-weight:700;cursor:pointer}
+.activity-info-button:hover{background:var(--surface-soft,#fff1e7)}
+.activity-info-button:focus-visible{outline:2px solid currentColor;outline-offset:3px}
+#activity-info{width:min(560px,92vw);max-height:85vh;overflow:auto}
+.activity-info-content{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.9;font-size:16px;padding:16px 0 4px}

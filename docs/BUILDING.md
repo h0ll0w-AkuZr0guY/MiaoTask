@@ -118,3 +118,15 @@ GitHub 侧保留既有的发布准备、Windows 构建与审批发布工作流�
 
 
 发布分发预装使用 `scripts/package_windows.py --preinstall-activity taobao/double11`，从本次源码生成并校验目标活动，放入 exe 旁的 `activities/`；其他活动仍排除在框架和 ZIP 外。参数可重复，但不能和 `--include-activities` 混用。GitHub Windows 发布构建使用同一命令；普通 PR 不构建 Release。纯框架与 Release Builder 的可选预装机制仍保留。实际 exe 必须核验只注册所选预装活动；源码 ZIP 保留全部活动代码。
+
+框架候选还需验证：分支切换不会复用另一分支离线缓存、打开活动中心可发现新应用及更新；配置跨安装路径重启保留但不跨工作区改写运行快照；日完成标记跨进程保留并按日/实例隔离；浏览一次预算重启保留，认证不消耗次数；收工重扫不重复计成功；ADB 只清理本次新增同路径进程。测试包可预装全部源码活动，用实际冻结 EXE 验证应用导航、活动工厂、更新与退出，记录本地候选状态，不自动发布。
+
+### 静态活动资源与 GitHub Pages
+
+`python scripts/build_activity_site.py --output _site/activities` 从干净提交生成静态目录、固定提交索引和全部活动 ZIP；不构建 exe，不创建 Release，不修改源码。当前默认生成 main；其他分支可在对应干净源码中使用 `--source-ref` 生成同协议目录，可对多个干净源码快照重复写入同一输出目录，分支索引合并，包与提交索引保持独立；未进入镜像的分支仍走官方源码备用通道。
+
+`.github/workflows/activity-pages.yml` 已提供活动源码更新后的构建/Pages 部署流程，默认受仓库变量 `MIAOTASK_ACTIVITY_PAGES=true` 控制。维护者审阅合并后，在仓库 Settings → Pages 选择 GitHub Actions，设置该变量，再手动运行工作流。当前本地准备不代表已经启用线上站点。Pages 的发布独立于 Windows Release，普通 PR 不部署。以后国内资源源复用此静态产物与校验协议，经维护者审核后加入来源配置。
+
+容灾验收应模拟 API 403：备用通道列出新应用和最新提交、仅安装所选活动；卸载后断网恢复、整个活动目录丢失后从随包基线恢复、损坏包拒绝恢复、空闲轮询不反复访问远端。打包预装项会同步写入 `_internal/activity-recovery` 和可写活动恢复缓存。
+
+v0.1.4 发布包使用 `--preinstall-all`，预装本次源码中的全部六项活动及各自恢复包。它与 `--preinstall-activity` 显式选择及 `--include-activities` 内置模式互斥；纯框架默认构建保持不变。

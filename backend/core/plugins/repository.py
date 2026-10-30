@@ -7,12 +7,20 @@ import sys
 import time
 from urllib.parse import quote, unquote, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.error import HTTPError, URLError
 import zipfile
 
 from backend.core.plugins.contracts import (ALLOWED_SUFFIXES, CATALOG_URL, FRAMEWORK_API,
     LEGACY_COMPATIBLE_MANIFESTS, MAX_ARCHIVE_BYTES, MAX_CATALOG_BYTES, MAX_EXPANDED_BYTES,
     MAX_FILES, MAX_SOURCE_FILE_BYTES, MAX_TREE_BYTES, OFFICIAL_REPOSITORY,
-    PACKAGE_SCHEMA, SOURCE_REF, module_id, package_version)
+    PACKAGE_SCHEMA, SOURCE_REF, module_id, package_version, branch_name)
+
+
+_API_RETRY_AT = 0.0
+
+
+class SourceRateLimited(OSError):
+    pass
 
 
 def commit_id(value):
@@ -38,7 +46,8 @@ def source_url(value):
     raw_prefix = '/' + OFFICIAL_REPOSITORY + '/'
     if parsed.netloc == 'api.github.com' and parsed.path.startswith(api_prefix):
         tail = parsed.path[len(api_prefix):]
-        allowed = (tail == 'git/ref/heads/' + SOURCE_REF and not parsed.query
+        allowed = (tail.startswith('git/ref/heads/') and branch_name(unquote(tail[len('git/ref/heads/'):])) and not parsed.query
+                   or tail == 'git/matching-refs/heads/' and not parsed.query
                    or re.fullmatch(r'git/commits/[0-9a-f]{40}', tail) and not parsed.query
                    or re.fullmatch(r'git/trees/[0-9a-f]{40}', tail) and parsed.query == 'recursive=1')
         if allowed:
@@ -48,6 +57,12 @@ def source_url(value):
         if len(remainder) == 2:
             commit_id(remainder[0]); safe_source_path(unquote(remainder[1]))
             return value
+    from backend.core.plugins.git_archive import REFS_URL
+    if value == REFS_URL:
+        return value
+    if parsed.netloc == 'codeload.github.com' and parsed.path.startswith(raw_prefix+'zip/') and not parsed.query:
+        commit_id(parsed.path[len(raw_prefix+'zip/'):])
+        return value
     raise ValueError('活动源码地址超出官方仓库或固定提交')
 
 
@@ -57,11 +72,25 @@ class _NoRedirect(HTTPRedirectHandler):
 
 
 def download_source(url, maximum):
+    global _API_RETRY_AT
     source_url(url)
+    if urlparse(url).hostname == 'api.github.com' and time.time() < _API_RETRY_AT:
+        raise SourceRateLimited('GitHub API 暂时限流，已暂停 API 重试')
     request = Request(url, headers={'User-Agent': 'MiaoTask-GitHub-Activities',
                       'Accept': 'application/vnd.github+json' if urlparse(url).hostname == 'api.github.com' else 'application/octet-stream',
                       'X-GitHub-Api-Version': '2022-11-28'})
-    with build_opener(_NoRedirect()).open(request, timeout=15) as response:
+    try:
+        response = build_opener(_NoRedirect()).open(request, timeout=15)
+    except HTTPError as exc:
+        if urlparse(url).hostname == 'api.github.com' and exc.code in (403, 429):
+            try:
+                reset = float(exc.headers.get('X-RateLimit-Reset', '0'))
+                delay = float(exc.headers.get('Retry-After', '60'))
+            except ValueError:
+                reset, delay = 0, 60
+            _API_RETRY_AT = max(time.time() + min(max(delay,60),3600), min(reset,time.time()+7200))
+        raise
+    with response:
         source_url(response.geturl())
         content, size, deadline = [], 0, time.monotonic() + 30
         reader = getattr(response, 'read1', response.read)
@@ -85,8 +114,9 @@ def validate_source_catalog(value):
     from backend.core.registry import checked_id
     if (not isinstance(value, dict) or value.get('schema') != PACKAGE_SCHEMA
             or value.get('repository') != OFFICIAL_REPOSITORY or value.get('source') != 'github-source'
-            or value.get('source_ref') != SOURCE_REF or not isinstance(value.get('packages'), list)):
+            or not isinstance(value.get('source_ref'), str) or not isinstance(value.get('packages'), list)):
         raise ValueError('GitHub 活动源码目录格式无效')
+    branch_name(value['source_ref'])
     revision = commit_id(value.get('source_commit'))
     seen = set()
     for item in value['packages']:
@@ -107,7 +137,8 @@ def validate_source_catalog(value):
 
 class GitHubSourceProvider:
     """Small metadata reads, followed by only the explicitly selected source tree."""
-    def __init__(self, fetch=None, *, clock=None):
+    def __init__(self, fetch=None, *, clock=None, source_ref=SOURCE_REF):
+        self.source_ref = branch_name(source_ref)
         self.fetch = fetch or download_source
         self.clock = clock or time.monotonic
         self.deadline = None
@@ -115,6 +146,34 @@ class GitHubSourceProvider:
         self.blobs = {}
         self.contents = {}
         self.entries = {}
+        self.transport = 'github-api'
+        self._mirror = None
+
+    def branches(self):
+        self.deadline = self.clock() + 30
+        url = f'https://api.github.com/repos/{OFFICIAL_REPOSITORY}/git/matching-refs/heads/'
+        try:
+            rows = json.loads(self._read(url, MAX_TREE_BYTES))
+        except (HTTPError, URLError, SourceRateLimited) as exc:
+            if isinstance(exc, HTTPError) and exc.code not in (403,429):
+                raise
+            from backend.core.plugins.git_archive import advertised_branches, REFS_URL
+            return sorted(advertised_branches(self._read(REFS_URL, MAX_TREE_BYTES)), key=lambda name: (name != SOURCE_REF, name))
+        if not isinstance(rows, list):
+            raise ValueError('无法读取官方分支列表')
+        names = {branch_name(row['ref'].removeprefix('refs/heads/')) for row in rows
+                 if isinstance(row, dict) and isinstance(row.get('ref'), str) and row['ref'].startswith('refs/heads/')}
+        return sorted(names, key=lambda name: (name != SOURCE_REF, name))
+
+    def _resolve_archive(self, pinned=None):
+        from backend.core.plugins.git_archive import advertised_branches, source_snapshot, REFS_URL, MAX_REPOSITORY_ZIP
+        commit = commit_id(pinned) if pinned else advertised_branches(self._read(REFS_URL, MAX_TREE_BYTES)).get(self.source_ref)
+        if not commit:
+            raise ValueError('官方仓库没有所选分支')
+        if self.commit != commit or not self.blobs:
+            content = self._read(f'https://codeload.github.com/{OFFICIAL_REPOSITORY}/zip/{commit}', MAX_REPOSITORY_ZIP)
+            self.blobs, self.contents = source_snapshot(content, commit)
+        self.commit, self.entries, self.transport = commit, {}, 'github-archive'
 
     def _check_budget(self):
         if self.deadline is not None and self.clock() > self.deadline:
@@ -134,10 +193,10 @@ class GitHubSourceProvider:
 
     def _resolve(self, pinned=None):
         if pinned is None:
-            ref = self._json(CATALOG_URL)
-            if (ref.get('ref') != 'refs/heads/' + SOURCE_REF or not isinstance(ref.get('object'), dict)
+            ref = self._json(f'https://api.github.com/repos/{OFFICIAL_REPOSITORY}/git/ref/heads/' + quote(self.source_ref, safe='/'))
+            if (ref.get('ref') != 'refs/heads/' + self.source_ref or not isinstance(ref.get('object'), dict)
                     or ref['object'].get('type') != 'commit'):
-                raise ValueError('无法确认官方仓库 main 分支')
+                raise ValueError('无法确认所选官方仓库分支')
             commit = commit_id(ref['object'].get('sha'))
         else:
             commit = commit_id(pinned)
@@ -196,7 +255,24 @@ class GitHubSourceProvider:
         from backend.core.plugins.manager import _declaration
         from backend.core.registry import checked_id
         self.deadline = self.clock() + 60
-        self._resolve(commit)
+        self._mirror = None
+        try:
+            self._resolve(commit)
+            self.transport = 'github-api'
+        except (HTTPError, URLError, SourceRateLimited) as exc:
+            if isinstance(exc, HTTPError) and exc.code not in (403,429):
+                raise
+            from backend.core.plugins.resource_mirror import RESOURCE_MIRRORS, ResourceMirror
+            for base in RESOURCE_MIRRORS:
+                try:
+                    mirror = ResourceMirror(base, fetch=None if self.fetch is download_source else self.fetch, source_ref=self.source_ref)
+                    value = mirror.catalog(commit)
+                    self._mirror, self.commit, self.transport = mirror, value['source_commit'], 'pages'
+                    self.entries = {(item['app'],item['activity']):item for item in value['packages']}
+                    return value
+                except (OSError, ValueError):
+                    continue
+            self._resolve_archive(commit)
         packages, warnings, ids, owners = [], [], set(), {}
         app_paths = sorted(path for path in self.blobs if re.fullmatch(r'backend/app/[a-z][a-z0-9_]*/manifest\.py', path))
         for app_path in app_paths:
@@ -245,18 +321,20 @@ class GitHubSourceProvider:
                     ids.add(key)
                     entry = dict(app=app_id, activity=identity, app_module=app_module,
                         activity_module=activity_module, app_label=app_label, label=label,
-                        framework_api=api, python=python, source='github-source', source_ref=SOURCE_REF,
+                        framework_api=api, python=python, source='github-source', source_ref=self.source_ref,
                         source_commit=self.commit, revision=self.commit[:12],
                         version='0.0.0+git.' + self.commit[:12], device_types=list(drivers), compatibility=compatibility)
                     packages.append(entry); self.entries[key] = entry
                 except (ValueError, SyntaxError, UnicodeError) as exc:
                     warnings.append(f'{app_module}/{activity_module}: {exc}')
         return validate_source_catalog(dict(schema=PACKAGE_SCHEMA, framework_api=FRAMEWORK_API,
-            repository=OFFICIAL_REPOSITORY, source='github-source', source_ref=SOURCE_REF,
-            source_commit=self.commit, revision=self.commit[:12], packages=packages, warnings=warnings))
+            repository=OFFICIAL_REPOSITORY, source='github-source', source_ref=self.source_ref,
+            source_commit=self.commit, revision=self.commit[:12], packages=packages, warnings=warnings, transport=self.transport))
 
     def build_archive(self, entry, destination):
         """Download only this app's shared files and one selected activity."""
+        if self._mirror is not None:
+            return self._mirror.build_archive(entry, destination)
         self.deadline = self.clock() + 120
         key = entry.get('app'), entry.get('activity')
         if (entry.get('source_commit') != self.commit or key not in self.entries

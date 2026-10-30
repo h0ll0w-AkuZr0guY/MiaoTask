@@ -71,7 +71,7 @@
             <div class="settings-panel-heading"><div><h3>高级选项</h3><p>跨应用访问、页面识别与特殊入口方式。</p></div></div>
             <div class="settings-switch"><label><input type="checkbox" id="cross-app" checked><span>完成跨应用跳转并返回<small>返回失败时有限尝试恢复所选应用实例</small></span></label></div>
             <div class="settings-switch"><label><input type="checkbox" id="ocr" checked><span>页面不可读时使用本地 OCR<small>手机截图在电脑本地识别</small></span></label></div>
-            <div class="advanced-entry"><span class="field-label">特殊入口方式</span><label class="radio"><input type="radio" name="mode" value="current">从手机当前页面开始</label><p class="field-hint">仅在手机已打开所选实例的活动页时使用；默认自动进入更适合日常执行。</p></div>
+            <div class="settings-switch"><label><input type="checkbox" id="minimum-volume"><span>执行时媒体音量最低<small>结束或中断后尝试恢复原值</small></span></label></div><div class="settings-switch"><label><input type="checkbox" id="minimum-brightness"><span>执行时屏幕亮度最低<small>暂时关闭自动亮度，结束后恢复；不关闭屏幕</small></span></label></div><p class="field-hint">公共配置应用或开始时保存到系统用户目录，升级保留。设备不支持的设置仅记录提示。</p><div class="advanced-entry"><span class="field-label">特殊入口方式</span><label class="radio"><input type="radio" name="mode" value="current">从手机当前页面开始</label><p class="field-hint">仅在手机已打开所选实例的活动页时使用；默认自动进入更适合日常执行。</p></div>
           </section>
           <div class="settings-save" id="settings-save" hidden><span>关闭保留本页修改，下次开始时使用</span><button type="button" class="button settings-apply" id="save-settings">应用设置</button></div>            </div>
           </dialog></form>
@@ -157,12 +157,16 @@
     <button type="button" class="theme-choice" data-theme-choice="night" aria-pressed="false"><span class="theme-swatch swatch-night" aria-hidden="true"><i></i><i></i><i></i></span><strong>午夜</strong><small>柔和的深色界面</small></button>
   </div><p class="field-hint">立即生效，记住这台浏览器的选择。</p>
 </dialog>
+<dialog id="activity-info" class="workbench-dialog" aria-labelledby="activity-info-title">
+  <div class="activity-center-heading"><h2 id="activity-info-title">活动说明</h2><button type="button" class="feature-button" id="activity-info-close" aria-label="关闭活动说明">关闭 ✕</button></div>
+  <div id="activity-info-content" class="activity-info-content"></div>
+</dialog>
 <dialog id="activity-center" aria-labelledby="activity-center-title">
   <div class="activity-center-heading"><div><span class="eyebrow">INSTALL ONLY WHAT YOU NEED</span><h2 id="activity-center-title">活动中心</h2></div><button type="button" class="feature-button" id="activity-center-close" aria-label="关闭活动中心">关闭 ✕</button></div>
-  <div class="activity-source-toolbar"><span id="activity-source-label" class="activity-source-badge">MiaoTask GitHub 活动源码</span><button type="button" class="feature-button" id="activity-center-refresh">↻ 刷新目录</button></div>
+  <div class="activity-source-toolbar"><select id="activity-source-branch" aria-label="活动源码分支"><option value="main">main</option></select><button type="button" class="feature-button" id="activity-branches-refresh">查找分支</button><span id="activity-source-label" class="activity-source-badge">MiaoTask GitHub 活动源码</span><button type="button" class="feature-button" id="activity-center-refresh">↻ 刷新目录</button></div>
   <div class="activity-center-body"><p id="activity-center-message" class="field-hint" role="status" aria-live="polite">选择需要的活动，下载后在主页面勾选。</p>
     <details class="activity-folder"><summary>活动源码保存位置</summary><div class="activity-folder-content"><code id="activity-folder-path">正在读取…</code><button type="button" class="feature-button" id="activity-folder-open">打开文件夹 ↗</button></div></details>
-    <div id="activity-center-list"></div><p class="activity-center-note">只下载所选活动与必要共用代码，卸载保留日记录；修改活动前请停止所有设备。</p>
+    <div id="activity-center-list"></div><p class="activity-center-note">仅安装所选活动与共用代码，卸载保留日记录和恢复包；备用通道可能读取源码归档。修改活动前请停止所有设备。</p>
   </div>
 </dialog><div class="toast" id="toast" role="alert" hidden></div>
 </body>

@@ -19,6 +19,9 @@ def validate_config(config):
     for key in ('allow_cross_app', 'ocr', 'scroll_browse', 'claim_rewards'):
         if not isinstance(config.get(key), bool):
             raise ValueError(f'{key} 必须为布尔值')
+    for key in ('minimum_volume', 'minimum_brightness'):
+        if not isinstance(config.setdefault(key, False), bool):
+            raise ValueError(f'{key} 必须为布尔值')
     kinds = config.get('enabled_task_kinds', ['browse', 'search', 'visit', 'claim'])
     if (not isinstance(kinds, list) or not kinds
             or any(not isinstance(kind, str) or kind not in {'browse', 'search', 'visit', 'claim'} for kind in kinds)

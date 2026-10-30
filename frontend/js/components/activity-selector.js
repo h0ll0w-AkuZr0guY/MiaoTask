@@ -2,7 +2,9 @@
 (() => {
   const $=id=>document.getElementById(id), node=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
   let snapshot=null, viewApp='', workspace='', signature='';
-  const pending=new Map();
+  const pending=new Map(), infoDialog=$('activity-info');
+  MiaoDialogs.bind(infoDialog);
+  $('activity-info-close').addEventListener('click',()=>infoDialog.close());
   const key=item=>item.app+'/'+item.activity;
   const error=message=>window.dispatchEvent(new CustomEvent('miaotask:error',{detail:message}));
   function plan(){if(!snapshot||snapshot.workspace_id&&snapshot.workspace_id!==MiaoAPI.device)return [];return pending.get(MiaoAPI.device)?.activities || snapshot.activity_plan || (snapshot.app&&snapshot.activity?[{app:snapshot.app,activity:snapshot.activity}]:[]);}
@@ -27,7 +29,12 @@
     if(!catalog.length)tabs.append(node('p','field-hint','框架已就绪，安装所需应用的活动后即可开始。'));
     const current=catalog.find(app=>app.id===viewApp), list=$('activity-tiles');list.replaceChildren();
     $('activity-selection-title').textContent=current?current.label+' · 已安装活动':'选择要执行的活动';
-    for(const activity of current?.activities||[]){const item={app:current.id,activity:activity.id},selected=activities.some(other=>key(other)===key(item));const tile=node('label','activity-tile'+(selected?' selected':'')),check=node('input');check.type='checkbox';check.checked=selected;check.disabled=locked;check.addEventListener('change',()=>update(item,check.checked));tile.append(check,node('strong','',activity.label));list.append(tile);}
+    for(const activity of current?.activities||[]){const item={app:current.id,activity:activity.id},selected=activities.some(other=>key(other)===key(item));const tile=node('label','activity-tile'+(selected?' selected':'')),check=node('input');check.type='checkbox';check.checked=selected;check.disabled=locked;check.addEventListener('change',()=>update(item,check.checked));tile.append(check,node('strong','',activity.label));
+      if(typeof activity.description==='string'&&activity.description.trim()){
+        const group=node('span','activity-choice'),info=node('button','activity-info-button','!');info.type='button';info.setAttribute('aria-label',activity.label+'活动说明');info.setAttribute('aria-haspopup','dialog');info.title='活动说明';
+        info.addEventListener('click',()=>{$('activity-info-title').textContent=activity.label+' · 活动说明';$('activity-info-content').textContent=activity.description;if(!infoDialog.open)infoDialog.showModal();});
+        group.append(tile,info);list.append(group);
+      }else list.append(tile);}
     if(!current?.activities?.length){const empty=node('div','activity-empty');empty.append(node('strong','','按需安装，保持轻量'),node('p','','活动独立更新，框架无需为每个活动重新下载。'));const button=node('button','feature-button','打开活动中心');button.type='button';button.addEventListener('click',()=>window.dispatchEvent(new Event('miaotask:open-activity-center')));empty.append(button);list.append(empty);}
     const queue=$('activity-pipeline');queue.replaceChildren();
     const statuses={pending:'等待执行',running:'执行中',finished:'已结束',stopped:'已停止',needs_attention:'待本人处理',error:'出现异常'};
@@ -43,7 +50,7 @@
     $('activity-apply').disabled=true;
   }
   $('pipeline-clear').addEventListener('click',()=>save([]));
-  window.addEventListener('miaotask:device-selected',()=>{snapshot=null;signature='';for(const control of document.querySelectorAll('#activity-tiles input,#activity-pipeline button,#pipeline-clear'))control.disabled=true;});
+  window.addEventListener('miaotask:device-selected',()=>{if(infoDialog.open)infoDialog.close();snapshot=null;signature='';for(const control of document.querySelectorAll('#activity-tiles input,#activity-pipeline button,#pipeline-clear'))control.disabled=true;});
   window.addEventListener('miaotask:state',event=>{snapshot=event.detail;const device=MiaoAPI.device;if(workspace!==device){workspace=device;viewApp=snapshot.app||'';signature='';}const change=pending.get(device);if(change&&(JSON.stringify(snapshot.activity_plan||[])===JSON.stringify(change.activities)||Date.now()-change.since>10000||snapshot.status==='error'))pending.delete(device);render();});
   window.MiaoActivities=Object.freeze({get plan(){return plan().map(item=>({...item}));},get locked(){return busy();}});
 })();

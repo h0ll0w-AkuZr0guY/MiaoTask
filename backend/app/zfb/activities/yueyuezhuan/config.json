@@ -3,17 +3,41 @@
   "ocr": false,
   "search_keyword": "",
   "task_search_keyword": "月月赚",
-  "enabled_task_kinds": ["browse"],
-  "entry_labels": ["月月赚"],
-  "task_entry_labels": ["做任务", "任务中心", "去赚钱"],
+  "enabled_task_kinds": [
+    "browse"
+  ],
+  "entry_labels": [
+    "月月赚"
+  ],
+  "task_entry_labels": [
+    "做任务",
+    "任务中心",
+    "去赚钱"
+  ],
   "go_complete_label": "去完成",
   "claim_label": "领取",
   "more_tasks_label": "更多任务",
-  "done_labels": ["已完成", "已领取", "任务已完成", "已领取奖励"],
+  "done_labels": [
+    "已完成",
+    "已领取",
+    "任务已完成",
+    "已领取奖励"
+  ],
   "reward_popup_text": "恭喜获得",
-  "popup_close_labels": ["关闭", "取消", "✕", "×"],
-  "list_title_labels": ["月月赚", "赚现金", "天天赚现金", "任务中心"],
+  "popup_close_labels": [
+    "关闭",
+    "取消",
+    "✕",
+    "×"
+  ],
+  "list_title_labels": [
+    "月月赚",
+    "赚现金",
+    "天天赚现金",
+    "任务中心"
+  ],
   "browse_shortcut_seconds": 5,
   "max_scroll_pages": 16,
-  "empty_batch_stop": 1
+  "empty_batch_stop": 1,
+  "description": "🎁 免费领取转账红包\n这是一款转账红包（非支付减免红包），领取后转账给他人的无门槛使用红包\n\n使用方法：\n转账给他人时自动减免金额。建议转给自己的小号，轻松\"薅羊毛\"，数额虽不大，但积少成多，白拿的钱不要错过！💰"
 }

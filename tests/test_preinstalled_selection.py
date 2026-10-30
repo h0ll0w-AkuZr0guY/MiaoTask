@@ -13,3 +13,10 @@ class PreinstalledSelectionTests(unittest.TestCase):
         for choices in (['missing/daily'], ['sample/daily', 'sample/daily']):
             with self.assertRaises(ValueError):
                 selected_packages(catalog, choices)
+
+class AllPreinstalledSelectionTests(unittest.TestCase):
+    def test_every_catalog_item_and_exclusive_choices(self):
+        catalog={'packages':[{'app':'sample','activity':'a'},{'app':'sample','activity':'b'}]}
+        self.assertEqual(selected_packages(catalog,[],True),catalog['packages'])
+        with self.assertRaises(ValueError):
+            selected_packages(catalog,['sample/a'],True)

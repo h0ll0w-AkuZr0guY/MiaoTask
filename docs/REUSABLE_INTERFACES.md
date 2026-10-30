@@ -412,3 +412,23 @@ controller.dispatch('run', {'auto_open': True})
 `configure/run` 可携带布尔 `all_instances`，保存在当前服务工作区的状态中，默认关闭。流水线在每个活动装配后，开启时从当前 `app_instances` 重新生成全部 ID；显式关闭时选主应用，不继承上次的全部分身队列。批量启动沿用各工作区自身开关，不复制发起设备的选择；原有显式 `instance_ids` API 保留。身份核对、串行执行、异常中断及日记录隔离继续生效。
 
 无线表单统一用 `wifi-full-address` 控制两项地址的四段 IPv4/完整地址模式，保留独立的配对与连接端口；切换模式同步已填值，设备切换恢复该工作区草稿。表单布局不再套用通用连接网格的跨列按钮规则。退出操作统一由系统托盘提供，未加入浏览器关闭自动退出，避免刷新或关闭一个标签时停止其他设备。
+
+## 分支、用户配置与会话收尾
+
+* `GitHubSourceProvider(fetch=None, clock=None, source_ref='main')` 保留原默认与注入契约。`branches()` 返回官方仓库分支；`catalog()` 把所选分支解析到固定 SHA，后续下载不追踪移动分支。`branch_name()` 校验 Git ref；所有 URL 仍限定官方仓库。`PluginManager.catalog()` 拒绝把其他分支缓存当离线回退。
+* `POST /api/plugins/source` 接受 `source_ref`，仅所有设备空闲且无安装事务时切换，持久化来源并清空服务快照。`GET /api/plugins/branches` 返回官方分支；原目录 API 与安装 SHA 校验保留。框架 API 仍为 1。
+* `storage.preferences` 的 `read_preferences/save_preferences` 原子维护用户目录文件，更新时保留其他配置项。服务明确启用持久化；测试控制器默认不写真实用户配置。公共字段白名单来自 defaults.json，保存后不改变其他运行工作区的配置快照。
+* `device_comfort(device, config)` 是可选 Android 会话上下文，读原值再修改并在 finally 恢复；每条 shell 有界且复用设备 IO 锁。权限不足仅日志提示，不安装工具、不更换输入法。
+* `apply_browse_contract(task)` 基于副标题解释浏览约束，不能绕过支付/登录/邀请等边界。可选 `Task.browse_once` 默认为 False，序列化默认任务保持旧字段；`TaskPolicy.mark_browse_once` 按日保存普通尝试，认证和停止不消耗该次数。共用控制器仍负责隔离。
+* `DailyState.activity_finished()/mark_activity_finished()` 是设备、实例、活动和日期范围内的完成标记；旧记录缺失时默认 False。仅正常耗尽候选且无未核验任务的会话标记，任务选择变更解除。流水线在启动该实例前读取；不跨应用或跨实例继承。
+* `OwnedAdb` 在启动前记录同一路径已有进程，退出时只清理新增且创建时间仍一致的进程，归属不明则不操作。不会调用共享服务器的全局 kill-server。
+
+### 活动资源多通道与恢复
+
+`GitHubSourceProvider` 在限流时先尝试 `RESOURCE_MIRRORS` 中审核过的静态目录，再通过官方 Git HTTP refs 和固定提交 codeload 归档读取源码。全程保留固定 SHA、路径/大小/符号链接检查及活动包摘要/工厂验证；不启动外部 Git，不切换 IP，不嵌入访问凭据。API 冷却期内不重试 API；操作总预算仍受读屏之外的原有源码下载预算约束。
+
+`ResourceMirror(base, fetch=None, source_ref='main')` 是 Pages 与未来国内镜像共用的静态协议：`branches/<分支SHA256>.json`、`commits/<提交SHA>/<分支SHA256>.json`、`packages/<包名>.zip`，目录为 github-source 格式，包按 SHA256 与提交校验。来源在 `RESOURCE_MIRRORS` 集中维护，不信任远端索引提供的任意下载 URL。镜像服务器不得改包，只同步同一静态产物。未部署或不可用时继续官方归档通道；开发分支未发布到镜像时也可使用官方源码通道。
+
+`RecoveryStore` 将校验后的安装包与索引保存在独立目录。`PluginManager.restore(app,activity)` 只接受本机索引中的包，使用原有安装事务/共享文件冲突/工厂验证；`POST /api/plugins/restore` 复用全部工作区空闲锁和身份校验。安装成功后缓存原包，卸载不删恢复包。打包器同时生成只读随包恢复基线，初次活动目录全删后仍有入口。`snapshot` 的活动项增加 `offline_recovery`，本机恢复项标记 `source=bundled-recovery`；不会冒充远端最新版。
+
+活动配置可选 `description` 字段：最多 4000 字符纯文本，`Registration.description` 与已安装活动目录 API 只在非空时提供。前端在活动选择旁显示独立说明按钮，阅读不改变计划、不会启动任务；正文使用 textContent，支持换行，禁止 HTML 执行。说明随活动源码更新，不修改执行契约或框架 API。

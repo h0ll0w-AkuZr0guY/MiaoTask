@@ -23,6 +23,15 @@ MAX_CATALOG_BYTES = 2 * 1024 * 1024
 ALLOWED_SUFFIXES = {'.py', '.json', '.yaml', '.yml', '.txt', '.md', '.png', '.jpg', '.jpeg', '.webp'}
 
 
+def branch_name(value):
+    if (not isinstance(value, str) or not value or len(value) > 200 or value.startswith(('-', '/'))
+            or re.search(r'[\x00-\x20\x7f~^:?*\[\\]', value) or '@{' in value
+            or any(part in ('', '.', '..') or part.startswith('.') or part.endswith(('.', '.lock')) for part in value.split('/'))
+            or '..' in value or value.endswith('/')):
+        raise ValueError('GitHub 分支名称无效')
+    return value
+
+
 def module_id(value):
     if (not isinstance(value, str) or not re.fullmatch(r'[a-z][a-z0-9_]*', value)
             or keyword.iskeyword(value) or value == 'common'):

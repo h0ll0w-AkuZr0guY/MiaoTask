@@ -75,7 +75,10 @@ def manifest_tree(root):
 class MigrationContracts(unittest.TestCase):
     def test_original_config_and_synthetic_parser_results_are_identical(self):
         fixture = json.loads((ROOT / 'tests/fixtures/v009_contract.json').read_text(encoding='utf-8'))
-        self.assertEqual(load_config(), fixture['config'])
+        configured = load_config()
+        for key in ('minimum_volume', 'minimum_brightness'):
+            self.assertIs(configured.pop(key), False)
+        self.assertEqual(configured, fixture['config'])
         for case in fixture['cases']:
             nodes = [TextNode(n['text'], tuple(n['bounds'])) for n in case['nodes']]
             # JSON normalizes tuples to arrays on both sides.

@@ -23,6 +23,7 @@ class Session:
         from backend.core.execution.task_policy import TaskPolicy
         self.task_policy = task_policy or TaskPolicy()
         self.records = {}
+        self._verified_progress = set()
         target = getattr(device, 'selected_instance', None)
         self.target_instance = target if isinstance(target, AppInstance) else None
         self.origin = self.target_instance.package if self.target_instance else None

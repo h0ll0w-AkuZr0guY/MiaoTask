@@ -42,6 +42,10 @@ class Task:
     skip_reason: str = ""
     target_app: str = ""
     target_packages: tuple = ()
+    browse_once: bool = False
 
     def to_dict(self):
-        return asdict(self)
+        result = asdict(self)
+        if not result['browse_once']:
+            result.pop('browse_once')
+        return result

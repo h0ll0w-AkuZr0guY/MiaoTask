@@ -27,5 +27,7 @@
   "swipe_interval_max": 0,
   "swipe_burst_min": 1,
   "swipe_burst_max": 3,
-  "claim_rewards": true
+  "claim_rewards": true,
+  "minimum_volume": false,
+  "minimum_brightness": false
 }

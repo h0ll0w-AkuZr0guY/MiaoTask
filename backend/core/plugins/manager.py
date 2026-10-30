@@ -242,7 +242,7 @@ def validate_archive(path, expected_sha256, *, expected_app=None, expected_activ
 
 
 class PluginManager:
-    def __init__(self, root=None, *, catalog_url=None, allow_local=False, source_provider=None):
+    def __init__(self, root=None, *, catalog_url=None, allow_local=False, source_provider=None, recovery_dir=None):
         self.root = Path(root).resolve() if root is not None else activities_dir()
         self.apps_dir = self.root / 'apps'
         self.root.mkdir(parents=True, exist_ok=True)
@@ -250,6 +250,10 @@ class PluginManager:
         self.cache_path = self.root / 'catalog.json'
         self.state_path = self.root / 'installed.json'
         self.last_error = ''
+        from backend.core.plugins.recovery import RecoveryStore
+        from backend.core.runtime import assets_dir
+        self.recovery = RecoveryStore(self.root / 'recovery')
+        self.bundled_recovery = RecoveryStore(recovery_dir if recovery_dir is not None else assets_dir() / 'activity-recovery')
         self.catalog_url = catalog_url or CATALOG_URL
         self.local_origin = _local_source_url(self.catalog_url) if allow_local else None
         self.source_provider = None
@@ -316,15 +320,19 @@ class PluginManager:
             if self.cache_path.is_file():
                 try:
                     cached = self._validate_catalog(json.loads(self.cache_path.read_text(encoding='utf-8')), local_origin=self.local_origin, source_only=self.source_provider is not None)
+                    if self.source_provider is not None and cached.get('source_ref') != getattr(self.source_provider, 'source_ref', 'main'):
+                        cached = None
                 except (ValueError, OSError):
                     pass
-            self.last_error = ''
+            if cached is None and self.last_error and not refresh:
+                return {'schema':1,'repository':OFFICIAL_REPOSITORY,'packages':[]}, False
             if refresh or cached is None:
                 try:
                     value = (self.source_provider.catalog() if self.source_provider is not None
                              else json.loads(self._fetch(self.catalog_url, MAX_CATALOG_BYTES)))
                     value = self._validate_catalog(value, local_origin=self.local_origin, source_only=self.source_provider is not None)
                     _atomic_json(self.cache_path, value)
+                    self.last_error = ''
                     return value, False
                 except Exception as exc:
                     self.last_error = '无法更新官方活动目录：' + str(exc)
@@ -337,8 +345,15 @@ class PluginManager:
         installed = self.installed()
         by_id = {(p['app'], p['activity']): p for p in installed}
         applications, packages = {}, []
-        for item in catalog['packages']:
-            entry = dict(item)
+        recoverable = {(row['app'],row['activity']): row for row in self.bundled_recovery.entries()}
+        recoverable.update({(row['app'],row['activity']):row for row in self.recovery.entries()})
+        available = list(catalog['packages'])
+        online_keys = {(row['app'],row['activity']) for row in available}
+        for key, row in recoverable.items():
+            if key not in online_keys:
+                available.append(dict(row, source='bundled-recovery', revision=row['version']))
+        for item in available:
+            entry = dict(item, offline_recovery=(item['app'],item['activity']) in recoverable)
             local = by_id.get((item['app'], item['activity']))
             entry.update(id=item['activity'], installed=local is not None,
                          installed_version=local['version'] if local else '',
@@ -348,15 +363,15 @@ class PluginManager:
                              if item.get('source') == 'github-source' else local['version'] != item['version'])),
                          compatible=item['framework_api'] == FRAMEWORK_API
                          and item['python'] == f'{sys.version_info.major}.{sys.version_info.minor}',
-                         source='local-test' if self.local_origin else 'github-source')
+                         source='local-test' if self.local_origin else item.get('source', 'github-source'))
             packages.append(entry)
             app = applications.setdefault(item['app'], {'id': item['app'], 'label': item.get('app_label', item['app']), 'activities': []})
             app['activities'].append(entry)
         return {'framework_api': FRAMEWORK_API, 'repository': OFFICIAL_REPOSITORY,
                 'catalog': list(applications.values()), 'packages': packages,
-                'installed': installed, 'error': self.last_error, 'cached': cached,
+                'installed': installed, 'error': self.last_error, 'cached': cached, 'transport': catalog.get('transport', ''),
                 'source': 'local-test' if self.local_origin else 'github-source', 'test_source': self.local_origin is not None,
-                'source_commit': catalog.get('source_commit', ''), 'source_ref': catalog.get('source_ref', ''),
+                'source_commit': catalog.get('source_commit', ''), 'source_ref': catalog.get('source_ref', getattr(self.source_provider, 'source_ref', 'main')),
                 'revision': catalog.get('revision', ''), 'warnings': catalog.get('warnings', []),
                 'activities_dir': str(self.root), 'source_dir': str(self.apps_dir),
                 'code_notice': '活动来自官方源码，包含 Python 代码；安装前核对来源，不提供沙箱隔离。'}
@@ -370,7 +385,7 @@ class PluginManager:
     def _install_selected(self, app, activity, *, source_commit=None):
         app, activity = _public_id(app), _public_id(activity)
         catalog, _ = self.catalog(refresh=self.source_provider is None)
-        if self.source_provider is not None and self.last_error:
+        if self.source_provider is not None and self.last_error and not catalog['packages']:
             raise ValueError(self.last_error)
         entry = next((p for p in catalog['packages'] if (p['app'], p['activity']) == (app, activity)), None)
         if entry is None:
@@ -462,7 +477,20 @@ class PluginManager:
                         record[field] = manifest[field]
                 next_state = {'schema': 1, 'packages': [p for p in state['packages'] if (p['app'], p['activity']) != (app, activity)] + [record]}
                 self._swap(target, staged, next_state)
+            try:
+                self.recovery.remember(archive_path, expected_sha256)
+            except OSError:
+                import logging
+                logging.getLogger('backend').warning('活动已安装，但本机恢复包保存失败')
             return record
+
+    def restore(self, app, activity):
+        app, activity = _public_id(app), _public_id(activity)
+        for store in (self.recovery, self.bundled_recovery):
+            for entry in store.entries():
+                if (entry['app'],entry['activity']) == (app,activity):
+                    return self.install_local(store.archive(entry),entry['sha256'],expected_app=app,expected_activity=activity)
+        raise ValueError('没有此活动的离线恢复包，请重新解压原始 ZIP 或恢复网络后下载')
 
     @staticmethod
     def _validate_staged(staged, app, activity):

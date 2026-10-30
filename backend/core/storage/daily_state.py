@@ -86,7 +86,7 @@ class DailyState:
         self.data = dict(app_id=self.app_id, activity_id=self.activity_id, schema=1, date=self.date, device_key=self.device_key,
                          instance_id=instance_id,
                          device_type=device_type, stats=_counts({}), unavailable_tasks={},
-                         watermarks={}, skipped_task_keys=[], failures_count=0, task_decisions={},
+                         activity_finished=False, watermarks={}, skipped_task_keys=[], failures_count=0, task_decisions={},
                          created_at=_timestamp(), updated_at=_timestamp(), last_state={})
         if self.stats_path.exists():
             try:
@@ -97,6 +97,7 @@ class DailyState:
                         or (loaded.get('instance_id', instance_id) != instance_id and not
                             (instance_id in primary
                              and loaded.get('instance_id', '') == ''))
+                        or not isinstance(loaded.get('activity_finished', False), bool)
                         or not isinstance(loaded.get('stats'), dict)
                         or not isinstance(loaded.get('unavailable_tasks'), dict)
                         or not all(isinstance(key, str) and isinstance(value, str)
@@ -113,7 +114,8 @@ class DailyState:
                 decisions = loaded.get('task_decisions', {})
                 if (not isinstance(decisions, dict) or any(
                         not isinstance(key, str) or len(key) != 24 or not isinstance(item, dict)
-                        or set(item) - {'skip', 'failures', 'exhausted'}
+                        or set(item) - {'skip', 'failures', 'exhausted', 'browse_once_attempted'}
+                        or not isinstance(item.get('browse_once_attempted', False), bool)
                         or not isinstance(item.get('skip', False), bool)
                         or not isinstance(item.get('exhausted', False), bool)
                         or type(item.get('failures', 0)) is not int or item.get('failures', 0) < 0
@@ -158,6 +160,15 @@ class DailyState:
             stream.write(json.dumps(entry, ensure_ascii=False, separators=(',', ':')) + '\n')
             stream.flush()
 
+    def activity_finished(self):
+        with self.lock:
+            return self.data.get('activity_finished') is True
+
+    def mark_activity_finished(self, finished=True):
+        with self.lock:
+            self.data['activity_finished'] = bool(finished)
+            self._save()
+
     def snapshot(self):
         with self.lock:
             return dict(app_id=self.app_id, activity_id=self.activity_id, date=self.date, device_key=self.device_key,
@@ -178,6 +189,7 @@ class DailyState:
 
     def save_task_decisions(self, entries):
         with self.lock:
+            self.data['activity_finished'] = False
             self.data['task_decisions'] = copy.deepcopy(entries)
             self._save()
             self._event('task_decisions', entries=entries)

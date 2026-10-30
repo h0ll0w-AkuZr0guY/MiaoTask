@@ -46,6 +46,8 @@ class TaskTracking:
         if id(self) in cache:
             return cache[id(self)]
         tasks = self.parse_tasks(screen.nodes, screen.width, screen.height)
+        from backend.core.execution.browse_contract import apply_browse_contract
+        tasks = [apply_browse_contract(task) for task in tasks]
         used = set()
         for task in tasks:
             if task.key.startswith('milestone-'):

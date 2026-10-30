@@ -17,6 +17,12 @@ class ActivityCatalogHub:
             if self.plugin_manager is None:
                 from backend.core.plugins.manager import PluginManager
                 self.plugin_manager = PluginManager()
+                from backend.core.storage.preferences import read_preferences
+                from backend.core.plugins.contracts import branch_name
+                try:
+                    self.plugin_manager.source_provider.source_ref = branch_name(read_preferences().get('activity_branch', 'main'))
+                except ValueError:
+                    self.plugin_manager.source_provider.source_ref = 'main'
             return self.plugin_manager
 
     def plugins_snapshot(self, origin, refresh=False):
@@ -30,10 +36,31 @@ class ActivityCatalogHub:
                 self._plugin_snapshot = copy.deepcopy(cached)
         return dict(cached, busy=busy, operation=operation)
 
+    def activity_branches(self, origin):
+        from backend.core.plugins.repository import GitHubSourceProvider
+        return GitHubSourceProvider(fetch=self._manager(origin).source_provider.fetch).branches()
+
+    def change_activity_source(self, payload, origin):
+        from backend.core.plugins.contracts import branch_name
+        from backend.core.storage.preferences import save_preferences
+        ref = branch_name(payload.get('source_ref'))
+        with self.catalog_gate, self.lock:
+            if self.closing or self.plugin_busy or any(c.thread and c.thread.is_alive() for c in self.controllers.values()):
+                raise ValueError('请先停止设备与活动安装，再切换源码分支')
+            manager = self._manager(origin)
+            from backend.core.plugins.manager import _LOCK
+            with _LOCK:
+                manager.source_provider.source_ref = ref
+                self._plugin_snapshot = {}
+                save_preferences(activity_branch=ref)
+        return ref
+
     def change_plugin(self, action, payload, origin):
         from backend.core.registry import checked_id
+        if action == 'source':
+            return self.change_activity_source(payload, origin)
         app, activity = checked_id(payload.get('app')), checked_id(payload.get('activity'))
-        if action not in ('install', 'uninstall'):
+        if action not in ('install', 'uninstall', 'restore'):
             raise ValueError('活动操作无效')
         source_commit = payload.get('source_commit')
         if source_commit is not None:
@@ -49,7 +76,7 @@ class ActivityCatalogHub:
             manager = self._manager(origin)
             self.plugin_busy = True
             self.plugin_operation = dict(action=action, app=app, activity=activity, status='running',
-                                         message='正在下载并检查活动包' if action == 'install' else '正在卸载活动')
+                                         message='正在从本机恢复活动' if action == 'restore' else '正在下载并检查活动包' if action == 'install' else '正在卸载活动')
             self.plugin_thread = threading.Thread(target=self._plugin_work,
                                                   args=(manager, action, app, activity, source_commit),
                                                   name='miao-activity-installer', daemon=False)
@@ -68,6 +95,8 @@ class ActivityCatalogHub:
         try:
             if action == 'install':
                 manager.install(app, activity, source_commit=source_commit)
+            elif action == 'restore':
+                manager.restore(app, activity)
             else:
                 manager.uninstall(app, activity)
             from backend.core.plugins.manager import reload_plugin_registry
@@ -80,7 +109,7 @@ class ActivityCatalogHub:
                         controller.rebind_registry(registry)
                     self.defaults.update(registry=registry, app=None, activity=None, config=None)
                 self._plugin_snapshot = manager.snapshot(registry=registry)
-                self.plugin_operation.update(status='finished', message='活动已安装，可选择后连接设备' if action == 'install' else '活动已卸载，本地任务记录保留')
+                self.plugin_operation.update(status='finished', message='活动已安装，可选择后连接设备' if action in ('install', 'restore') else '活动已卸载，本地任务记录与恢复包保留')
         except Exception as exc:
             with self.catalog_gate:
                 self.plugin_operation.update(status='error', message=str(exc))

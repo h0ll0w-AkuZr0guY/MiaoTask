@@ -421,6 +421,8 @@ def install_preselected(destination, activities, downloads, *, provider_factory=
         archive = downloads / f'selected-{index}.zip'
         digest = provider.build_archive(entry, archive)
         record = manager.install_local(archive, digest, expected_app=item['app'], expected_activity=item['activity'])
+        from backend.core.plugins.recovery import RecoveryStore
+        RecoveryStore(destination.parent / '_internal/activity-recovery').remember(archive, digest)
         if record.get('source_commit') != revision:
             raise ValueError('安装活动未保留所选 GitHub 提交')
         installed.append({key: record[key] for key in ('app', 'activity', 'version', 'source_commit', 'sha256')})

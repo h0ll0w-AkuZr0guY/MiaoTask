@@ -45,6 +45,16 @@ class Registration:
     app_dir: Path
     activity_dir: Path
 
+    @property
+    def description(self):
+        """Optional plain text shipped with the activity, never executable HTML."""
+        from backend.core.config.loader import read_config, resource
+        try:
+            value = read_config(resource(self.activity_dir, self.activity.config)).get('description', '')
+            return value.strip() if isinstance(value, str) and len(value) <= 4000 else ''
+        except (OSError, ValueError):
+            return ''
+
     def factory(self):
         module, name = self.activity.factory.rsplit(':', 1)
         return getattr(importlib.import_module(module), name)
@@ -131,7 +141,8 @@ class Registry:
 
     def catalog(self):
         return [dict(id=a.id, label=a.label, package=a.profile.android_package, activities=[
-            dict(id=r.activity.id, label=r.activity.label, device_types=list(r.activity.device_types))
+            dict(id=r.activity.id, label=r.activity.label, device_types=list(r.activity.device_types),
+                 **({'description': r.description} if r.description else {}))
             for r in self._activities.values() if r.app.id == a.id]) for a in self._apps.values()]
 
     def instantiate(self, device, config=None, *args, app=None, activity=None, **kwargs):

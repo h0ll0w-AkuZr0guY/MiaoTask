@@ -294,5 +294,22 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual(calls, [])
 
 
+    def test_completed_instance_is_skipped_and_next_app_executes(self):
+        controller = self.controller()
+        self.select(controller, ('alpha', 'first'), ('beta', 'first'))
+        calls = []
+        def bind_daily():
+            if controller.registration.app.id == 'alpha':
+                controller.daily = Mock()
+                controller.daily.activity_finished.return_value = True
+            else:
+                controller.daily = None
+        controller._ensure_daily.side_effect = bind_daily
+        with patch('backend.core.service.panel.CampaignRunner', self.runner_factory(calls)):
+            state = self.run_controller(controller)
+        self.assertEqual([row['name'] for row in calls], ['beta-first'])
+        self.assertEqual(state['status'], 'finished')
+        self.assertEqual([row['status'] for row in state['activity_pipeline']], ['finished', 'finished'])
+
 if __name__ == '__main__':
     unittest.main()
