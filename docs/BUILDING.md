@@ -125,7 +125,7 @@ GitHub Windows 发布构建使用 `scripts/package_windows.py --preinstall-all`�
 
 `python scripts/build_activity_site.py --output _site/activities` 从干净提交生成静态目录、固定提交索引和全部活动 ZIP；不构建 exe，不创建 Release，不修改源码。当前默认生成 main；其他分支可在对应干净源码中使用 `--source-ref` 生成同协议目录，可对多个干净源码快照重复写入同一输出目录，分支索引合并，包与提交索引保持独立；未进入镜像的分支仍走官方源码备用通道。
 
-`.github/workflows/activity-pages.yml` 已提供活动源码更新后的构建/Pages 部署流程，默认受仓库变量 `MIAOTASK_ACTIVITY_PAGES=true` 控制。维护者审阅合并后，在仓库 Settings → Pages 选择 GitHub Actions，设置该变量，再手动运行工作流。当前本地准备不代表已经启用线上站点。Pages 的发布独立于 Windows Release，普通 PR 不部署。以后国内资源源复用此静态产物与校验协议，经维护者审核后加入来源配置。
+`.github/workflows/activity-pages.yml` 已提供活动源码更新后的构建/Pages 部署流程，默认受仓库变量 `MIAOTASK_ACTIVITY_PAGES=true` 控制。维护者审阅合并后，在仓库 Settings → Pages 选择 GitHub Actions，设置该变量，再手动运行工作流。官方站点为 `https://h0ll0w-akuzr0guy.github.io/MiaoTask/activities/`，客户端可在 GitHub API 限流时使用该备用来源。Pages 的发布独立于 Windows Release，普通 PR 不部署。以后国内资源源复用此静态产物与校验协议，经维护者审核后加入来源配置。
 
 容灾验收应模拟 API 403：备用通道列出新应用和最新提交、仅安装所选活动；卸载后断网恢复、整个活动目录丢失后从随包基线恢复、损坏包拒绝恢复、空闲轮询不反复访问远端。打包预装项会同步写入 `_internal/activity-recovery` 和可写活动恢复缓存。
 
