@@ -2,6 +2,20 @@
 
 按新到旧维护用户可见变化。GitHub Release 正文从对应的 `## 版本号` 小节提取，发布状态以 [Releases](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/releases) 为准。
 
+## MiaoTask-v0.1.4
+
+活动扩展、资源容灾与执行体验更新。
+
+* 【新增】支付宝「月月赚」浏览活动与可选活动说明；优化淘金币任务识别、弹窗处理及收工重扫。感谢 @ashen0116（#17）与 @Chilzen-smx（#18）的贡献。
+* 【修复】活动目录支持官方分支选择；API 限流时尝试静态资源与官方源码归档，新增卸载后离线恢复。仅打开时检查一次，后续手动刷新。
+* 【新增】公共配置保存在用户目录；最低媒体音量、亮度选项默认关闭，执行结束后尝试恢复原值。
+* 【优化】恢复流水线时跳过当日已确认完成的活动实例；浏览任务按副标题判断，收尾重扫并避免重复执行已核验进度。
+* 【修复】退出时清理本次启动的当前安装 ADB。启用 GitHub Pages 在线工作台预览与活动备用下载，main 的界面和活动更新后自动同步。
+
+Windows x64 ZIP 预装全部六项活动，完整解压后运行 `MiaoTask.exe`，保留 `_internal/` 与 `activities/`。升级前从托盘退出旧助手；日记录与公共配置保留在用户目录。安全认证需本人处理，诊断截图分享前请脱敏。GitHub Pages 与官方源码归档提供备用下载，本机保留活动恢复副本。[在线预览](https://h0ll0w-akuzr0guy.github.io/MiaoTask/) 使用演示数据，不连接手机或执行真实任务。
+
+感谢 [MonsterNone/tmall-miao](https://github.com/MonsterNone/tmall-miao) 提供早期实现思路参考。[使用说明](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/blob/main/docs/USAGE.md) · [项目介绍](https://github.com/h0ll0w-AkuZr0guY/MiaoTask#readme)
+
 ## MiaoTask-v0.1.3
 
 淘宝日常活动、设备工作台与框架稳定性更新。
