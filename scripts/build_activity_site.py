@@ -1,5 +1,6 @@
 """Generate a static Pages resource directory; never create a GitHub Release."""
 import argparse
+from html import escape
 import json
 from pathlib import Path
 import subprocess
@@ -30,7 +31,8 @@ def build_site(root, output, source_ref='main'):
     previous = json.loads((output/'branches.json').read_text(encoding='utf-8')).get('branches',[]) if (output/'branches.json').is_file() else []
     branches = sorted({branch_name(name) for name in [*previous,source_ref]})
     (output/'branches.json').write_text(json.dumps({'schema':1,'branches':branches}),encoding='utf-8')
-    (output/'index.html').write_text('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>MiaoTask 活动资源</title><h1>MiaoTask 活动资源</h1><p>客户端通过固定提交与摘要下载；活动更新不创建框架 Release。</p></html>',encoding='utf-8')
+    links = ''.join('<li><a href="'+escape(e['archive'],quote=True)+'">'+escape(e.get('label',e['app']+'/'+e['activity']))+'</a></li>' for e in catalog['packages'])
+    (output/'index.html').write_text('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MiaoTask 活动资源</title><h1>MiaoTask 活动资源</h1><p>客户端通过固定提交与摘要下载；活动更新不创建框架 Release。</p><p><a href="../">在线工作台预览</a> · <a href="https://github.com/h0ll0w-AkuZr0guY/MiaoTask/releases/latest">下载桌面版</a></p><p>活动源码 ZIP，桌面版可在活动中心自动安装。提交：'+escape(revision[:12])+'</p><ul>'+links+'</ul></html>',encoding='utf-8')
     return catalog
 
 

@@ -2,7 +2,7 @@ name: Publish activity resources to Pages
 on:
   push:
     branches: [main]
-    paths: ['backend/app/**', 'scripts/build_activity_site.py', 'scripts/package_activities.py', '.github/workflows/activity-pages.yml']
+    paths: ['backend/app/**', 'frontend/**', 'scripts/site-preview/**', 'docs/assets/demo-phone.svg', 'version.json', 'scripts/build_preview_site.py', 'scripts/build_activity_site.py', 'scripts/package_activities.py', '.github/workflows/activity-pages.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -21,6 +21,7 @@ jobs:
         with:
           python-version: '3.13'
       - run: python scripts/build_activity_site.py --output _site/activities
+      - run: python scripts/build_preview_site.py --output _site
       - uses: actions/upload-pages-artifact@v4
         with:
           path: _site

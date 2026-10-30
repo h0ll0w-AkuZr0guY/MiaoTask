@@ -42,6 +42,8 @@
 
 ## 开始使用
 
+[在线体验工作台](https://h0ll0w-akuzr0guy.github.io/MiaoTask/)：自动同步最新界面，使用演示设备与数据；实际执行请下载桌面版。
+
 ### 下载并启动
 
 ![MiaoTask 首页](docs/assets/miaotask-home.png)
