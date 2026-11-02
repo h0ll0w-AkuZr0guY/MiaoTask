@@ -14,6 +14,7 @@ from backend.app.common.models.task import TaskRules, parse_tasks
 from backend.app.common.utils.destinations import DestinationPolicy
 from backend.app.taobao.manifest import PROFILE
 from backend.app.taobao.utils.actions import TaskActions
+from backend.app.taobao.utils.rescan import RescanPolicy
 from backend.app.taobao.utils.search import SearchPolicy
 from backend.app.taobao.utils.task_rules import (
     CLAIM_ACTIONS, DONE_ACTIONS, EXTERNAL_APPS, PROGRESS_RE, classify,
@@ -86,7 +87,7 @@ POPUP_HINT_RE = re.compile(r'恭喜|抢到|获得|奖励|红包|优惠券|折扣
                            r'完成任务|限本直播间|领取并使用')
 
 
-class DailyActivity(SearchPolicy, DestinationPolicy, TaskActions, VerificationPolicy, Activity):
+class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, VerificationPolicy, Activity):
     application = PROFILE
     claim_actions = DAILY_CLAIMS
     external_apps = EXTERNAL_APPS
@@ -94,132 +95,6 @@ class DailyActivity(SearchPolicy, DestinationPolicy, TaskActions, VerificationPo
     @property
     def page(self):
         return self.config['daily_page']
-
-    def progress_mark(self):
-        """(已定案任务数, 尝试次数)：用来判断这一轮到底有没有真的做事。"""
-        settled = 0
-        for record in (getattr(self, 'records', None) or {}).values():
-            if isinstance(record, dict) and record.get('status') in ('done', 'failed', 'disabled'):
-                settled += 1
-        return settled, int(getattr(self.stats, 'attempts', 0) or 0)
-
-    def runnable_rows(self, screen):
-        """这一屏里还能动手的行（判据与框架挑任务时完全一致）。"""
-        rows = []
-        kinds = self.config.get('enabled_task_kinds') or ()
-        for task in self.tasks(screen):
-            if task.kind in ('done', 'manual') or task.kind not in kinds:
-                continue
-            if (self.records.get(task.key) or {}).get('status') == 'disabled':
-                continue
-            if task.kind == 'claim' and not self.config.get('claim_rewards', True):
-                continue
-            if not self.config.get('allow_cross_app', True) and getattr(task, 'target_app', ''):
-                continue
-            if self.task_policy.failures(task) >= self.config.get('max_attempts', 2):
-                continue
-            if self.task_policy.reason(task):
-                continue
-            rows.append(task)
-        return rows
-
-    def rescan(self):
-        """回到“更多金币”列表，从当前屏往下逐屏找还能执行的任务。
-
-        只做判断，不执行任何任务：框架一轮结束得太早（翻到一批空的就收工），
-        而淘金币是做完一个才刷出下一个，所以收工前必须回到列表重新看一遍。
-        """
-        try:
-            screen = self.ensure_list(auto_open=True)
-            screen = self.ensure_expanded(screen, force=True)
-        except Exception:
-            logger.warning('补扫：回到任务列表失败', exc_info=True)
-            return False
-        seen = set()
-        for page in range(max(2, int(self.config.get('max_scroll_pages') or 10))):
-            try:
-                rows = self.runnable_rows(screen)
-            except Exception:
-                logger.warning('补扫：解析当前屏失败', exc_info=True)
-                rows = []
-            if rows:
-                logger.info('补扫：列表里还有 %d 条可执行任务，例如 %s', len(rows),
-                            '、'.join(task.title for task in rows[:3]))
-                return True
-            signature = tuple(sorted(task.key for task in self.tasks(screen)))
-            if signature in seen:
-                break
-            seen.add(signature)
-            self.update('scanning', message='回到“更多金币”检查是否还有任务',
-                        current_task='', remaining=0)
-            self.control.check()
-            try:
-                x, height = screen.width//2, screen.height
-                self.device.swipe(x, round(height*.72), x, round(height*.42), duration=.45)
-                self.control.wait(.7)
-                fresh = self.read(force_ocr=bool(self.config['ocr']))
-            except Exception:
-                logger.warning('补扫：滚动失败', exc_info=True)
-                break
-            if not self.is_task_list(fresh.nodes):
-                break
-            screen = fresh
-        logger.info('补扫：整张列表翻完，没有发现可执行任务')
-        return False
-
-    def run(self, auto_open=False):
-        """收工前反复回到“更多金币”列表重新识别，直到真的没有任务。
-
-        框架一轮的边界是：翻到某一批没有可执行行就判定本轮结束（任务做完一个才
-        刷出下一个，这一批当时就是空的），于是面板报“本轮结束”，列表里却还挂着
-        pending。这里在每轮之后回列表逐屏复查：还有能做的就再来一轮。
-        """
-        limit = max(2, int(self.page.get('rescan_rounds')
-                           or self.page.get('round_limit') or 6))
-        try:
-            # 默认一批没东西就收工（empty_batch_stop=1），会把后面几批连同刚刷新
-            # 出来的任务一起跳过；补扫期间多容忍几个空批，把整张列表翻完。
-            self.config['empty_batch_stop'] = max(
-                int(self.config.get('empty_batch_stop') or 1), 3)
-        except Exception:
-            logger.warning('无法调整 empty_batch_stop，按框架默认值继续', exc_info=True)
-        stats, stalled = None, 0
-        for index in range(limit):
-            before = self.progress_mark()
-            # 补扫轮从“刚才发现任务的那一屏”接着做：ensure_list 默认会把列表拉回
-            # 顶部，而可执行的行往往在下面几屏，回到顶部等于让它重新扫一遍并再次
-            # 在中间那一批空批上收工。
-            page, saved = self.page, None
-            if index > 0:
-                try:
-                    saved = page.get('reset_list_scroll')
-                    page['reset_list_scroll'] = False
-                except Exception:
-                    saved = None
-            try:
-                stats = super().run(auto_open or index > 0)
-            finally:
-                if saved is not None:
-                    try:
-                        page['reset_list_scroll'] = saved
-                    except Exception:
-                        pass
-            after = self.progress_mark()
-            if after > before:
-                stalled = 0
-            else:
-                stalled += 1
-                logger.info('补扫：第 %d 轮没有产生新的尝试', index + 1)
-            if index + 1 >= limit:
-                logger.info('补扫达到 %d 轮上限，收工', limit)
-                break
-            if stalled >= 2:
-                logger.info('补扫完毕：连续 %d 轮没有可执行任务，收工', stalled)
-                break
-            if not self.rescan():
-                break
-            logger.info('补扫：第 %d 轮回到“更多金币”重新识别', index + 2)
-        return stats
 
     def installed_app(self, packages):
         """Cache the device package list for this run; a task must not be opened
@@ -805,7 +680,7 @@ class DailyActivity(SearchPolicy, DestinationPolicy, TaskActions, VerificationPo
             self.device.go_back()
         except Exception:
             return None
-        self.control.wait(1.2)
+        self.pause(1.2)
         try:
             fresh = super().read(force_ocr=False)
         except Exception:
@@ -859,7 +734,7 @@ class DailyActivity(SearchPolicy, DestinationPolicy, TaskActions, VerificationPo
             return None
         # 滑块验证页右上角那个 × 等于「放弃这次验证」，关掉只会让任务失败，
         # 不能按普通浮层处理；这种页面交给 solve_slider。
-        if self.slider_hint(screen) is not None:
+        if self.on_slider_page(screen):
             return None
         text = normalize(screen.text)
         # 任务面板自己也有 ✕（关闭整张面板）和“奖励”这类字，不能当成弹窗。
@@ -892,7 +767,7 @@ class DailyActivity(SearchPolicy, DestinationPolicy, TaskActions, VerificationPo
                 logger.info('弹窗没有关闭按钮，点击外侧空白收起')
                 self.update(message='收起弹窗')
                 self.device.click(round(screen.width*.5), round(screen.height*.12))
-            self.control.wait(1.0)
+            self.pause(1.0)
         except Exception:
             logger.warning('关闭弹窗失败', exc_info=True)
             return None
@@ -914,7 +789,7 @@ class DailyActivity(SearchPolicy, DestinationPolicy, TaskActions, VerificationPo
         self.assert_instance(screen)
         # 滑块验证单独处理：能自动拖就拖，拖不过去就停下来等人滑完再继续，
         # 不让整轮为一个滑块白白中断；真的等超时了才按拦截处理。
-        if self.slider_hint(screen) is not None:
+        if self.on_slider_page(screen):
             if self.handle_slider(screen):
                 self._retreat_screen = None
                 return
@@ -993,7 +868,7 @@ class DailyActivity(SearchPolicy, DestinationPolicy, TaskActions, VerificationPo
                 try:
                     self.update(message='展开全部任务')
                     self.click(button)
-                    self.control.wait(.9)
+                    self.pause(.9)
                     fresh = super().read(force_ocr=force_ocr)
                     self._expand_fail = 0 if self.expand_button(fresh) is None else getattr(self, '_expand_fail', 0)+1
                     screen = fresh
@@ -1072,7 +947,7 @@ class DailyActivity(SearchPolicy, DestinationPolicy, TaskActions, VerificationPo
         try:
             self.update(message='页面无响应，退回上一层')
             self.device.go_back()
-            self.control.wait(1.2)
+            self.pause(1.2)
             fresh = super().read(force_ocr=force_ocr)
             if normalize(fresh.text):
                 screen = fresh
@@ -1133,7 +1008,7 @@ class DailyActivity(SearchPolicy, DestinationPolicy, TaskActions, VerificationPo
         self.click(chip)
         deadline = self.control.now() + self.config['page_timeout']
         while self.control.now() < deadline:
-            self.control.wait(.6)
+            self.pause(.6)
             result = self.read(force_ocr=bool(self.config['ocr']))
             self.guard(result)
             self.check_search_context(result)
@@ -1158,7 +1033,7 @@ class DailyActivity(SearchPolicy, DestinationPolicy, TaskActions, VerificationPo
         if not (0 <= box[0] < box[2] <= screen.width and 0 <= box[1] < box[3] <= screen.height*.3):
             raise NeedsAttention('搜索输入框位置无法确认，已停止输入')
         self.click(TextNode('',box))
-        self.control.wait(.15)
+        self.pause(.15)
         self.control.check()
         ascii_input = getattr(self.device,'input_ascii',None)
         if callable(ascii_input) and normalize(query) != normalize(self.config['search_keyword']):
@@ -1207,14 +1082,14 @@ class DailyActivity(SearchPolicy, DestinationPolicy, TaskActions, VerificationPo
             return False
         if close and close.bounds[3]-close.bounds[1] < screen.height*.12:
             self.click(close)
-            self.control.wait(.4)
+            self.pause(.4)
             return True
         if self.promotion_visible(screen):
             # Decorative close icons may not be readable. Dismiss the known
             # promotion with Back rather than clicking its coupon/withdraw CTA.
             self.control.check()
             self.device.go_back()
-            self.control.wait(.4)
+            self.pause(.4)
             return True
         return False
 
@@ -1247,7 +1122,7 @@ class DailyActivity(SearchPolicy, DestinationPolicy, TaskActions, VerificationPo
             x = round(xs[len(xs)//2])
             self.device.swipe(x, round(centers[0]+span*.1),
                               x, round(centers[-1]-span*.1), duration=.45)
-            self.control.wait(.5)
+            self.pause(.5)
             fresh = self.read_page(visual=True)
             if not self.is_task_list(fresh.nodes):
                 return self.navigate(auto_open=True)
@@ -1332,7 +1207,7 @@ class DailyActivity(SearchPolicy, DestinationPolicy, TaskActions, VerificationPo
             return screen
         self.update(message='展开全部任务')
         self.click(button)
-        self.control.wait(.9)
+        self.pause(.9)
         return self.read_page(visual=True)
 
     def navigate(self, *, auto_open, recovering=False):
@@ -1360,16 +1235,16 @@ class DailyActivity(SearchPolicy, DestinationPolicy, TaskActions, VerificationPo
                     break
                 self.device.go_back()
                 backs += 1
-                self.control.wait(.5)
+                self.pause(.5)
             if self.device.current_app().get('package') != package:
                 self.device.go_home()
-                self.control.wait(.4)
+                self.pause(.4)
                 desktop=self.read_page(visual=True)
                 if 'launcher' not in desktop.package.lower() and not desktop.package.endswith('.home'):
                     raise NeedsAttention('逐层返回后未确认桌面，已停止恢复，请检查当前窗口',kind='navigation')
         if auto_open and self.device.current_app().get('package') != package:
             self.device.start_app(package)
-            self.control.wait(.8)
+            self.pause(.8)
         screen = self.read_page()
         while True:
             self.control.check()
@@ -1388,7 +1263,7 @@ class DailyActivity(SearchPolicy, DestinationPolicy, TaskActions, VerificationPo
                     break
                 self.device.go_back()
                 backs += 1
-                self.control.wait(.5)
+                self.pause(.5)
                 screen = self.read_page()
                 continue
             main_view = self.page.get('main_view_markers')
@@ -1400,7 +1275,7 @@ class DailyActivity(SearchPolicy, DestinationPolicy, TaskActions, VerificationPo
                 viewport_returns += 1
                 self.device.swipe(round(screen.width*.5),round(screen.height*.3),
                                   round(screen.width*.5),round(screen.height*.85),duration=.5)
-                self.control.wait(.5)
+                self.pause(.5)
                 screen = self.read_page(visual=True)
                 continue
             if (not taps.get('expanded') and self.page.get('expand_label')
@@ -1441,7 +1316,7 @@ class DailyActivity(SearchPolicy, DestinationPolicy, TaskActions, VerificationPo
                 # 后再也回不到入口。单独退回首页重走一次，不占用 backs 配额。
                 suggest_backs += 1
                 self.device.go_back()
-                self.control.wait(.5)
+                self.pause(.5)
                 screen = self.read_page()
                 continue
             if self.dismiss_overlay(screen):
@@ -1473,13 +1348,13 @@ class DailyActivity(SearchPolicy, DestinationPolicy, TaskActions, VerificationPo
                     self.click(node)
                     loading_until = self.control.now()+self.config['page_timeout']
                     deadline = min(hard_deadline, max(deadline, loading_until))
-                    self.control.wait(1)
+                    self.pause(1)
                     screen = self.read_page()
                     continue
             if self.control.now() >= deadline:
                 break
             if len(screen.nodes) < 8 and self.control.now() < loading_until:
-                self.control.wait(.5)
+                self.pause(.5)
                 screen = self.read_page()
                 continue
             if not screen.source.startswith('ocr') and self.config['ocr']:
@@ -1492,7 +1367,7 @@ class DailyActivity(SearchPolicy, DestinationPolicy, TaskActions, VerificationPo
                     channels = True
                     self.update(message='在首页全部频道中查找活动入口')
                     self.click(more)
-                    self.control.wait(.7)
+                    self.pause(.7)
                     screen = self.read_page()
                     continue
                 if not searched and native.find(r'^搜索栏$|^搜索框$'):
@@ -1501,14 +1376,14 @@ class DailyActivity(SearchPolicy, DestinationPolicy, TaskActions, VerificationPo
                     screen = self.read_page()
                     continue
             if not auto_open:
-                self.control.wait(.4)
+                self.pause(.4)
             elif backs < self.config['max_back_steps']:
                 self.device.go_back()
                 backs += 1
-                self.control.wait(.5)
+                self.pause(.5)
             elif restarts < 1 and not self._task_restart_used:
                 self.device.go_home()
-                self.control.wait(.4)
+                self.pause(.4)
                 desktop = self.read_page()
                 if 'launcher' not in desktop.package.lower() and not desktop.package.endswith('.home'):
                     break
@@ -1517,7 +1392,7 @@ class DailyActivity(SearchPolicy, DestinationPolicy, TaskActions, VerificationPo
                 restarts += 1
                 backs, channels, searched = 0, False, False
                 taps.clear()
-                self.control.wait(.8)
+                self.pause(.8)
             else:
                 break
             screen = self.read_page()
@@ -1539,7 +1414,7 @@ class DailyActivity(SearchPolicy, DestinationPolicy, TaskActions, VerificationPo
         self.control.check()
         left, top, right, bottom = task.bounds
         self.device.click((left + right) // 2, (top + bottom) // 2)
-        self.control.wait(4)
+        self.pause(4)
         screen = self.read(force_ocr=bool(self.config['ocr']))
         button = screen.find(self.page.get('game_play_label', r'^去玩$|^开始游戏$|^立即玩$'))
         # 进度只要求真的进过游戏：卡片写“玩游戏30秒”，实际十秒即可退出，
@@ -1549,14 +1424,14 @@ class DailyActivity(SearchPolicy, DestinationPolicy, TaskActions, VerificationPo
             logger.info('进入游戏并停留 %s 秒', seconds)
             self.update('browsing', message='游戏中', remaining=seconds)
             self.click(button)
-            self.control.wait(2)
+            self.pause(2)
         else:
             seconds = min(seconds, task.seconds or seconds)
         deadline = self.control.now() + min(seconds + self.config['settle_seconds'],
                                             self.config['max_task_seconds'])
         while self.control.now() < deadline:
             self.control.check()
-            self.control.wait(2)
+            self.pause(2)
             try:
                 if self.device.current_app().get('package') != self.origin:
                     break
@@ -1564,7 +1439,7 @@ class DailyActivity(SearchPolicy, DestinationPolicy, TaskActions, VerificationPo
                 pass
         try:
             self.device.go_back()
-            self.control.wait(1.2)
+            self.pause(1.2)
         except Exception:
             logger.warning('退出小游戏时返回失败', exc_info=True)
         # 盲目 recover 会连续 back 把关掉的任务浮层一起退掉，先逐层确认：
@@ -1577,7 +1452,7 @@ class DailyActivity(SearchPolicy, DestinationPolicy, TaskActions, VerificationPo
                 self.device.go_back()
             except Exception:
                 break
-            self.control.wait(1.2)
+            self.pause(1.2)
         return self.recover(), True, False
 
     def execute(self, task, before):
@@ -1601,7 +1476,7 @@ class DailyActivity(SearchPolicy, DestinationPolicy, TaskActions, VerificationPo
         deadline = self.control.now()+self.config['page_timeout']
         screen, explicit = before, False
         while self.control.now() < deadline:
-            self.control.wait(.5)
+            self.pause(.5)
             screen = self.read_page()
             if self.config['ocr'] and screen.source == 'ui' and (self.page.get('inline_only') or not self.is_task_list(screen.nodes)):
                 screen = self.read_page(visual=True)
@@ -1612,7 +1487,7 @@ class DailyActivity(SearchPolicy, DestinationPolicy, TaskActions, VerificationPo
                 if prompt and button:
                     seconds = int(re.search(browse_reward['prompt'], normalize(prompt.text))[1])
                     self.click(button)
-                    self.control.wait(.6)
+                    self.pause(.6)
                     entry_deadline = self.control.now()+self.config['page_timeout']
                     while self.control.now() < entry_deadline:
                         destination = self.read_page(visual=True)
@@ -1620,7 +1495,7 @@ class DailyActivity(SearchPolicy, DestinationPolicy, TaskActions, VerificationPo
                                 and not self.is_task_list(destination.nodes)):
                             after, _, cross = self.browse_destination(replace(task, kind='browse', seconds=seconds), destination)
                             return after, False, cross
-                        self.control.wait(.4)
+                        self.pause(.4)
                     continue
             explicit = bool(screen.find(self.page.get('success_markers', r'签到成功|领取成功|奖励已到账')))
             if self.is_task_list(screen.nodes):
@@ -1639,7 +1514,7 @@ class DailyActivity(SearchPolicy, DestinationPolicy, TaskActions, VerificationPo
             reward = None if self.is_task_list(screen.nodes) else screen.find(r'^(?:收下奖励|开心收下|领取奖励|知道了|我知道了)$')
             if reward:
                 self.click(reward)
-                self.control.wait(.4)
+                self.pause(.4)
                 return self.recover(), explicit, False
             if self.dismiss_overlay(screen):
                 return self.recover(), explicit, False

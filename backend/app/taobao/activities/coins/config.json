@@ -35,11 +35,17 @@
     "stall_timeout": 20,
     "product_markers": "点我(?:得|领|拿)?(?:淘)?金币|领淘金币|金币已抵|金币热卖价|[¥￥]\\s*\\d",
     "tap_labels": "^(?:去|立即|马上|一键|点击|立刻)?(?:施肥|浇水)(?:\\s*\\d+\\s*次)?$",
-    "slider_auto": false,
+    "slider_auto": true,
     "slider_attempts": 1,
-    "slider_retries": 3,
-    "slider_wait_seconds": 90,
-    "rescan_rounds": 6
+    "slider_daily_budget": 3,
+    "slider_wait_seconds": 600,
+    "rescan_rounds": 20,
+    "rescan_confirm": 2,
+    "rescan_retries": 3,
+    "rescan_pause": 15,
+    "rescan_restart_app": true,
+    "rescan_restart_max": 12,
+    "rescan_start_pause": 3
   },
   "max_scroll_pages": 10,
   "jump_words": {

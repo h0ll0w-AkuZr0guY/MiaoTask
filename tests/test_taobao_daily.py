@@ -9,6 +9,7 @@ from backend.core.device.screen import Screen
 from backend.core.models import Task, TextNode
 from backend.core.registry import Registry
 from backend.core.execution.session import Session
+from backend.core.execution.activity import Activity
 from backend.core.errors import NeedsAttention
 
 
@@ -831,6 +832,209 @@ class TaobaoDailyTests(unittest.TestCase):
         required=detail+'，必须下单'
         self.assertEqual(runner.classify_daily(title,required,[title,required],'去完成',0,1)[1],'manual')
         self.assertEqual(runner.classify_daily('下单一次',detail,['下单一次',detail],'去完成',0,1)[1],'manual')
+
+
+def make_daily_runner(activity='coins'):
+    """构造一个不连接设备的日常活动实例，用于补扫逻辑的单测。"""
+    registry = Registry(Path(__file__).resolve().parents[1]/'backend/app').discover()
+    config = load_config(app='taobao', activity=activity, registry=registry)
+    runner = registry.instantiate(SimpleNamespace(device_type='uiautomator2', selected_instance=None),
+                                  config, app='taobao', activity=activity)
+    runner.pause = lambda seconds, jitter=None: None
+    runner.update = Mock()
+    runner.config['ocr'] = False
+    return runner
+
+
+def screen_of(*texts):
+    nodes = [TextNode(t, (40, 300 + i*90, 900, 340 + i*90)) for i, t in enumerate(texts)]
+    return Screen(nodes, 1080, 2400, 'com.taobao.taobao')
+
+
+class RescanVerdictTests(unittest.TestCase):
+    """补扫三态：只有“翻到底且没有可执行行”才算真的做完。"""
+
+    def test_unknown_when_list_cannot_be_opened(self):
+        runner = make_daily_runner()
+        runner.ensure_list = Mock(side_effect=RuntimeError('导航失败'))
+        self.assertEqual(runner.rescan(), runner.SCAN_UNKNOWN)
+
+    def test_unknown_when_page_leaves_task_list(self):
+        runner = make_daily_runner()
+        first = screen_of('更多金币等你赚', '浏览精选店铺')
+        runner.ensure_list = Mock(return_value=first)
+        runner.ensure_expanded = Mock(side_effect=lambda screen, force=False: screen)
+        runner.runnable_rows = Mock(return_value=[])
+        runner.tasks = Mock(return_value=[SimpleNamespace(key='a')])
+        runner.is_task_list = Mock(return_value=False)
+        runner.read = Mock(return_value=screen_of('直播间', '立即购买'))
+        runner.device = SimpleNamespace(swipe=Mock())
+        self.assertEqual(runner.rescan(), runner.SCAN_UNKNOWN)
+
+    def test_empty_when_scroll_produces_nothing_new(self):
+        runner = make_daily_runner()
+        first = screen_of('更多金币等你赚', '浏览精选店铺')
+        runner.ensure_list = Mock(return_value=first)
+        runner.ensure_expanded = Mock(side_effect=lambda screen, force=False: screen)
+        runner.runnable_rows = Mock(return_value=[])
+        runner.tasks = Mock(return_value=[SimpleNamespace(key='a')])
+        runner.is_task_list = Mock(return_value=True)
+        runner.read = Mock(return_value=first)
+        runner.device = SimpleNamespace(swipe=Mock())
+        self.assertEqual(runner.rescan(), runner.SCAN_EMPTY)
+
+    def test_empty_when_task_rows_repeat(self):
+        runner = make_daily_runner()
+        page1 = screen_of('更多金币等你赚', '浏览精选店铺')
+        page2 = screen_of('更多金币等你赚', '逛一逛得金币')
+        runner.ensure_list = Mock(return_value=page1)
+        runner.ensure_expanded = Mock(side_effect=lambda screen, force=False: screen)
+        runner.runnable_rows = Mock(return_value=[])
+        runner.tasks = Mock(return_value=[SimpleNamespace(key='a')])
+        runner.is_task_list = Mock(return_value=True)
+        runner.read = Mock(side_effect=[page2, page1])
+        runner.device = SimpleNamespace(swipe=Mock())
+        self.assertEqual(runner.rescan(), runner.SCAN_EMPTY)
+
+    def test_unknown_when_page_budget_runs_out(self):
+        runner = make_daily_runner()
+        runner.ensure_list = Mock(return_value=screen_of('第1屏'))
+        runner.ensure_expanded = Mock(side_effect=lambda screen, force=False: screen)
+        runner.runnable_rows = Mock(return_value=[])
+        runner.tasks = Mock(side_effect=lambda screen: [SimpleNamespace(key=screen.text[:8])])
+        runner.is_task_list = Mock(return_value=True)
+        runner.read = Mock(side_effect=[screen_of('第%d屏' % i) for i in range(2, 20)])
+        runner.device = SimpleNamespace(swipe=Mock())
+        self.assertEqual(runner.rescan(pages=3), runner.SCAN_UNKNOWN)
+
+    def test_found_when_a_runnable_row_exists(self):
+        runner = make_daily_runner()
+        # 真实列表屏：标题 + 任务行 + 动作词，补扫才会认为“停在了列表上”
+        runner.ensure_list = Mock(return_value=screen_of('更多金币等你赚', '浏览精选店铺', '去完成'))
+        runner.ensure_expanded = Mock(side_effect=lambda screen, force=False: screen)
+        runner.runnable_rows = Mock(return_value=[SimpleNamespace(title='浏览精选店铺')])
+        self.assertEqual(runner.rescan(), runner.SCAN_FOUND)
+
+
+class RescanRestartTests(unittest.TestCase):
+    """补扫前必须先退出客户端再重新进入：WebView 缓存不刷新会漏掉任务。"""
+
+    class Device:
+        """只记录“重开客户端”的调用顺序，配合补扫断言用。"""
+
+        def __init__(self, events, fail_on=None):
+            self.device_type = 'uiautomator2'
+            self.events = events
+            self.fail_on = fail_on
+            self.swipe = Mock()
+
+        def go_home(self):
+            self.events.append('home')
+
+        def stop_app(self, package):
+            if self.fail_on == 'stop':
+                raise RuntimeError('force-stop 不被允许')
+            self.events.append(('stop', package))
+
+        def start_app(self, package):
+            self.events.append(('start', package))
+
+    def runner(self, **overrides):
+        events = []
+        runner = make_daily_runner()
+        runner.origin = 'com.taobao.taobao'
+        runner.device = self.Device(events)
+        page = screen_of('更多金币等你赚', '浏览精选店铺', '去完成')
+        runner.ensure_list = Mock(side_effect=lambda **kw: events.append('list') or page)
+        runner.ensure_expanded = Mock(side_effect=lambda screen, force=False: screen)
+        runner.runnable_rows = Mock(return_value=[SimpleNamespace(title='浏览精选店铺')])
+        runner.config['daily_page'] = dict(runner.config['daily_page'], **overrides)
+        return runner, events
+
+    def test_client_is_restarted_before_the_list_is_reopened(self):
+        runner, events = self.runner()
+        self.assertEqual(runner.rescan(), runner.SCAN_FOUND)
+        # 顺序必须是：回桌面 → 强停 → 冷启动 → 再进活动列表
+        self.assertEqual(events, ['home', ('stop', 'com.taobao.taobao'),
+                                  ('start', 'com.taobao.taobao'), 'list'])
+
+    def test_restart_can_be_switched_off(self):
+        runner, events = self.runner(rescan_restart_app=False)
+        self.assertEqual(runner.rescan(), runner.SCAN_FOUND)
+        self.assertEqual(events, ['list'])
+
+    def test_restart_budget_limits_repeated_cold_starts(self):
+        runner, events = self.runner(rescan_restart_max=1)
+        runner.rescan()
+        first = events.count(('start', 'com.taobao.taobao'))
+        runner.rescan()
+        self.assertEqual(first, 1)
+        # 第二次不再重启，但扫描照旧进行，不会因为预算用尽就跳过检查
+        self.assertEqual(events.count(('start', 'com.taobao.taobao')), 1)
+        self.assertEqual(events.count('list'), 2)
+
+    def test_restart_failure_still_scans_current_page(self):
+        runner, events = self.runner()
+        runner.device.fail_on = 'stop'
+        # 强停失败不能把整轮补扫搞崩：用当前页面继续扫，结论仍然严格判定
+        self.assertEqual(runner.rescan(), runner.SCAN_FOUND)
+        self.assertEqual(events, ['home', 'list'])
+
+    def test_run_resets_the_restart_budget(self):
+        runner, events = self.runner(rescan_restart_max=1)
+        runner.rescan()
+        runner.rescan()
+        self.assertEqual(events.count(('start', 'com.taobao.taobao')), 1)
+        runner._rescan_restarts = 0
+        runner.rescan()
+        self.assertEqual(events.count(('start', 'com.taobao.taobao')), 2)
+
+
+class RescanLoopTests(unittest.TestCase):
+    """收工条件：连续两次完整扫描都确认没有可执行任务。"""
+
+    def runner_with(self, verdicts, progress=True):
+        runner = make_daily_runner()
+        runner.rescan = Mock(side_effect=verdicts)
+
+        def fake_run(auto_open=False):
+            if progress:
+                runner.stats.attempts += 1
+            return None
+        runner._fake_run = fake_run
+        return runner
+
+    def test_finishes_only_after_two_confirmed_empty_scans(self):
+        runner = self.runner_with(['found', 'empty', 'empty'])
+        with patch.object(Activity, 'run', side_effect=runner._fake_run):
+            runner.run()
+        self.assertEqual(runner.rescan.call_count, 3)
+
+    def test_keeps_working_when_scan_finds_more_tasks(self):
+        runner = self.runner_with(['found', 'found', 'found', 'empty', 'empty'])
+        with patch.object(Activity, 'run', side_effect=runner._fake_run):
+            runner.run()
+        self.assertGreaterEqual(runner.stats.attempts, 3)
+
+    def test_unknown_scans_never_count_as_finished(self):
+        runner = self.runner_with(['unknown'] * 12)
+        with patch.object(Activity, 'run', side_effect=runner._fake_run):
+            runner.run()
+        self.assertEqual(runner.stats.attempts, 1)
+        self.assertEqual(runner.rescan.call_count, 3)
+
+    def test_stops_after_three_rounds_without_progress(self):
+        runner = self.runner_with(['found'] * 10, progress=False)
+        with patch.object(Activity, 'run', side_effect=runner._fake_run):
+            runner.run()
+        self.assertEqual(runner.rescan.call_count, 2)
+        self.assertEqual(runner.stats.attempts, 0)
+
+    def test_first_round_runs_before_any_scan(self):
+        runner = self.runner_with(['empty', 'empty'])
+        with patch.object(Activity, 'run', side_effect=runner._fake_run):
+            runner.run()
+        self.assertEqual(runner.stats.attempts, 1)
 
 
 if __name__=='__main__':

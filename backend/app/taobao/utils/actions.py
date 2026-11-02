@@ -1,6 +1,7 @@
 """Taobao browse/search actions; activities provide list and return policies."""
 import logging
 import math
+import random
 import re
 import time
 from backend.core.models import normalize
@@ -8,6 +9,49 @@ from backend.core.errors import TaskUnavailable
 logger = logging.getLogger('backend.execution')
 
 class TaskActions:
+    # 固定节拍是行为风控最容易抓的特征：同一段脚本跑两天，点与点之间的间隔
+    # 是一模一样的 0.6/0.8/1.4 秒，点击落点又都压在元素几何中心那一像素上。
+    # 单看每一步都没问题，攒两三天就会被判定成机器，然后开始弹滑块。
+    # 所有等待都走 pause()，落点都走 click()，抖动集中在这两个入口里。
+    # 幅度做成类属性：测试里置 0 就能回到可复现的精确坐标。
+    PACE_JITTER = .35
+    TAP_SPREAD = .22
+
+    def pause(self, seconds, jitter=None):
+        base = max(0.0, float(seconds))
+        if base <= 0:
+            self.control.wait(0)
+            return
+        jitter = self.PACE_JITTER if jitter is None else max(0.0, float(jitter))
+        scaled = base * random.uniform(1 - jitter, 1 + jitter) if jitter else base
+        # 偶尔多停一拍：真人做任务会走神，不是一直匀速点下去。
+        if jitter and base >= .3 and random.random() < .08:
+            scaled += random.uniform(1.2, 2.8)
+        self.control.wait(scaled)
+
+    def click(self, node, spread=None):
+        """点元素的随机位置，不要每次都落在几何中心。
+
+        `spread` 是相对元素尺寸的内缩比例：0.22 表示在中间 78% 的区域里随机，
+        既不会点到边缘外，也不会每次命中同一像素。
+        """
+        spread = self.TAP_SPREAD if spread is None else max(0.0, min(.6, float(spread)))
+        self.control.check()
+        left, top, right, bottom = node.bounds
+        if spread:
+            inset_x = max(0.0, (right - left) * spread / 2)
+            inset_y = max(0.0, (bottom - top) * spread / 2)
+            x = round(random.uniform(left + inset_x, max(left + inset_x, right - inset_x)))
+            y = round(random.uniform(top + inset_y, max(top + inset_y, bottom - inset_y)))
+        else:
+            x, y = node.center
+        geometry = getattr(getattr(self, 'reader', None), 'last_screen', None)
+        geometry = getattr(geometry, 'geometry', None)
+        if geometry and not geometry.contains(x, y):
+            from backend.core.errors import NeedsAttention
+            raise NeedsAttention('目标位于系统栏、屏幕裁切或不可操作区域，请检查窗口布局')
+        self.device.click(x, y)
+
     def execute(self, task, before):
         self._active_task = task
         self.update('opening', current_task=task.title, message='打开任务页面', remaining=0)
@@ -15,7 +59,7 @@ class TaskActions:
         self.control.check()
         left, top, right, bottom = task.bounds
         self.device.click((left + right) // 2, (top + bottom) // 2)
-        self.control.wait(.6)
+        self.pause(.6)
         deadline = self.control.now() + self.config['page_timeout']
         opening_hard_deadline = deadline + self.config['page_timeout'] * 2
         screen, left = before, False
@@ -43,7 +87,7 @@ class TaskActions:
                 confirmations += 1
                 logger.info('确认本次应用跳转：%s',normalize(one_time.text))
                 self.click(one_time)
-                self.control.wait(.8)
+                self.pause(.8)
                 deadline = min(opening_hard_deadline, self.control.now() + self.config['page_timeout'])
                 continue
             pending=getattr(self,'is_launch_prompt',None)
@@ -55,7 +99,7 @@ class TaskActions:
                     return screen, True, False
                 if task.key.startswith('milestone-') and after is None and self.milestone_received(task, screen):
                     return screen, True, False
-                self.control.wait(.6)
+                self.pause(.6)
                 continue
             if not callable(confirm) and screen.find(r'打开.{0,10}应用|是否.{0,12}打开|即将.{0,10}跳转|允许.{0,12}打开|尝试打开'):
                 button = screen.find(r'^(打开|立即打开|继续打开|允许打开|去支付宝|去看看|允许)$')
@@ -63,12 +107,12 @@ class TaskActions:
                     if not self.config['allow_cross_app']:
                         break
                     self.click(button)
-                    self.control.wait(.8)
+                    self.pause(.8)
                     continue
             ready = getattr(self,'destination_ready',None)
             if (not normalize(screen.text) or len(screen.nodes) < 2
                     or callable(ready) and not ready(screen)):
-                self.control.wait(.7)
+                self.pause(.7)
                 continue
             left = True
             break
@@ -120,7 +164,7 @@ class TaskActions:
         before = {normalize(n.text) for n in screen.nodes if len(normalize(n.text)) > 1}
         self.device.swipe(round(screen.width*.5), round(screen.height*.78),
                           round(screen.width*.5), round(screen.height*.42), duration=.5)
-        self.control.wait(.8)
+        self.pause(.8)
         fresh = self.read()
         after = {normalize(n.text) for n in fresh.nodes if len(normalize(n.text)) > 1}
         if not before or len(before & after) / len(before) > .85:
@@ -153,7 +197,7 @@ class TaskActions:
             if card is None and not retried:
                 # 落地页还在渲染时先等一拍，别把没加载完当成“没有可点的卡”。
                 retried = True
-                self.control.wait(1.2)
+                self.pause(1.2)
                 screen = self.read()
                 continue
             if card is None:
@@ -169,7 +213,7 @@ class TaskActions:
             self.update('browsing', message='点击第 %d 个（共 %d 个）' % (done+1, need))
             logger.info('点击第 %d 个（共 %d 个）：%s', done+1, need, normalize(card.text)[:18])
             self.device.click((left+right)//2, (top+bottom)//2)
-            self.control.wait(1.4)
+            self.pause(1.4)
             done += 1
             after = self.read()
             if after.package != self.origin or self.is_task_list(after.nodes):
@@ -178,7 +222,7 @@ class TaskActions:
                 screen = after
                 continue
             self.device.go_back()
-            self.control.wait(1.0)
+            self.pause(1.0)
             screen = self.read()
         return done
 
@@ -197,7 +241,7 @@ class TaskActions:
         logger.info('点击页面按钮：%s', normalize(button.text))
         self.update('browsing', message='点击 %s' % normalize(button.text)[:6])
         self.click(button)
-        self.control.wait(1.4)
+        self.pause(1.4)
         return button
 
     # 阿里 nc 滑块。手柄的文案固定是「滑块」，轨道文案是「向右滑动验证」，
@@ -262,21 +306,35 @@ class TaskActions:
         return min(screen.width, handle.bounds[2] + round(screen.width * .8))
 
     @staticmethod
-    def slide_path(x1, y1, x2, y2, steps=32, jitter=1.4):
-        """生成人手轨迹：按住后慢起、中段快、末端减速，纵向带一点抖动。
+    def slide_path(x1, y1, x2, y2, steps=36, jitter=1.5, overshoot=5, randomize=True):
+        """生成人手拖动轨迹。
 
-        匀速直线是最好认的机器特征，所以这里用 smoothstep 速度曲线
-        （两端速度为 0），再叠一条正弦抖动；最后两个点强制回到基线，
-        保证落点准确。
+        nc 这类滑块看的不只是落点，还有过程本身，所以这几件事缺一不可：
+
+        - **速度曲线**：采样点是等时间间隔注入的，空间上密集就等于速度慢，
+          所以用 smoothstep 排布——起步慢、中段快、末端减速；
+        - **拖过头再回压**：真人拖到位常常冲出去几个像素再压回来，最后 15%
+          的采样点专门做这一下，落点仍然是目标位置；
+        - **纵向漂移**：手指不是沿直线走的，y 上叠正弦 + 随机偏移；
+        - **每次都不一样**：点数、抖动幅度、过头距离都由调用方随机。
         """
+        total = max(16, int(steps))
+        rand = random.uniform if randomize else (lambda low, high: (low + high) / 2)
         dx, dy = x2 - x1, y2 - y1
+        over = max(0, int(overshoot)) if abs(dx) > 24 else 0
+        body = max(8, round(total * .85))
+        tail = max(2, total - body)
         path = []
-        for index in range(max(2, int(steps))):
-            t = index / (max(2, int(steps)) - 1)
+        for index in range(body):
+            t = index / max(1, body - 1)
             ease = t * t * (3 - 2 * t)
-            wobble = math.sin(t * math.pi * 3.1) * jitter if 0 < index and t < .9 else 0.0
-            path.append((round(x1 + dx * ease), round(y1 + dy * ease + wobble)))
-        return path
+            wobble = (math.sin(t * math.pi * 2.7) * jitter
+                      + rand(-jitter * .4, jitter * .4)) if 0 < t < .95 else 0.0
+            path.append((x1 + dx * ease + over * ease, y1 + dy * ease + wobble))
+        for index in range(1, tail + 1):
+            t = index / tail
+            path.append((x2 + over * (1 - t), y2 + rand(-1.3, 1.3)))
+        return [(round(px), round(py)) for px, py in path]
 
     def slide_gesture(self, path, duration):
         """把整条轨迹作为一次连续手势注入（按下 → 多次移动 → 抬起）。
@@ -307,14 +365,13 @@ class TaskActions:
             return None
         return 'linear'
 
-    def slider_retry(self, screen):
-        """验证失败后点一下框体，让滑块手柄重新出现。
+    def slider_failed(self, screen):
+        """失败态的提示节点：「验证失败，点击框体重试(error:xxxx)」。
 
-        失败态的结构是：手柄消失，框体里换成一句「验证失败，点击框体重试
-        (error:xxxx)」。这句提示是框体内的文字，点它等于点框体，手柄就会
-        回来。只认带「验证」或 error 码的提示，避免把「点我反馈」也点了。
+        这一态同样是验证页：手柄被收走、标题文案也变了。只认「拖动滑块」
+        的提示，就会把失败态当成“验证已通过”，然后带着一个还卡在验证页的
+        界面继续去点任务，后面每一步都点在验证框上。
         """
-        target = None
         for node in getattr(screen, 'nodes', None) or ():
             text = normalize(node.text)
             if not text or not self.SLIDER_RETRY_RE.search(text):
@@ -322,25 +379,49 @@ class TaskActions:
             lowered = text.lower()
             if '验证' not in text and 'error' not in lowered and '重试' not in text:
                 continue
-            target = node
-            break
+            return node
+        return None
+
+    def slider_retry(self, screen):
+        """验证失败后点一下框体，让滑块手柄重新出现。
+
+        失败态的结构是：手柄消失，框体里换成一句「验证失败，点击框体重试
+        (error:xxxx)」。这句提示是框体内的文字，点它等于点框体，手柄就会
+        回来。只认带「验证」或 error 码的提示，避免把「点我反馈」也点了。
+        """
+        target = self.slider_failed(screen)
         if target is None:
             return False
         self.update(message='点击重试验证框')
         logger.info('滑块已失败，点击框体重试：%s', target.center)
-        self.device.click(*target.center)
+        self.click(target, spread=.15)
         return True
 
+    def slider_failures(self):
+        """本轮运行里自动拖滑块失败的次数。"""
+        return int(getattr(self, '_slider_fail_count', 0) or 0)
+
+    def slider_note_failure(self):
+        self._slider_fail_count = self.slider_failures() + 1
+
+    def on_slider_page(self, screen):
+        """当前是否停在验证页——包括滑失败那一态。
+
+        只判断「拖动滑块」提示是不够的：失败后手柄被收走、文案换成
+        「验证失败，点击框体重试」，页面其实还卡在原地。
+        """
+        return self.slider_hint(screen) is not None or self.slider_failed(screen) is not None
+
     def handle_slider(self, screen):
-        """滑块验证的统一入口：能自动就自动，不行就等人手动滑完再继续。
+        """滑块验证的统一入口：先自动拖，拖不过去就停下来等人滑完再继续。
 
         真机实测（vivo / Android 13 / 无 root）：把滑块拖到轨道末端，位置是对的，
-        但阿里 nc 直接回风控错误码（EnvWgGw、Fihi9w），换三条不同轨迹、不同时长
-        结果一样——被判掉的不是位置，是“这次触摸不是真人”。所以默认
-        slider_auto=false，只做“停下来等人滑一下，滑完自动继续”，
-        不让整轮为了一个滑块白白中断。
+        但阿里 nc 直接回风控错误码（EnvWgGw、Fihi9w）。匀速、逐点变速、随机抖动
+        加随机停顿三种轨迹结果都一样——被拒的是“这次触摸从哪来、压力多少”，
+        不是轨迹形状。所以自动拖只算尝试，失败预算和冷却都在 solve_slider 里，
+        拖不过去立刻退回“等人手动滑完”，不让整轮为了一个滑块白白中断。
         """
-        if self.slider_hint(screen) is None:
+        if not self.on_slider_page(screen):
             return True
         if self.page.get('slider_auto') and self.solve_slider(screen):
             return True
@@ -349,36 +430,40 @@ class TaskActions:
     def wait_slider_gone(self, seconds=None):
         """停在验证页等人手动完成，页面恢复正常就返回 True。
 
-        只读屏不点任何按钮：验证页右上角的 × 等于“放弃这次验证”，
-        点了任务就白做。轮询间隔 2 秒，避免读屏本身拖慢页面响应。
+        等待期间**不产生任何触摸**：验证页上每多点一下，都是在给这个会话的
+        风险分加码，而连着点「重新验证」正是脚本最容易留下的指纹。所以先
+        静默 25 秒，之后如果确实是失败态（手柄被收走），才点那一次重试框，
+        全程最多一次。右上角那个 × 等于「放弃这次验证」，任何时候都不碰。
         """
         limit = float(seconds if seconds is not None
-                      else (self.page.get('slider_wait_seconds') or 90))
-        attempts = max(0, int(self.page.get('slider_retries') or 2))
-        deadline = time.time() + limit
-        used = 0
+                      else (self.page.get('slider_wait_seconds') or 600))
+        # 用 control.now() 而不是 time.time()：脚本被暂停时这段时间不算，
+        # 否则一次暂停就会把等待窗口吃光。
+        deadline = self.control.now() + limit
+        started = self.control.now()
+        retried = False
         self.update(message='等待手动完成滑块验证')
         logger.warning('滑块需要本人滑动：最多等 %d 秒，滑完自动继续', round(limit))
-        while time.time() < deadline:
-            self.control.wait(2.0)
-            if time.time() >= deadline:
+        while self.control.now() < deadline:
+            self.pause(2.0)
+            if self.control.now() >= deadline:
                 break
             try:
                 screen = self.read()
             except Exception as exc:
                 logger.info('等待滑块期间读屏失败：%s', exc)
                 continue
-            if self.slider_hint(screen) is None:
+            if not self.on_slider_page(screen):
                 logger.info('滑块已验证通过，继续执行')
                 return True
             # 失败态：手柄被收走，框体里只剩「验证失败，点击框体重试」。
-            # 不点这一下就只能干等到超时，滑一次没过也会卡死在这里。
-            if used < attempts and self.slider_handle(screen) is None and self.slider_retry(screen):
-                used += 1
-                deadline = max(deadline, time.time() + max(20.0, limit * .5))
-                logger.warning('已点重试 %d/%d 次，请再滑一次', used, attempts)
-                self.control.wait(2.5)
-        logger.warning('等了 %d 秒滑块仍未通过，停止自动执行', round(limit))
+            # 静默够久再点这一次，之后无论结果如何都不再动，等超时或等人。
+            if (not retried and self.control.now() - started >= 25
+                    and self.slider_handle(screen) is None and self.slider_retry(screen)):
+                retried = True
+                logger.warning('滑块失败态已静默 25 秒，点一次重试框，之后不再自动点')
+                self.pause(2.5)
+        logger.warning('等了 %d 秒滑块仍未通过，停止本轮任务', round(limit))
         return False
 
     def solve_slider(self, screen, attempts=None):
@@ -389,16 +474,19 @@ class TaskActions:
         “放弃这次验证”，关掉只会让任务失败。
         """
         limit = max(1, int(attempts or self.page.get('slider_attempts') or 2))
+        budget = int(self.page.get('slider_daily_budget') or 4)
         for attempt in range(limit):
-            hint = self.slider_hint(screen)
-            if hint is None:
+            if self.slider_failures() >= budget:
+                logger.warning('滑块自动重试已累计 %d 次，改回等本人滑动', budget)
+                return False
+            if not self.on_slider_page(screen):
                 return True
             handle = self.slider_handle(screen)
             if handle is None:
                 # 上一轮拖失败后手柄会被收走，框体里只剩「点击框体重试」，
                 # 先点一下把手柄要回来再接着算坐标。
                 if self.slider_retry(screen):
-                    self.control.wait(2.2)
+                    self.pause(2.2)
                     try:
                         screen = self.read()
                     except Exception as exc:
@@ -408,29 +496,33 @@ class TaskActions:
                 if handle is None:
                     logger.warning('识别到滑块提示，但找不到手柄节点，交给人工')
                     return False
-            hx, hy = handle.center
-            width = handle.bounds[2] - handle.bounds[0]
+            left, top, right, bottom = handle.bounds
+            width, hy = right - left, handle.center[1]
+            # 起点按在把手左侧三分之一处：真人按住时手指不落在正中心，
+            # 每次都从同一个像素起手本身就是特征。
+            start_x = left + max(4, width // 3)
+            start_y = hy + random.randint(-2, 2)
             # 手柄右边缘对齐轨道右端，所以目标中心是轨道右边减去半个手柄宽。
             target = self.slider_track_right(screen, handle) - width // 2
-            if target <= hx + 40:
-                target = max(hx + 40, round(screen.width * .9))
-            # 重试换一条轨迹：起点纵向偏移、点数、时长都变，避免撞同一个特征。
-            shift = (attempt % 2) * 2
-            steps = 30 + attempt * 6
-            duration = .82 + attempt * .18
-            path = self.slide_path(hx, hy + shift, target, hy + shift,
-                                   steps=steps, jitter=1.2 + attempt * .5)
+            if target <= start_x + 40:
+                target = max(start_x + 40, round(screen.width * .9))
+            # 每次换一条轨迹：点数、时长、抖动幅度、越过距离都不一样。
+            steps = 34 + attempt * 8 + random.randint(-3, 3)
+            duration = .95 + attempt * .25 + random.uniform(-.08, .08)
+            path = self.slide_path(start_x, start_y, target, start_y,
+                                   steps=steps, jitter=1.3 + attempt * .4,
+                                   overshoot=4 + attempt * 2)
             self.update(message='拖动滑块完成验证')
             logger.info('滑块验证：手柄 (%d,%d) → (%d,%d)，%d 点 / %.2fs',
-                        hx, hy, target, hy, len(path), duration)
+                        start_x, start_y, target, start_y, len(path), duration)
             mode = self.slide_gesture(path, duration)
-            self.control.wait(1.3 + attempt * .4)
+            self.pause(1.1 + attempt * .5)
             try:
                 screen = self.read()
             except Exception as exc:
                 logger.warning('滑块拖动后读屏失败：%s', exc)
                 return False
-            if self.slider_hint(screen) is None:
+            if not self.on_slider_page(screen):
                 logger.info('滑块验证通过（%s 轨迹）', mode or '匀速')
                 return True
             page = normalize(screen.text)
@@ -438,6 +530,18 @@ class TaskActions:
                 logger.info('滑块未通过，页面提示重试：第 %d/%d 次', attempt + 1, limit)
             else:
                 logger.info('滑块拖动后仍停在验证页：第 %d/%d 次', attempt + 1, limit)
+            self.slider_note_failure()
+            # 冷却：不在同一个风控窗口里连着撞，间隔逐次拉长。连续失败会把账号
+            # 风险分推高，滑块升级成点选图或人脸，代价比这次任务大得多。
+            cooldown = min(120.0, 25.0 * (2 ** attempt))
+            logger.warning('滑块第 %d 次未通过（%s），冷却 %d 秒再试',
+                           attempt + 1, mode or '匀速', round(cooldown))
+            self.pause(cooldown)
+            try:
+                screen = self.read()
+            except Exception as exc:
+                logger.warning('冷却后读屏失败：%s', exc)
+                return False
         logger.warning('滑块连续 %d 次未通过，交给人工处理', limit)
         return False
 
@@ -494,7 +598,7 @@ class TaskActions:
         before = {normalize(n.text) for n in screen.nodes if len(normalize(n.text)) > 1}
         self.device.swipe(round(screen.width*.5), round(screen.height*.72),
                           round(screen.width*.5), round(screen.height*.45), duration=.45)
-        self.control.wait(.8)
+        self.pause(.8)
         fresh = self.read()
         after = {normalize(n.text) for n in fresh.nodes if len(normalize(n.text)) > 1}
         if not before or before == after:
@@ -547,7 +651,7 @@ class TaskActions:
                 self.update('browsing', message='提交答案')
                 self.click(submit)
                 answered = False
-                self.control.wait(1.4)
+                self.pause(1.4)
                 if re.search(r'领取奖励|开心收下|收下奖励', normalize(submit.text)):
                     passed = True
                     break
@@ -574,7 +678,7 @@ class TaskActions:
                 self.update('browsing', message='选择 A 选项')
                 self.click(option)
                 answered = True
-                self.control.wait(1.0)
+                self.pause(1.0)
             else:
                 if advance is not None:
                     if re.search(r'回到主页|返回首页|已成功领取', normalize(advance.text)):
@@ -588,7 +692,7 @@ class TaskActions:
                     self.update('browsing', message='答题')
                     self.click(advance)
                     answered = False
-                    self.control.wait(1.2)
+                    self.pause(1.2)
                     if re.search(r'领取奖励|开心收下|收下奖励', normalize(advance.text)):
                         passed = True
                         break
@@ -609,7 +713,7 @@ class TaskActions:
                 self.device.go_back()
             except Exception:
                 break
-            self.control.wait(1.0)
+            self.pause(1.0)
         return self.recover(), passed, cross
 
     def browse_destination(self, task, screen):
@@ -683,7 +787,7 @@ class TaskActions:
             if scrolling and remaining > 0:
                 self.browse_swipe(screen)
             interval = max(0, min(self.gestures.interval() if scrolling else 1, browse_deadline - self.control.now()))
-            self.control.wait(interval)
+            self.pause(interval)
             # Pause time must not count as browse time; wait() itself excludes pauses.
             remaining = browse_deadline - self.control.now()
             if remaining > 0 and self.control.now() >= next_observation:
