@@ -1353,7 +1353,7 @@ class RunnerTests(unittest.TestCase):
         self.assertTrue(explicit)
         self.assertLess(clock[0], 27)
 
-    def test_zero_gap_does_not_wait_for_slow_ocr_or_count_rpc_overhead(self):
+    def test_zero_gap_counts_elapsed_time_and_checks_final_frame(self):
         r, clock, destination = self.scrolling_runner()
         r.config.update(swipe_duration_min=.5, swipe_duration_max=.5)
         observer = ScriptedObservation(r, destination, delay=4)
@@ -1367,13 +1367,13 @@ class RunnerTests(unittest.TestCase):
         task = r.tasks(task_screen())[0]
         explicit, cross = r.wait_for_browse(task, destination, False, 15)
         self.assertFalse(explicit or cross)
-        self.assertGreaterEqual(sum(sent), 15)
-        self.assertAlmostEqual(clock[0], 21)
+        self.assertLess(sum(sent), 15)
+        self.assertGreaterEqual(clock[0], 15)
         r.control.wait.assert_not_called()
-        r.read.assert_not_called()  # full hierarchy/OCR never blocks this loop
+        r.read.assert_called()  # final frame is checked before leaving
         self.assertTrue(observer.closed)
 
-    def test_early_completion_banner_cannot_shorten_required_scroll(self):
+    def test_completion_banner_ends_browse_before_deadline(self):
         r, clock, destination = self.scrolling_runner()
         completed = Screen([node('任务已完成', 800, 200)], 1440, 3200, r.origin)
         r.config.update(swipe_duration_min=.5, swipe_duration_max=.5)
@@ -1381,7 +1381,7 @@ class RunnerTests(unittest.TestCase):
         r.reader.visual_observer = lambda: ScriptedObservation(r, completed)
         explicit, _ = r.wait_for_browse(r.tasks(task_screen())[0], completed, False, 27)
         self.assertTrue(explicit)
-        self.assertGreaterEqual(clock[0], 15)
+        self.assertLess(clock[0], 15)
         self.assertLess(clock[0], 27)
 
     def test_background_security_result_stops_next_gesture(self):
@@ -1405,15 +1405,36 @@ class RunnerTests(unittest.TestCase):
         self.assertLess(clock[0], 4)
         self.assertTrue(observer.closed)
 
-    def test_nonzero_gaps_do_not_count_towards_scroll_time(self):
+    def test_nonzero_gaps_count_towards_elapsed_time(self):
         r, clock, destination = self.scrolling_runner()
         r.config.update(swipe_interval_min=.5, swipe_interval_max=.5,
                         swipe_duration_min=.5, swipe_duration_max=.5)
         r.device.swipe.side_effect = lambda *a, **kw: clock.__setitem__(0, clock[0] + kw['duration'])
         r.reader.visual_observer = lambda: ScriptedObservation(r, destination)
         r.wait_for_browse(r.tasks(task_screen())[0], destination, False, 5)
-        self.assertGreaterEqual(r.device.swipe.call_count * .5, 5)
-        self.assertGreaterEqual(clock[0], 10)
+        self.assertLess(r.device.swipe.call_count * .5, 5)
+        self.assertGreaterEqual(clock[0], 5)
+        self.assertLess(clock[0], 7)
+
+    def test_final_frame_extends_deadline_when_countdown_appears(self):
+        r, clock, destination = self.scrolling_runner()
+        countdown = Screen([node('还需3秒', 800, 200)], 1440, 3200, r.origin)
+        r.reader.visual_observer = lambda: ScriptedObservation(r, destination, delay=100)
+        r.config['page_timeout'] = 60
+        r.read.side_effect = [countdown, destination]
+        r.wait_for_browse(r.tasks(task_screen())[0], destination, False, 5)
+        self.assertGreaterEqual(clock[0], 9)
+        self.assertGreaterEqual(r.read.call_count, 2)
+
+    def test_positive_countdown_takes_precedence_over_completion_hint(self):
+        r, clock, destination = self.scrolling_runner()
+        mixed = Screen([node('任务已完成', 800, 200), node('还需3秒', 800, 300)], 1440, 3200, r.origin)
+        r.reader.visual_observer = lambda: ScriptedObservation(r, destination, delay=100)
+        r.config.update(page_timeout=60, max_task_seconds=6)
+        r.read.side_effect = lambda: Screen([node('任务已完成', 800, 200), node('还需3秒', 800, 300)], 1440, 3200, r.origin)
+        explicit, _ = r.wait_for_browse(r.tasks(task_screen())[0], mixed, False, 5)
+        self.assertFalse(explicit)
+        self.assertGreaterEqual(clock[0], 6)
 
     def test_stale_countdown_is_not_extended_on_every_swipe(self):
         r, clock, destination = self.scrolling_runner()
@@ -1427,7 +1448,7 @@ class RunnerTests(unittest.TestCase):
         r, clock, destination = self.scrolling_runner()
         r.reader.visual_observer = None
         r.wait_for_browse(r.tasks(task_screen())[0], destination, False, 5)
-        self.assertGreater(r.device.swipe.call_count, 10)
+        self.assertGreater(r.device.swipe.call_count, 0)
         r.read.assert_called()
 
     def test_risk_page_requires_human(self):
