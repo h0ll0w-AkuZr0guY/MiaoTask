@@ -1252,3 +1252,37 @@ class PaintedDismissalTests(unittest.TestCase):
         with patch.object(Session,'read',return_value=visual):
             self.assertIsNone(runner.dismiss_popup(native))
         runner.click.assert_not_called()
+
+
+class LandingCloseTests(unittest.TestCase):
+    """落地页自己的 × 不能被当成弹窗关掉。
+
+    拍立淘逛感兴趣的宝贝：点「去完成」打开的是站内「找同款」结果页，右上角
+    有一个 ×（关闭该页）。旧逻辑在导航途中把它当浮层点掉，页面退回任务列表，
+    任务被判「没有成功离开列表」并计一次失败，两次就锁成「今日失败已达上限」。
+    """
+
+    def runner(self, phase):
+        runner = make_daily_runner()
+        runner._active_task = Task('x', '拍立淘逛感兴趣的宝贝', '', '去完成',
+                                   (100, 100, 200, 200), kind='browse')
+        runner._phase = phase
+        runner.dismiss_popup = Mock(return_value=None)
+        return runner
+
+    def test_close_glyph_on_the_landing_page_is_left_alone(self):
+        runner = self.runner('opening')
+        page = Screen([TextNode('找同款', (100, 300, 400, 360)),
+                       TextNode('×', (1040, 180, 1080, 220))],
+                      1080, 2400, 'com.taobao.taobao', 'ui')
+        with patch.object(Session, 'read', return_value=page):
+            runner.read()
+        runner.dismiss_popup.assert_not_called()
+
+    def test_popup_is_still_dismissed_outside_task_phases(self):
+        runner = self.runner(None)
+        page = Screen([TextNode('领券中心', (100, 300, 400, 360))],
+                      1080, 2400, 'com.taobao.taobao', 'ui')
+        with patch.object(Session, 'read', return_value=page):
+            runner.read()
+        runner.dismiss_popup.assert_called_once()
