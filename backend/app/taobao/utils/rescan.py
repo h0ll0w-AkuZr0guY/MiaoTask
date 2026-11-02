@@ -454,6 +454,9 @@ class RescanPolicy:
         except Exception:
             logger.warning('无法调整 empty_batch_stop，按框架默认值继续', exc_info=True)
         stats, stalled, empties, index = None, 0, 0, 0
+        # 收工原因要写回面板：只把 status 改成 finished 而 message 还留着
+        # “回到更多金币检查是否还有任务”，会让人以为它还在扫。
+        closing = '本轮任务已处理完毕'
         while index < limit:
             if index > 0:
                 # 每轮开跑前先确认列表里确实还有任务。确认不出东西就收工，
@@ -463,12 +466,15 @@ class RescanPolicy:
                     empties += 1
                     if empties >= confirm:
                         logger.info('补扫完毕：连续 %d 次完整扫描都没有可执行任务，收工', empties)
+                        closing = (f'本轮任务已处理完毕：重新进入列表也确认没有可执行任务'
+                                   f'（连续 {empties} 次扫描）')
                         break
                     logger.info('补扫：第 %d 次确认没有任务，等 %.0f 秒再确认一次', empties, settle)
                     self.pause(settle)
                     continue
                 if verdict == self.SCAN_UNKNOWN:
                     logger.warning('补扫：多次扫描都没能确认列表状态，停止；列表里可能还有任务')
+                    closing = '补扫没能确认列表状态已停止；列表里可能还有任务，可稍后重新开始'
                     break
                 empties = 0
             before = self.progress_mark()
@@ -495,10 +501,13 @@ class RescanPolicy:
                     # 的任务一直挂在列表里，继续空转没有意义。
                     logger.warning('补扫：连续 %d 轮有任务却无法推进，停止；请检查是否有需要人工处理的任务',
                                    stalled)
+                    closing = '连续几轮有任务却推不动，已停止；请检查是否有需要人工处理的任务'
                     break
             if index >= limit:
                 logger.warning('补扫达到 %d 轮保险上限，停止；列表里可能还有任务', limit)
+                closing = '补扫达到轮数上限已停止；列表里可能还有任务'
             else:
                 logger.info('补扫：第 %d 轮结束，回到“%s”重新确认', index, self.list_name())
         self.restore_list_state()
+        self.update('finished', message=closing, current_task='', remaining=0)
         return stats
