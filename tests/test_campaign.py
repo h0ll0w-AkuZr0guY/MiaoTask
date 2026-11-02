@@ -1797,3 +1797,97 @@ class ReplacedBatchTests(unittest.TestCase):
         old.current=3
         self.assertFalse(policy.verify(old,before,after))
         self.assertEqual(fresh.current,0)
+
+
+class YueYueZhuanEntryTests(unittest.TestCase):
+    def policy(self):
+        from backend.app.zfb.activities.yueyuezhuan.entry import EntryPolicy
+        p = EntryPolicy()
+        p.config = {'task_search_keyword': '月月赚'}
+        p.device = Mock()
+        p.control = Mock()
+        p.click = Mock()
+        p.update = Mock()
+        p.guard = Mock()
+        p._accept_list = Mock(return_value=False)
+        return p
+
+    def frame(self, nodes):
+        return Screen(nodes, 1000, 2000, 'com.eg.android.AlipayGphone')
+
+    def test_search_labels_and_exact_preference(self):
+        p = self.policy()
+        for label in ('搜索框', '搜索得红包', '搜索'):
+            entry = node(label, 100, 100, 700, 80)
+            self.assertIs(p._search_entry_node(self.frame([entry])), entry)
+        exact = node('搜索', 850, 160, 100, 60)
+        self.assertIs(p._search_entry_node(self.frame([node('搜索框', 100, 100), exact])), exact)
+
+    def test_failed_home_navigation_does_not_type(self):
+        p = self.policy()
+        home = self.frame([node('我的', 800, 1800, 100, 60)])
+        p.read = Mock(return_value=home)
+        self.assertFalse(p.search_and_open(home))
+        p.device.input_text.assert_not_called()
+        self.assertLessEqual(p.click.call_count, 2)
+
+    def test_wide_header_is_not_search_input(self):
+        p = self.policy()
+        self.assertFalse(p._search_page_ready(self.frame([node('支付宝会员', 50, 100, 800, 90)])))
+
+    def test_search_opens_result_without_new_framework_methods(self):
+        p = self.policy()
+        home = self.frame([node('搜索得红包', 100, 100, 700, 80), node('我的', 800, 1800, 100, 60)])
+        search = self.frame([node('搜索', 100, 100, 700, 80), node('取消', 850, 100, 100, 60)])
+        result = self.frame([node('月月赚', 100, 100, 700, 80), node('月月赚', 100, 250, 200, 70), node('去看看', 700, 250, 150, 70)])
+        panel = self.frame([node('任务中心', 100, 300)])
+        p.read = Mock(side_effect=[search, result, panel])
+        p._accept_list = lambda s: s is panel
+        self.assertTrue(p.search_and_open(home))
+        p.device.input_text.assert_called_once_with('月月赚')
+        self.assertEqual(p.click.call_args.args[0].text, '去看看')
+        p.device.wake_and_unlock.assert_not_called()
+
+    def test_result_button_must_share_row_and_be_to_right(self):
+        p = self.policy()
+        title = node('月月赚', 200, 250, 200, 70)
+        frame = self.frame([title, node('去完成', 10, 250, 100, 60), node('去看看', 700, 350, 150, 60)])
+        self.assertIs(p._search_result(frame), title)
+
+    def test_control_exceptions_are_not_swallowed_or_retried(self):
+        from backend.core.errors import Stopped, NeedsAttention
+        p = self.policy()
+        for kind in (Stopped, NeedsAttention, InstanceMismatch):
+            p.read = Mock(side_effect=kind('synthetic'))
+            with self.assertRaises(kind):
+                p.ensure_list(True)
+        p.device.start_app.assert_not_called()
+
+    def test_search_retries_only_once(self):
+        p = self.policy()
+        panel = self.frame([])
+        p._bring_alipay_front = Mock(return_value=panel)
+        p.search_and_open = Mock(side_effect=[False, True])
+        p.read = Mock(return_value=panel)
+        p._accept_list = Mock(return_value=True)
+        self.assertIs(p.ensure_list(True), panel)
+        self.assertEqual(p.search_and_open.call_count, 2)
+
+
+class EmptySessionMessageTests(unittest.TestCase):
+    def test_empty_session_message_does_not_assume_task_kind_or_success(self):
+        runner = CampaignRunner(Mock(selected_instance=None), load_config())
+        runner.config.update(max_scroll_pages=0)
+        frame = task_screen()
+        runner.ensure_list = Mock(return_value=frame)
+        runner.guard = Mock()
+        runner.tasks = Mock(return_value=[])
+        runner.next_list_page = Mock(return_value=None)
+        runner.view_signature = Mock(return_value=None)
+        runner.return_to_home = Mock(return_value=frame)
+        runner.emit = Mock()
+        runner.run()
+        message = runner.emit.call_args.kwargs['message']
+        self.assertIn('没有识别到任务', message)
+        self.assertNotIn('浏览任务', message)
+        self.assertFalse(runner.daily_exhausted)

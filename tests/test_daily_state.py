@@ -701,3 +701,54 @@ class MediaVolumeTests(unittest.TestCase):
         device._checked_shell.assert_not_called()
         notify.assert_called_once()
         self.assertEqual(notify.call_args.args[0], 'WARNING')
+
+
+class WakePreferenceTests(unittest.TestCase):
+    def test_wake_is_opt_in_and_restored_on_stop(self):
+        device = Mock(device_type='uiautomator2', io_lock=None, _wake_on_empty=False)
+        device._checked_shell.return_value = '600000'
+        with device_comfort(device, {}):
+            device.wake_and_unlock.assert_not_called()
+        with self.assertRaises(RuntimeError):
+            with device_comfort(device, {'keep_screen_on': True}):
+                self.assertTrue(device._wake_on_empty)
+                raise RuntimeError('synthetic stop')
+        device.wake_and_unlock.assert_called_once_with()
+        self.assertFalse(device._wake_on_empty)
+        self.assertEqual(device._checked_shell.call_args.args[0],
+                         ['settings', 'put', 'system', 'screen_off_timeout', '600000'])
+
+    def adapter(self):
+        from backend.core.device.adapter import DeviceAdapter
+        d = DeviceAdapter.__new__(DeviceAdapter)
+        d.device_type = 'uiautomator2'
+        d._device = Mock()
+        d._checked_shell = Mock(return_value='')
+        return d
+
+    def test_password_lock_does_not_send_swipe_or_text(self):
+        d = self.adapter()
+        d._lockscreen_visible = Mock(return_value=True)
+        with patch('backend.core.device.adapter.time.sleep'):
+            self.assertFalse(d.wake_and_unlock())
+        self.assertEqual([c.args[0] for c in d._checked_shell.call_args_list],
+                         [['input', 'keyevent', '224'], ['wm', 'dismiss-keyguard']])
+        d._device.swipe.assert_not_called()
+        self.assertIsNone(d._screenshot_cache)
+
+    def test_secondary_display_does_not_wake_main_screen(self):
+        d = self.adapter()
+        d._display_id = 2
+        self.assertFalse(d.wake_and_unlock())
+        d._checked_shell.assert_not_called()
+
+    def test_empty_tree_recovery_is_opt_in_and_rate_limited(self):
+        d = self.adapter()
+        d._device.dump_hierarchy.return_value = '<hierarchy/>'
+        d.wake_and_unlock = Mock(return_value=True)
+        d.dump_hierarchy()
+        d.wake_and_unlock.assert_not_called()
+        d._wake_on_empty = True
+        d.dump_hierarchy()
+        d.dump_hierarchy()
+        d.wake_and_unlock.assert_called_once_with()
