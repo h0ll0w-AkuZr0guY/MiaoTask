@@ -1286,3 +1286,109 @@ class LandingCloseTests(unittest.TestCase):
         with patch.object(Session, 'read', return_value=page):
             runner.read()
         runner.dismiss_popup.assert_called_once()
+
+    def test_landing_page_is_protected_in_every_phase(self):
+        """判据是“还在不在清单上”，不是某一个阶段：回来核验、退货、翻页读数
+        都可能停在落地页上，那时同样不能点它顶栏的 ×。"""
+        runner = self.runner('verifying')
+        runner._task_page = True
+        page = Screen([TextNode('找同款', (100, 300, 400, 360)),
+                       TextNode('×', (1040, 180, 1080, 220))],
+                      1080, 2400, 'com.taobao.taobao', 'ui')
+        with patch.object(Session, 'read', return_value=page):
+            runner.read()
+        runner.dismiss_popup.assert_not_called()
+
+    def test_other_app_pages_are_never_auto_dismissed(self):
+        """头条/闲鱼/支付宝里的 × 关的是那篇文章或那件商品，不归我们管。"""
+        runner = self.runner(None)
+        runner.origin = 'com.taobao.taobao'
+        page = Screen([TextNode('推荐', (100, 300, 400, 360)),
+                       TextNode('×', (1040, 180, 1080, 220))],
+                      1080, 2400, 'com.taobao.idlefish', 'ui')
+        with patch.object(Session, 'read', return_value=page):
+            runner.read()
+        runner.dismiss_popup.assert_not_called()
+
+    def test_back_on_the_task_list_releases_the_protection(self):
+        """回到清单以后必须恢复自动关浮层，否则领券浮层会一直挡着任务行。"""
+        runner = make_daily_runner()
+        runner._task_page = True
+        runner.is_task_list = Mock(return_value=True)
+        runner.dismiss_popup = Mock(return_value=None)
+        page = Screen([TextNode('浏览精选店铺', (100, 300, 400, 360)),
+                       TextNode('去完成', (800, 300, 1000, 360))],
+                      1080, 2400, 'com.taobao.taobao', 'ui')
+        with patch.object(Session, 'read', return_value=page):
+            runner.read()
+        self.assertFalse(runner._task_page)
+        runner.dismiss_popup.assert_called_once()
+
+    def test_guard_still_closes_a_real_overlay_on_a_landing_page(self):
+        """救场动作不能一起废掉：挡在页面中段的浮层仍然要关。"""
+        runner = make_daily_runner()
+        runner._task_page = True
+        runner.dismiss_popup = Mock(return_value=None)
+        page = Screen([TextNode('恭喜抢到 9.5 折直播折扣券', (100, 900, 900, 960)),
+                       TextNode('×', (1000, 1200, 1040, 1240))],
+                      1080, 2400, 'com.taobao.taobao', 'ui')
+        with patch('backend.core.execution.guard.check_attention',
+                   side_effect=NeedsAttention('页面出现支付提示')):
+            runner.guard(page)
+        runner.dismiss_popup.assert_called_once()
+
+    def test_guard_leaves_the_landing_page_chrome_close_alone(self):
+        runner = make_daily_runner()
+        runner._task_page = True
+        runner.dismiss_popup = Mock(return_value=None)
+        page = Screen([TextNode('找同款', (100, 300, 400, 360)),
+                       TextNode('×', (1040, 180, 1080, 220))],
+                      1080, 2400, 'com.taobao.taobao', 'ui')
+        with patch('backend.core.execution.guard.check_attention',
+                   side_effect=NeedsAttention('页面出现支付提示')):
+            runner.guard(page)
+        runner.dismiss_popup.assert_not_called()
+
+
+class NavigationFailureBudgetTests(unittest.TestCase):
+    """“点了去完成但没确认离开清单”不该扣当日额度。
+
+    这类失败属于导航层（落地页被关、跳转没确认、加载慢），任务本身并没有做过。
+    旧逻辑两次就写 exhausted，任务整天不再执行——拍立淘正是被锁在 2/5。
+    """
+
+    def runner(self):
+        runner = make_daily_runner()
+        runner.config['max_attempts'] = 2
+        runner._attempt_nav_failure = True
+        return runner
+
+    def task(self):
+        return Task('x', '拍立淘逛感兴趣的宝贝', '', '去完成', (100, 100, 200, 200),
+                    kind='browse')
+
+    def test_navigation_failure_does_not_consume_the_daily_quota(self):
+        runner = self.runner()
+        task = self.task()
+        runner.record_task_failure(task)
+        runner._task_budget_counted = False
+        runner.record_task_failure(task)
+        self.assertEqual(runner.task_policy.failures(task), 0)
+        self.assertEqual(runner.task_policy.reason(task), '')
+
+    def test_the_in_run_budget_still_stops_an_endless_retry(self):
+        runner = self.runner()
+        task = self.task()
+        for _ in range(4):
+            runner._task_budget_counted = False
+            runner.record_task_failure(task)
+        self.assertEqual(runner.task_policy.failures(task), 2)
+        self.assertTrue(runner.task_policy.reason(task))
+
+    def test_a_real_progress_failure_still_counts(self):
+        runner = self.runner()
+        runner._attempt_nav_failure = False
+        task = self.task()
+        runner.record_task_failure(task)
+        self.assertEqual(runner.task_policy.failures(task), 1)
+

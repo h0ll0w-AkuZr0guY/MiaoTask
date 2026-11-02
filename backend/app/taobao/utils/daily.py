@@ -726,6 +726,44 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
             return node
         return None
 
+    def can_auto_dismiss(self, screen):
+        """这一屏的 × 到底该不该由我们点掉。
+
+        自动关弹窗只有一个正当场景：任务清单被浮层挡住，不关掉后面的点击全落在
+        浮层上。一旦离开清单——点开任务后的落地页（搜索结果、找同款、商品详情、
+        直播间）或者跳进了别的应用——屏上那个 × 就是**这个页面自己的关闭控件**，
+        点掉它等于把刚打开的页面退回去，任务随后被判「没有成功离开列表」并计一次
+        失败，两次就锁成「今日失败已达上限」，这个任务整天不再执行。
+
+        拍立淘逛感兴趣的宝贝就是这样被锁死的：站内「找同款」结果页右上角有 ×，
+        每次点「去完成」后都被当成弹窗关掉。搜一搜、搜索结果类、跨应用浏览的
+        文章页/视频页都有同样的结构，所以判据不能写在某一类任务上，只能按
+        “现在是不是还在任务清单上”来判断。
+        """
+        if getattr(self, '_task_page', False):
+            return False
+        if self._phase in ('opening', 'browsing', 'searching'):
+            return False
+        # 已知前台是别的应用时更不该动：那边的 × 关的是文章、视频或商品页。
+        if self.origin and screen.package and screen.package != self.origin:
+            return False
+        return True
+
+    def can_force_dismiss(self, screen):
+        """guard 的救场动作能不能点这一屏的关闭控件。
+
+        救场是为了拆掉“盖在页面上的浮层”（直播间那张抢到折扣券的卡片）。浮层的
+        关闭控件长在弹层内部，位置通常在页面中段；而任务落地页自己的 × 长在顶上
+        的页面栏里，旁边就是搜索框或返回箭头——点了整页就退了。位置不够可靠时
+        宁可不点，交给后面的拦截判定。
+        """
+        if self.can_auto_dismiss(screen):
+            return True
+        close = self.popup_close_node(screen)
+        if close is None:
+            return False
+        return close.center[1] >= screen.height * .13
+
     def dismiss_popup(self, screen, force=False):
         """把挡在任务上的弹窗关掉再继续，而不是整轮停下来等人。
 
@@ -839,7 +877,9 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
                 raise
             # 先试着把挡路的弹窗关掉再说：直播间那张“恭喜抢到折扣券”的浮层
             # 一盖上，下面的带货横幅就会被读成“确认付款”，关掉浮层就干净了。
-            fresh = self.dismiss_popup(screen, force=True)
+            # 但任务落地页顶栏那个 × 是页面自己的，点掉等于把任务退出来，不点。
+            fresh = (self.dismiss_popup(screen, force=True)
+                     if self.can_force_dismiss(screen) else None)
             if fresh is not None:
                 fresh_text = normalize(fresh.text)
                 if not HARD_STOP_RE.search(fresh_text):
@@ -905,13 +945,18 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
                     self._expand_fail = getattr(self, '_expand_fail', 0)+1
                 finally:
                     self._expanding = False
-        # 顺手把挡在任务上的弹窗关掉：领券、入会、活动提醒这类浮层不关，
+        # 回到清单就把“刚才是任务落地页”的标记清掉：这个标记是判断「屏上那个 ×
+        # 是不是这个页面自己的」的唯一依据，不能把上一轮的值带过来。
+        if (getattr(self, '_task_page', False)
+                and (not self.origin or screen.package == self.origin)):
+            try:
+                if self.is_task_list(screen.nodes):
+                    self._task_page = False
+            except Exception:
+                pass
+        # 顺手把挡在任务清单上的弹窗关掉：领券、入会、活动提醒这类浮层不关，
         # 后面的点击全落在浮层上，任务永远是“进度未增加”。
-        # 但任务正在“打开/浏览落地页”时不关：这时的 × 往往是**落地页自己的关闭
-        # 控件**，不是浮层。拍立淘的“找同款”结果页、搜索结果页右上角都有这个 ×，
-        # 点它会把刚打开的页面退掉、退回任务列表，随后被判成“没有成功离开列表”，
-        # 计一次任务失败——两次就锁成「今日失败已达上限」，任务整天不再执行。
-        if self._phase not in ('opening', 'browsing', 'searching'):
+        if self.can_auto_dismiss(screen):
             popup = self.dismiss_popup(screen)
             if popup is not None:
                 screen = popup

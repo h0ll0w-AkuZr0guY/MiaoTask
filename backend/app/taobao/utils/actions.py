@@ -56,6 +56,10 @@ class TaskActions:
         self._active_task = task
         # 每次执行前清掉上一次的到账标记：它只对当前这次浏览有效。
         self._browse_credited = None
+        # 还没离开清单：这一屏的 × 如果是浮层，可以顺手关掉。
+        self._task_page = False
+        # 本次失败是不是“没打开页面”造成的，由 record_task_failure 归因用。
+        self._attempt_nav_failure = False
         self.update('opening', current_task=task.title, message='打开任务页面', remaining=0)
         logger.info('执行 %s (%d/%d)，类型 %s', task.title, task.current, task.total, task.kind)
         self.control.check()
@@ -106,6 +110,7 @@ class TaskActions:
                         continue
                 return skip_launch()
             if screen.package == self.origin and self.is_task_list(screen.nodes):
+                self._task_page = False
                 after = next((x for x in self.tasks(screen) if x.key == task.key), None)
                 if task.kind == 'claim' and after and (after.action != task.action or after.current > task.current):
                     return screen, True, False
@@ -127,14 +132,45 @@ class TaskActions:
                 self.pause(.7)
                 continue
             left = True
+            # 已经站在任务落地页上了：从现在到回到清单之前，屏上的 × 都归这个
+            # 页面自己，不能当弹窗关（关掉它 = 任务没打开，白记一次失败）。
+            self._task_page = True
             break
         if not left:
             logger.warning('任务没有成功离开列表：%s', task.title)
+            self._attempt_nav_failure = True
             reason = self.availability_reason(task, check_installed=bool(task.target_packages))
             if reason:
                 raise TaskUnavailable(reason)
             return self.recover(), False, False
         return self.browse_destination(task, screen)
+
+    def record_task_failure(self, task):
+        """导航层失败只耗“本轮次数”，不扣当日额度。
+
+        真正的失败是「页面打开了、进度没动」。而「点了去完成、但没确认离开清单」
+        属于导航层问题——落地页被关掉、跳转没确认、页面加载慢——跟这个任务能不能
+        做没有关系。拿当日额度去锁它，等于让一次导航抖动把这个任务整天废掉：
+        拍立淘逛感兴趣的宝贝就是这样被锁在 2/5，剩下的 3 次再也不执行。
+
+        所以这类失败只在本轮内计数（上限 max_attempts），超过才按正常额度扣，
+        免得一个真的打不开的任务把整轮拖成死循环。
+        """
+        if not getattr(self, '_attempt_nav_failure', False):
+            return super().record_task_failure(task)
+        from backend.core.execution.task_policy import task_identity
+        budget = getattr(self, '_nav_failures', None)
+        if budget is None:
+            budget = self._nav_failures = {}
+        identity = task_identity(task)
+        used = budget.get(identity, 0)
+        if used >= self.config['max_attempts']:
+            logger.info('导航层失败本轮已达上限，按当日额度扣除：%s', task.title)
+            return super().record_task_failure(task)
+        budget[identity] = used + 1
+        self._task_budget_counted = True
+        logger.info('导航层失败不扣当日额度：%s（本轮第 %d 次）', task.title, budget[identity])
+        return self.task_policy.failures(task)
 
     def page_config(self):
         page = getattr(self, 'page', None)
