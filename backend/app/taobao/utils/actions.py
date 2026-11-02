@@ -422,19 +422,17 @@ class TaskActions:
         hard_deadline = started + self.config['max_task_seconds']
         browse_deadline = started + min(seconds, self.config['max_task_seconds'])
         scrolling = self.config['scroll_browse'] and not cross and task.kind in ('browse', 'search')
-        # Only time spent sending actual gestures counts towards scroll tasks.
-        # Capture, OCR, intentional gaps and RPC overhead cannot use this budget.
-        active, target = 0.0, seconds
-        minimum = task.seconds or self.config['default_browse_seconds']
+        # The page countdown follows elapsed time, including recognition and gaps.
+        deadline_checked = False
         next_observation, last_observation = started + 1, started
-        counted_screen = None
+        counted_screen, visible = None, None
         observer_factory = getattr(self.reader, 'visual_observer', None)
         observer_context = (observer_factory() if scrolling and self.config['ocr'] and callable(observer_factory)
                             else nullcontext(None))
         with observer_context as observer:
             while self.control.now() < hard_deadline:
                 self.control.check()
-                if observer:
+                if observer and not deadline_checked:
                     fresh = observer.poll()
                     if fresh is not None:
                         screen = fresh
@@ -455,12 +453,6 @@ class TaskActions:
                     if not self.config['allow_cross_app']:
                         break
                     scrolling = False
-                # An unrelated/premature banner cannot cut a 15-second scroll
-                # down to just a few gestures. Completion is verified on return.
-                if (not scrolling or active >= minimum) and screen.find(
-                        r'^(?:任务已完成|浏览已完成|浏览完成|完成浏览|奖励已到账|恭喜完成|任务完成啦)[!！。\s]*$'):
-                    logger.info('检测到任务完成提示')
-                    return True, cross
                 # Consume each observed countdown once, never extend the timer
                 # on every gesture using the same stale frame.
                 if screen is not counted_screen:
@@ -470,14 +462,21 @@ class TaskActions:
                     visible = counter(screen) if callable(counter) else None
                     visible = visible if visible is not None else int(countdown[1]) if countdown else None
                     if visible is not None:
-                        if scrolling:
-                            target = max(target, active + visible + 1)
-                        else:
+                        if visible > 0:
                             browse_deadline = max(browse_deadline, min(self.control.now() + visible + 1, hard_deadline))
-                remaining = min(target - active if scrolling else browse_deadline - self.control.now(),
-                                hard_deadline - self.control.now())
+                if (visible is None or visible <= 0) and screen.find(
+                        r'^(?:任务已完成|浏览已完成|浏览完成|完成浏览|奖励已到账|恭喜完成|任务完成啦)[!！。\s]*$'):
+                    logger.info('检测到任务完成提示')
+                    return True, cross
+                remaining = min(browse_deadline - self.control.now(), hard_deadline - self.control.now())
                 if remaining <= 0:
-                    break
+                    if deadline_checked:
+                        break
+                    # One fresh frame can reveal a countdown missed earlier.
+                    screen = self.read()
+                    deadline_checked = True
+                    continue
+                deadline_checked = False
                 self.update('browsing', message='跨应用浏览中' if cross else '持续滑动浏览中' if scrolling else '浏览中',
                             remaining=max(0, int(remaining + .9)))
                 if self.control.now() >= next_observation:
@@ -501,10 +500,7 @@ class TaskActions:
                     self.control.wait(.05)
                     continue
                 if scrolling:
-                    before = self.control.now()
-                    duration = self.browse_swipe(screen)
-                    elapsed = max(0, self.control.now() - before)
-                    active += min(elapsed, duration if isinstance(duration, (int, float)) else self.config['swipe_duration_max'])
+                    self.browse_swipe(screen)
                 interval = self.gestures.interval() if scrolling else 1
                 interval = max(0, min(interval, hard_deadline - self.control.now()))
                 if interval > 0:
