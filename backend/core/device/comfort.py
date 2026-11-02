@@ -66,6 +66,8 @@ class _MediaVolume:
 def device_comfort(device, config, notify=None):
     restore = []
     shell = getattr(device, '_checked_shell', None)
+    previous_wake = getattr(device, '_wake_on_empty', False)
+    manage_wake = getattr(device, 'device_type', '') == 'uiautomator2' and config.get('keep_screen_on', False)
 
     def report(level, message):
         if notify:
@@ -90,6 +92,13 @@ def device_comfort(device, config, notify=None):
                 except Exception as exc:
                     report('WARNING', '设备显示设置未生效：' + str(exc))
             if config.get('keep_screen_on', False):
+                device._wake_on_empty = True
+                wake = getattr(device, 'wake_and_unlock', None)
+                if callable(wake):
+                    try:
+                        wake()
+                    except Exception as exc:
+                        report('WARNING', '设备唤醒未生效，请手动解锁：' + str(exc))
                 set_value(['settings','get','system','screen_off_timeout'], ['settings','put','system','screen_off_timeout'], 2147483647)
             if config.get('minimum_volume', False):
                 volume = _MediaVolume(execute, report)
@@ -102,6 +111,8 @@ def device_comfort(device, config, notify=None):
             report('WARNING', '当前设备驱动暂不支持自动降低媒体音量，请在设备上手动调整')
         yield
     finally:
+        if manage_wake:
+            device._wake_on_empty = previous_wake
         for action in reversed(restore):
             try:
                 action()

@@ -453,3 +453,5 @@ controller.dispatch('run', {'auto_open': True})
 `core.device.comfort.device_comfort(device, config, notify=None)` 保留现有上下文调用，`notify(level, message)` 可接入控制台运行日志；不提供时写普通日志。`minimum_volume` 默认 False，只针对 Android 媒体流3，在执行开始时读取原值，优先使用 `cmd media_session volume --stream 3 --get/--set`，失败时有界回退旧 `media volume`。读回值必须等于系统报告的最低值才显示成功，通常为0，不假设所有设备最大音量都是15。命令入口依据 [AOSP MediaShellCommand / VolumeCtrl](https://android.googlesource.com/platform/frameworks/base/+/master/services/core/java/com/android/server/media/VolumeCtrl.java)。
 
 跨命令回退保留第一次读到的原值，避免写入已生效但读回失败时把0误存为原值；无法读取原值则不写入。结束或异常时尝试恢复并读回核验，失败明确提示，不覆盖原任务异常。命令单次超时5秒，不发送音量长按，不调整铃声/闹钟，也不靠改变全局静音模式实现。HDC原生驱动尚无对应支持时显示限制，Android兼容设备按 uiautomator2 路径处理。亮屏和亮度仍沿用原有读取、临时设置、反序恢复流程。
+
+`DeviceAdapter.wake_and_unlock()` 为下次框架新增的可选能力：Android 主屏发送 WAKEUP，并请求系统解除非安全锁屏；仍锁定时返回 false 并提示手动解锁，不发送上滑或密码输入。调用持有设备 I/O 锁并清除截图缓存，shell 超时 5 秒；副屏与其他驱动返回 false。公共 `device_comfort` 仅在 `keep_screen_on` 开启时调用并临时允许空树唤醒重试（最多每 10 秒一次），退出时恢复开关和系统超时。连接与普通预览不启用唤醒。月月赚活动源码不调用此新接口，继续兼容 0.1.5；通用循环无记录时使用不限定任务类型的提示，不推断已完成。

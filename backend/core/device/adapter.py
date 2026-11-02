@@ -116,59 +116,46 @@ class DeviceAdapter:
             self._device.settings['operation_delay_methods'] = [
                 method for method in self._device.settings['operation_delay_methods'] if method != 'swipe']
             self.identity_serial = claimed_identity or self._android_identity() or self.serial
-            # 息屏/锁屏时无障碍树是空的：先亮屏解锁，避免"启动了却什么都不做"
-            self.wake_and_unlock()
         else:
             raise ValueError(f"不支持的设备类型: {self.device_type}")
 
+    @serialized
     def wake_and_unlock(self):
         """亮屏并解除锁屏。
 
-        设备息屏或停在锁屏界面时，无障碍树是空的（读到 0 个节点），
-        表现就是"脚本启动了但什么都不做"。连接后和读到空页面时都要兜一次。
+        仅由公共保持亮屏设置启用，连接和普通预览不主动唤醒。
+        系统无法解除的锁屏交给用户处理，不发送解锁手势或认证输入。
         """
-        if self.device_type != 'uiautomator2':
+        if self.device_type != 'uiautomator2' or getattr(self, '_display_id', 0):
             return False
         # 亮屏用 WAKEUP 键：对已亮屏的设备没有副作用，比读 info.screenOn 可靠
         # （无线调试/部分机型读不到 screenOn，只靠它会导致永远不唤醒）。
         try:
-            self._device.shell(['input', 'keyevent', '224'])      # KEYCODE_WAKEUP
+            self._checked_shell(['input', 'keyevent', '224'], timeout=5)
         except Exception:
             logger.debug('发送唤醒键失败', exc_info=True)
             return False
         time.sleep(0.8)
-        try:
-            if (self._device.info or {}).get('screenOn') is False:
-                self._device.screen_on()
-                time.sleep(0.8)
-        except Exception:
-            logger.debug('补充亮屏调用未生效', exc_info=True)
         # 仍有锁屏时才动界面：无密码的滑动锁屏可直接解除，
         # 有密码/图案的锁屏需用户自己解锁（这里不会尝试猜密码）。
         if self._lockscreen_visible():
             try:
-                self._device.shell(['wm', 'dismiss-keyguard'])
+                self._checked_shell(['wm', 'dismiss-keyguard'], timeout=5)
             except Exception:
                 logger.debug('解除锁屏命令未生效', exc_info=True)
             time.sleep(0.6)
             if self._lockscreen_visible():
-                try:
-                    width, height = self._device.window_size()
-                    self._device.swipe(width // 2, int(height * 0.85),
-                                       width // 2, int(height * 0.35), 0.25)
-                except Exception:
-                    logger.debug('上滑解锁未生效', exc_info=True)
-                time.sleep(0.6)
-            logger.info('设备处于锁屏状态，已尝试亮屏并解锁')
+                logger.warning('设备仍处于锁屏状态，请手动解锁后重试')
+                return False
         return True
 
     def _lockscreen_visible(self):
-        """当前是否停留在锁屏界面（用于判断要不要上滑解锁）。"""
+        """当前是否停留在锁屏界面，无法核定时不执行解锁。"""
         try:
-            output = self._device.shell(['dumpsys', 'window']).output or ''
+            output = self._checked_shell(['dumpsys', 'window'], timeout=5)
         except Exception:
             return False
-        return 'mDreamingLockscreen=true' in output or 'mKeyguardShowing=true' in output
+        return bool(re.search(r'(?:mDreamingLockscreen|mKeyguardShowing|isStatusBarKeyguard)\s*=\s*true\b', output))
 
     def _android_identity(self):
         """Keep USB and Wi-Fi transports of the same handset in one daily record."""
@@ -620,7 +607,10 @@ class DeviceAdapter:
             self._last_xml = self._device.dump_hierarchy(compressed=True)
             if not self._last_xml or '<node' not in self._last_xml:
                 # 息屏/锁屏时取到的层级是空的：唤醒后重取一次，否则上层会当成空页面
-                if self.wake_and_unlock():
+                if (getattr(self, '_wake_on_empty', False)
+                        and time.monotonic() >= getattr(self, '_next_empty_wake', 0)):
+                    self._next_empty_wake = time.monotonic() + 10
+                    self.wake_and_unlock()
                     self._last_xml = self._device.dump_hierarchy(compressed=True)
                 if not self._last_xml or '<node' not in self._last_xml:
                     # 唤醒后仍为空：多半是设备设了密码锁屏，脚本无法代替用户解锁

@@ -11,6 +11,8 @@ import logging
 import re
 
 from backend.core.models import TextNode, normalize
+from backend.core.errors import Stopped, NeedsAttention
+from backend.core.device.instances import InstanceMismatch
 
 logger = logging.getLogger('backend.execution')
 
@@ -221,16 +223,10 @@ class EntryPolicy:
         exact = [n for n in hits if _norm(n.text) == '搜索']
         return min(exact or hits, key=lambda n: (n.bounds[1], n.bounds[0]))
 
-    @staticmethod
-    def _search_page_ready(screen):
-        """当前是否已经在支付宝搜索页（顶部有很宽的输入条 + 取消/返回）。"""
-        if not _is_alipay(screen.package):
-            return False
-        for n in screen.nodes:
-            w = n.bounds[2] - n.bounds[0]
-            if w > screen.width * 0.5 and n.bounds[1] < screen.height * 0.15:
-                return True
-        return False
+    def _search_page_ready(self, screen):
+        """必须已离开首页且能定位搜索输入条，才允许写入。"""
+        return (_is_alipay(screen.package) and not self.homepage_visible(screen)
+                and self._search_box(screen) is not None)
 
     def _tap_home_search(self, screen):
         """点开支付宝搜索页：优先点识别到的搜索入口，识别不到就按布局兜底。
@@ -245,11 +241,11 @@ class EntryPolicy:
         if not self.homepage_visible(screen):
             return False
         self.update(message='未识别到搜索入口，按首页布局点击搜索栏')
-        self.device.click(int(screen.width * 0.45), int(screen.height * 0.075))
+        self.click(TextNode('搜索栏', (int(screen.width * 0.2), int(screen.height * 0.05),
+                                              int(screen.width * 0.7), int(screen.height * 0.1))))
         return True
 
-    @staticmethod
-    def _search_box(screen):
+    def _search_box(self, screen):
         """搜索页的输入框：顶部那条很宽的控件。"""
         hits = []
         for n in screen.nodes:
@@ -260,7 +256,9 @@ class EntryPolicy:
             # 状态栏之类的超宽横条要排除掉
             if not (screen.height * 0.02 < top < screen.height * 0.15):
                 continue
-            hits.append(n)
+            keyword = self.config.get('task_search_keyword') or '月月赚'
+            if '搜索' in _norm(n.text) or _norm(n.text) == _norm(keyword):
+                hits.append(n)
         return min(hits, key=lambda n: n.bounds[1]) if hits else None
 
     def _search_result(self, screen):
@@ -277,17 +275,13 @@ class EntryPolicy:
                 and screen.height * 0.07 < n.bounds[1] < screen.height * 0.45
                 and n.bounds[2] - n.bounds[0] < screen.width * 0.6
                 and 0 < n.bounds[3] - n.bounds[1] < screen.height * 0.2]
-        if hits:
-            return min(hits, key=lambda n: (n.bounds[1], n.bounds[0]))
-        # 兜底：部分版本把结果卡片的标题做成不可点击的纯文本，只有右侧
-        # 「去看看/去完成」按钮能点。同一行左侧出现「月月赚」时就点这个按钮。
+        # 标题右侧同排有动作时优先点击动作，避免只聚焦不可点击标题。
         rows = [n for n in screen.nodes
                 if _norm(n.text) in ('去看看', '去完成', '去逛逛', '去浏览')
-                and any(_norm(other.text) == _norm(keyword)
-                        and abs((other.bounds[1] + other.bounds[3]) / 2
-                                - (n.bounds[1] + n.bounds[3]) / 2) < screen.height * 0.05
-                        for other in screen.nodes)]
-        return min(rows, key=lambda n: (n.bounds[1], n.bounds[0])) if rows else None
+                and any(n.bounds[0] >= title.bounds[2]
+                        and max(n.bounds[1], title.bounds[1]) < min(n.bounds[3], title.bounds[3])
+                        for title in hits)]
+        return min(rows or hits, key=lambda n: (n.bounds[1], n.bounds[0])) if rows or hits else None
 
     def search_and_open(self, screen):
         """按用户验证过的方式进入月月赚：搜索栏 → 输入「月月赚」→ 点结果卡片。
@@ -316,13 +310,18 @@ class EntryPolicy:
                 return False
             self.control.wait(1.5)
             screen = self.read()
-            if self._search_box(screen) is None and not self._search_page_ready(screen):
+            if not self._search_page_ready(screen):
                 # 没进搜索页：多半是首页搜索入口点空了，按布局再点一次
                 if self.homepage_visible(screen):
                     self.update(message='未进入搜索页，按首页布局重新点击搜索栏')
-                    self.device.click(int(screen.width * 0.45), int(screen.height * 0.075))
+                    self.click(TextNode('搜索栏', (int(screen.width * 0.2), int(screen.height * 0.05),
+                                              int(screen.width * 0.7), int(screen.height * 0.1))))
                     self.control.wait(2.0)
                     screen = self.read()
+
+            if not self._search_page_ready(screen):
+                return False
+            self.guard(screen)
 
             # 2) 输入关键词
             box = self._search_box(screen)
@@ -330,27 +329,16 @@ class EntryPolicy:
                 self.click(box)
                 self.control.wait(1.2)
             self.update(message='搜索：' + keyword)
-            try:
-                self.device.input_text(keyword)
-            except Exception:
-                logger.info('常规输入失败，改用输入法写入')
-                backend = getattr(self.device, '_device', None)
-                if backend is None:
-                    return False
-                backend.set_fastinput_ime(True)
-                backend.send_keys(keyword)
+            self.device.input_text(keyword)
             self.control.wait(2.5)
             screen = self.read()
 
             # 3) 点开联想/结果里的活动入口。
             # 实测按回车会把联想结果清掉，所以直接点条目；
-            # 结果页几乎不暴露控件，第二次退回实测过的卡片位置。
+            # 结果暂未加载时再读一次，仅点击已识别的活动入口。
             for attempt in range(2):
+                self.guard(screen)
                 result = self._search_result(screen)
-                if result is None and attempt:
-                    # 入口卡片在顶部（实测中心约为 0.5W, 0.115H）
-                    result = TextNode('', (int(screen.width * 0.2), int(screen.height * 0.08),
-                                           int(screen.width * 0.8), int(screen.height * 0.15)))
                 if result is None:
                     self.control.wait(1.5)
                     screen = self.read()
@@ -366,6 +354,8 @@ class EntryPolicy:
                 if self._accept_list(screen):
                     return True
             return False
+        except (Stopped, NeedsAttention, InstanceMismatch):
+            raise
         except Exception as exc:
             logger.info('搜索直达失败：%s', exc)
             return False
@@ -375,12 +365,16 @@ class EntryPolicy:
         """保证支付宝在前台（不在就拉起并等到真正切回来）。"""
         try:
             screen = self.read()
+        except (Stopped, NeedsAttention, InstanceMismatch):
+            raise
         except Exception:
             screen = None
         if screen is not None and _is_alipay(screen.package):
             return screen
         try:
             self.device.start_app(self.application.package)
+        except (Stopped, NeedsAttention, InstanceMismatch):
+            raise
         except Exception:
             logger.info('拉起支付宝失败')
             return screen
@@ -388,6 +382,8 @@ class EntryPolicy:
             self.control.wait(2.0)
             try:
                 screen = self.read()
+            except (Stopped, NeedsAttention, InstanceMismatch):
+                raise
             except Exception:
                 return None
             if screen is not None and _is_alipay(screen.package):
@@ -414,6 +410,8 @@ class EntryPolicy:
             if self.search_and_open(screen):
                 try:
                     screen = self.read()
+                except (Stopped, NeedsAttention, InstanceMismatch):
+                    raise
                 except Exception:
                     screen = None
                 if screen is not None and self._accept_list(screen):
@@ -436,6 +434,8 @@ class EntryPolicy:
             self.control.wait(1.2)
             try:
                 screen = self.read()
+            except (Stopped, NeedsAttention, InstanceMismatch):
+                raise
             except Exception:
                 break
             if self._accept_list(screen):
@@ -450,6 +450,8 @@ class EntryPolicy:
                 screen = self.read()
                 if self._accept_list(screen):
                     return screen
+        except (Stopped, NeedsAttention, InstanceMismatch):
+            raise
         except Exception:
             logger.info('重新进入月月赚失败')
         return screen
@@ -519,24 +521,32 @@ class EntryPolicy:
             try:
                 if self.homepage_visible(screen) and _is_alipay(screen.package):
                     return screen
+            except (Stopped, NeedsAttention, InstanceMismatch):
+                raise
             except Exception:
                 pass
             self.device.go_back()
             self.control.wait(1.3)
             try:
                 screen = self.read()
+            except (Stopped, NeedsAttention, InstanceMismatch):
+                raise
             except Exception:
                 break
             if not _is_alipay(screen.package):
                 # 退出了支付宝，重新拉起（默认进首页）
                 try:
                     self.device.start_app(self.application.package)
+                except (Stopped, NeedsAttention, InstanceMismatch):
+                    raise
                 except Exception:
                     return screen
                 for _ in range(6):
                     self.control.wait(1.5)
                     try:
                         screen = self.read()
+                    except (Stopped, NeedsAttention, InstanceMismatch):
+                        raise
                     except Exception:
                         break
                     if self.homepage_visible(screen):

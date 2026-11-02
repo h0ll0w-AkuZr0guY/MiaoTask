@@ -352,7 +352,7 @@ class SessionLoop:
         elif not self.records:
             # 商业任务（办流量卡/充话费…）在解析层就被过滤了，不会进 records。
             # 这里必须说清楚，否则用户看到的是"启动了但什么都没做"。
-            message = '本轮没有识别到可执行的浏览任务：可能今天已完成，或活动暂未投放新的浏览任务'
+            message = '本轮没有识别到任务：可能今天已完成、活动暂未投放任务，或页面尚未加载，请检查设备页面'
         else:
             message = '本轮结束，可执行任务已处理；请查看待处理和未通过核验的任务'
         self.update('finished', message=message, current_task='', remaining=0,
