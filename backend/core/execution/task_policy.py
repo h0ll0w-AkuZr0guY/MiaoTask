@@ -14,6 +14,12 @@ def task_identity(task):
 
 
 class TaskPolicy:
+    # 基于「上一轮那次尝试」得出的临时判定：可以重新来过，不属于用户选择。
+    CLEAR_ON_PROGRESS = ('browse_once_attempted', 'failures', 'exhausted')
+    # 重新进入列表后只放行「无明确时长只试一次」这条锁；失败次数是当日额度，
+    # 清了就等于把 max_attempts 变成无限重试，正在出问题的任务会被反复空跑。
+    CLEAR_ON_REENTRY = ('browse_once_attempted',)
+
     def __init__(self):
         self.lock = threading.RLock()
         self.store = None
@@ -52,13 +58,18 @@ class TaskPolicy:
             return item['failures']
 
     def progress(self, task):
-        """A verified advance ends the failure streak, without changing user choices."""
+        """A verified advance ends the failure streak, without changing user choices.
+
+        进度被核验通过，说明这个任务是真的能推进的：这一条同时要解开「无明确
+        浏览时长，今日只试一次」的锁。否则做到 5/6、只差最后一次的任务，会因为
+        第一次尝试留下的锁被整天放弃。
+        """
         with self.lock:
             identity = task_identity(task)
             item = self.entries.get(identity)
-            if item and ('failures' in item or 'exhausted' in item):
-                item.pop('failures', None)
-                item.pop('exhausted', None)
+            if item and set(item) & set(self.CLEAR_ON_PROGRESS):
+                for key in self.CLEAR_ON_PROGRESS:
+                    item.pop(key, None)
                 if not item:
                     self.entries.pop(identity, None)
                 self._save()
@@ -67,6 +78,39 @@ class TaskPolicy:
         with self.lock:
             self.entries.setdefault(task_identity(task), {})['browse_once_attempted'] = True
             self._save()
+
+    def retry_transient(self, seen=None):
+        """给「试过一次就锁住」的任务一次重新来过的机会。
+
+        补扫前客户端已经被强停重开、列表也重新拉了一份，上一轮得出的尝试结论可能
+        已经过期：任务进度涨了、入口换了，或者当时只是页面没刷新。重新进入时解开
+        「无明确浏览时长，今日只试一次」这条锁，让真正还能做的任务回到候选里。
+
+        失败次数（``failures`` / ``exhausted``）不在放行范围内：那是当日额度，清掉
+        等于把 ``max_attempts`` 变成无限重试，坏掉的任务会被反复空跑。
+
+        ``seen`` 是本次运行已经放行过的任务标识集合：同一个任务只放行一次，避免
+        「一直失败 → 一直清零」把重试额度变成无限。用户手动跳过的（``skip``）是
+        明确选择，永远不动。
+        """
+        with self.lock:
+            granted = set() if seen is None else seen
+            cleared = 0
+            for identity in list(self.entries):
+                item = self.entries[identity]
+                if item.get('skip') or identity in granted:
+                    continue
+                if not set(item) & set(self.CLEAR_ON_REENTRY):
+                    continue
+                for key in self.CLEAR_ON_REENTRY:
+                    item.pop(key, None)
+                granted.add(identity)
+                cleared += 1
+                if not item:
+                    self.entries.pop(identity, None)
+            if cleared:
+                self._save()
+            return cleared
 
     def reset(self):
         with self.lock:

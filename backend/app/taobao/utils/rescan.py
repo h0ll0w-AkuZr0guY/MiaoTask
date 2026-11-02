@@ -15,6 +15,7 @@ pending。所以每轮之后必须回到任务列表把整张翻一遍。
 独立实现，但「什么时候才算真的做完」这个判定完全一致，只有「怎么回到列表」和
 「列表长什么样」不同，那两点由子类或配置决定。
 """
+import contextlib
 import logging
 import re
 from backend.core.models import normalize
@@ -147,6 +148,100 @@ class RescanPolicy:
             return screen, False
         return screen, True
 
+    def reset_list_state(self):
+        """把上一轮解析出来的任务清单整份丢掉，让重新进入的页面从头识别。
+
+        补扫前客户端已经强停重开，任务面板会重新请求一次列表；但框架里还留着上一轮
+        的解析结果：``_known_tasks``（按图标/位置继承的旧任务对象）、``records``
+        （status/reason/current）、``_verified_progress``（“这次进度已核验，等页面
+        刷新”），再加上 task_policy 里「今日已试一次」这类临时锁。扫描读的是这些
+        缓存而不是当前屏幕，于是刚刷出来的任务被旧结论继续挡着，连续两次判「没有
+        可执行任务」就收工——用户看到的就是「明明还能做，程序却说做完了」。
+
+        临时锁每个任务在一次运行里只放行一次（``_rescan_retried``），所以「一直
+        失败」的任务不会被清零成无限重试。
+        """
+        dropped = 0
+        records = getattr(self, 'records', None)
+        if isinstance(records, dict) and records:
+            # 留一份快照：万一清空之后这一轮没跑出任何新记录（确认没有任务就收工），
+            # 界面上还得能把这一轮的任务与结论显示出来，不能变成一张空表。
+            self._records_snapshot = dict(records)
+            dropped = len(records)
+            records.clear()
+        for name in ('_known_tasks', '_asset_keys', '_verified_progress'):
+            state = getattr(self, name, None)
+            if isinstance(state, (dict, set)):
+                state.clear()
+        # 重新识别时重读一次已安装应用列表：用户可能刚装上 UC 这类目标应用。
+        if getattr(self, '_installed_packages', None) is not None:
+            self._installed_packages = None
+            self._installed_checked = False
+        # 任务级的「不可用」是上一轮这一次尝试的结论，换成新列表后要重新判；
+        # 应用级（未安装某某）保留，安装状态由上面那次重读负责刷新。
+        for key in [k for k in (getattr(self, 'unavailable_tasks', None) or {})
+                    if str(k).startswith('task:')]:
+            self.unavailable_tasks.pop(key, None)
+        policy = getattr(self, 'task_policy', None)
+        granted = getattr(self, '_rescan_retried', None)
+        if granted is None:
+            granted = self._rescan_retried = set()
+        unlocked = self.unlock_once_only(policy, granted)
+        if dropped or unlocked:
+            logger.info('补扫：清空上一轮的任务清单（%d 条记录、%d 条临时锁），按当前页面重新识别',
+                        dropped, unlocked)
+        return dropped, unlocked
+
+    ONCE_ONLY_KEYS = ('browse_once_attempted',)
+
+    def unlock_once_only(self, policy, granted=None):
+        """解开「无明确浏览时长，今日只试一次」的锁，每个任务每次运行只放行一次。
+
+        新框架用 ``TaskPolicy.retry_transient``；分发包里跑的是 v0.1.5 的旧框架，
+        没有这个方法，只能直接改它的 ``entries``（字段名从 0.1.3 起没变过，带兜底）。
+        失败次数（failures/exhausted）不在放行范围：那是当日额度，清了等于把
+        max_attempts 变成无限重试。用户手动跳过的 skip 永远不动。
+        """
+        granted = set() if granted is None else granted
+        retry = getattr(policy, 'retry_transient', None)
+        if callable(retry):
+            return retry(granted)
+        entries = getattr(policy, 'entries', None)
+        if not isinstance(entries, dict):
+            return 0
+        lock = getattr(policy, 'lock', None)
+        with (lock if lock is not None else contextlib.nullcontext()):
+            cleared = 0
+            for identity in list(entries):
+                item = entries[identity]
+                if not isinstance(item, dict) or item.get('skip') or identity in granted:
+                    continue
+                if not item.get('browse_once_attempted'):
+                    continue
+                item.pop('browse_once_attempted', None)
+                granted.add(identity)
+                cleared += 1
+                if not item:
+                    entries.pop(identity, None)
+        if cleared:
+            save = getattr(policy, '_save', None)
+            if callable(save):
+                save()
+        return cleared
+
+    def restore_list_state(self):
+        """清空重认之后如果没跑出新的任务清单，把快照放回去。
+
+        收工那一刻（确认整张列表没有可执行任务）界面上要还能看到这一轮的任务与
+        结论；否则面板会是一张空表，看起来像“什么都没做”。
+        """
+        backup = getattr(self, '_records_snapshot', None)
+        records = getattr(self, 'records', None)
+        if not backup or not isinstance(records, dict) or records:
+            return
+        records.update(backup)
+        self.update(tasks=list(records.values()))
+
     def app_package(self):
         """当前活动所属客户端的包名（导航时已经确定过就沿用）。"""
         package = getattr(self, 'origin', None)
@@ -244,6 +339,9 @@ class RescanPolicy:
             # 重启失败不阻断：可能只是这台设备不允许 force-stop，用当前页面照样扫，
             # 结论仍然按 SCAN_UNKNOWN 严格判定，不会因此误判成“做完了”。
             self.restart_client()
+        # 新进程拉起之后、真正开始读列表之前，先把上一轮的任务清单与临时锁丢掉：
+        # 不重新识别，扫描看到的就是旧结论，能把还能做的任务判成“已做过”。
+        self.reset_list_state()
         try:
             screen = self.reopen_list()
         except Exception:
@@ -340,6 +438,9 @@ class RescanPolicy:
         # 重启预算是按“一次运行”算的：停一下再跑不该被上一次的用量卡住。
         self._rescan_restarts = 0
         self._rescan_restart_capped = False
+        # 每个任务在一次运行里只放行一次“重新来过”，避免无限重试。
+        self._rescan_retried = set()
+        self._records_snapshot = None
         limit = max(2, int(self.rescan_option('rescan_rounds', None)
                            or self.rescan_option('round_limit', None) or 20))
         confirm = max(1, int(self.rescan_option('rescan_confirm', 2)))
@@ -399,4 +500,5 @@ class RescanPolicy:
                 logger.warning('补扫达到 %d 轮保险上限，停止；列表里可能还有任务', limit)
             else:
                 logger.info('补扫：第 %d 轮结束，回到“%s”重新确认', index, self.list_name())
+        self.restore_list_state()
         return stats

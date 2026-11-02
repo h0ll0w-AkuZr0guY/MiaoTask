@@ -215,7 +215,9 @@ class SessionLoop:
                     screen = self.recover_task(task, cold_start=True)
                     # Reopening may reveal already-settled server progress.
                     success = self.verify(task, before, screen)
-                if getattr(task, 'browse_once', False):
+                if getattr(task, 'browse_once', False) and not success:
+                    # 只有真的没做出进度才上「今日只试一次」的锁：有进度说明这个
+                    # 任务本来就能重复做，锁上等于把 5/6 这种只差一步的任务整天丢掉。
                     self.task_policy.mark_browse_once(task)
                 if not success and not disabled_reason and task.target_packages:
                     # Some deeplinks silently stay on a landing page. Only after

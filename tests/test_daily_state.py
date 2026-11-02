@@ -477,7 +477,7 @@ from unittest.mock import Mock, patch
 from backend.core.device.adb_lifecycle import OwnedAdb
 from backend.core.device.comfort import device_comfort
 from backend.core.execution.browse_contract import apply_browse_contract
-from backend.core.execution.task_policy import TaskPolicy
+from backend.core.execution.task_policy import TaskPolicy, task_identity
 from backend.core.models import Task
 from backend.core.storage.daily_state import DailyState
 from backend.core.storage.namespace import StorageNamespace
@@ -517,6 +517,43 @@ class FrameworkPreferencesTests(unittest.TestCase):
             policy.mark_browse_once(task)
             policy.bind(DailyState(folder, 'synthetic', 'uiautomator2'))
             self.assertIn('今日已尝试一次', policy.reason(task))
+
+    def test_verified_progress_unlocks_the_once_only_browse_lock(self):
+        """做到 5/6 的浏览任务必须能继续做：有进度就说明它不是“只能试一次”。"""
+        task = apply_browse_contract(self.task(detail='浏览页面领取'))
+        with tempfile.TemporaryDirectory() as folder:
+            policy = TaskPolicy()
+            policy.bind(DailyState(folder, 'synthetic', 'uiautomator2'))
+            policy.mark_browse_once(task)
+            self.assertIn('今日已尝试一次', policy.reason(task))
+            policy.progress(task)
+            self.assertEqual(policy.reason(task), '')
+
+    def test_reentry_unlocks_once_only_browse_but_keeps_failure_budget(self):
+        """重新进入列表可以再试一次“只试一次”的任务，但不能把失败额度清零。"""
+        task = apply_browse_contract(self.task(detail='浏览页面领取'))
+        with tempfile.TemporaryDirectory() as folder:
+            policy = TaskPolicy()
+            policy.bind(DailyState(folder, 'synthetic', 'uiautomator2'))
+            policy.mark_browse_once(task)
+            policy.fail(task, 2)
+            seen = set()
+            self.assertEqual(policy.retry_transient(seen), 1)
+            self.assertEqual(policy.reason(task), '')
+            self.assertEqual(policy.failures(task), 1)
+            # 同一次运行里同一个任务只放行一次，不会无限重试
+            policy.mark_browse_once(task)
+            self.assertEqual(policy.retry_transient(seen), 0)
+            self.assertIn('今日已尝试一次', policy.reason(task))
+
+    def test_reentry_never_clears_a_manual_skip(self):
+        task = apply_browse_contract(self.task(detail='浏览页面领取'))
+        with tempfile.TemporaryDirectory() as folder:
+            policy = TaskPolicy()
+            policy.bind(DailyState(folder, 'synthetic', 'uiautomator2'))
+            policy.choose(task_identity(task), True)
+            self.assertEqual(policy.retry_transient(), 0)
+            self.assertIn('用户选择今日跳过', policy.reason(task))
 
     def test_browse_instruction_does_not_override_required_actions(self):
         for title, detail in [('答题', '浏览15秒后完成答题'), ('支付订单', '浏览15秒'), ('邀请好友', '浏览页面'), ('答题', '提交答案')]:

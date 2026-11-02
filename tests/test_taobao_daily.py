@@ -1082,6 +1082,84 @@ class RescanLoopTests(unittest.TestCase):
         self.assertEqual(runner.stats.attempts, 1)
 
 
+class RescanReidentifyTests(unittest.TestCase):
+    """每轮补扫重新进入时，必须把上一轮的任务清单丢掉，按新页面重新识别。
+
+    不这么做，扫描读到的就是上一轮的缓存结论：一个“今日已试一次”的浏览任务、
+    一条 disabled 记录，都会把还能做的任务挡在候选之外，连续两次判空就收工。
+    """
+
+    def runner(self):
+        runner = make_daily_runner()
+        runner.origin = 'com.taobao.taobao'
+        runner.device = SimpleNamespace(device_type='uiautomator2', swipe=Mock(),
+                                        go_home=Mock(), stop_app=Mock(), start_app=Mock())
+        page = screen_of('更多金币等你赚', '浏览精选店铺', '去完成')
+        runner.ensure_list = Mock(return_value=page)
+        runner.ensure_expanded = Mock(side_effect=lambda screen, force=False: screen)
+        runner.runnable_rows = Mock(return_value=[])
+        runner.tasks = Mock(return_value=[])
+        runner.is_task_list = Mock(return_value=True)
+        runner.read = Mock(return_value=page)
+        return runner
+
+    def test_stale_records_are_dropped_before_the_page_is_parsed(self):
+        runner = self.runner()
+        runner.records = {'k1': {'status': 'disabled', 'reason': '已跳过：无明确浏览时长，今日已尝试一次'}}
+        runner._known_tasks = {'k1': SimpleNamespace(key='k1')}
+        runner._verified_progress = {('id', 5)}
+        seen = []
+        runner.ensure_list = Mock(side_effect=lambda **kw: seen.append(dict(runner.records))
+                                  or screen_of('更多金币等你赚', '去完成'))
+        runner.rescan()
+        # 重新进列表那一刻，上一轮的清单已经清空（不是扫描完才清）
+        self.assertEqual(seen, [{}])
+        self.assertEqual(runner._known_tasks, {})
+        self.assertEqual(runner._verified_progress, set())
+
+    def test_reentry_gives_the_stuck_browse_task_one_more_chance(self):
+        runner = self.runner()
+        task = Task('k', '好物沉浸看', '浏览', '去完成', (0, 0, 10, 10),
+                    kind='browse', current=5, total=6)
+        runner.task_policy.mark_browse_once(task)
+        self.assertIn('今日已尝试一次', runner.task_policy.reason(task))
+        runner.rescan()
+        self.assertEqual(runner.task_policy.reason(task), '')
+
+    def test_old_framework_without_retry_transient_is_unlocked_in_place(self):
+        """分发包里跑的是 v0.1.5 框架，没有 retry_transient：直接改 entries。"""
+        class LegacyPolicy:
+            def __init__(self):
+                self.entries = {'id1': {'browse_once_attempted': True},
+                                'id2': {'skip': True},
+                                'id3': {'failures': 2, 'exhausted': True}}
+                self.saved = 0
+
+            def _save(self):
+                self.saved += 1
+
+        runner = self.runner()
+        policy = LegacyPolicy()
+        runner.task_policy = policy
+        granted = set()
+        self.assertEqual(runner.unlock_once_only(policy, granted), 1)
+        self.assertNotIn('id1', policy.entries)                 # 锁没了，空记录一并回收
+        self.assertTrue(policy.entries['id2']['skip'])         # 用户手动跳过不动
+        self.assertTrue(policy.entries['id3']['exhausted'])    # 当日失败额度不动
+        self.assertEqual(policy.saved, 1)
+        policy.entries['id1'] = {'browse_once_attempted': True}
+        self.assertEqual(runner.unlock_once_only(policy, granted), 0)
+
+    def test_finished_panel_keeps_the_last_parsed_list(self):
+        """清空后这一轮没跑出新记录时，收工前要把快照放回去，面板不能是空表。"""
+        runner = self.runner()
+        runner.records = {'k1': {'status': 'disabled', 'reason': 'x'}}
+        runner.rescan()
+        self.assertEqual(runner.records, {})
+        runner.restore_list_state()
+        self.assertEqual(list(runner.records), ['k1'])
+
+
 if __name__=='__main__':
     unittest.main()
 
