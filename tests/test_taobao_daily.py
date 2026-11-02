@@ -766,7 +766,7 @@ class TaobaoDailyTests(unittest.TestCase):
         device.input_ascii.assert_not_called()
         device.return_value.set_text.assert_called_once_with(runner.config['search_keyword'],timeout=.25)
 
-    def test_expand_is_scoped_to_coin_task_panel_and_only_clicked_once(self):
+    def test_expand_is_scoped_to_coin_task_panel_and_retries_until_painted(self):
         runner=self.runner()
         header=TextNode('今日速赚510淘金币',(460,200,950,270),'ocr')
         button=TextNode('展开',(1190,2540,1300,2590),'ocr')
@@ -776,11 +776,29 @@ class TaobaoDailyTests(unittest.TestCase):
         runner.control=SimpleNamespace(now=lambda:0,check=Mock(),wait=Mock())
         runner.click=Mock()
         self.assertIs(runner.ensure_list(),page)
-        runner.click.assert_called_once_with(button)
+        # 这张假页面永远停在折叠态（标题和「展开」一直都在），等于每次点完都
+        # 没展开成功：重试到上限就停，不会在一个按钮上无限点。
+        self.assertEqual(runner.click.call_count,runner.EXPAND_TRIES)
+        runner.click.assert_called_with(button)
         runner.click.reset_mock()
         runner.read_page=Mock(return_value=Screen([header,button],1800,2880,page.package,'ocr'))
         runner.ensure_list()
         runner.click.assert_not_called()
+
+    def test_expand_stops_after_one_click_when_queue_is_painted(self):
+        runner=self.runner()
+        header=TextNode('今日速赚510淘金币',(460,200,950,270),'ocr')
+        button=TextNode('展开',(1190,2540,1300,2590),'ocr')
+        context=TextNode('更多金币等你赚',(490,2540,870,2590),'ocr')
+        collapsed=Screen([header,context,button],1800,2880,'com.taobao.taobao','ocr')
+        # 展开后「更多金币等你赚」整行会被任务行替换掉——标题和「展开」都不见了。
+        opened=Screen([header,TextNode('逛支付宝会员频道(0/1)',(190,2620,700,2680),'ocr'),
+                       TextNode('去完成',(1420,2620,1690,2700),'ocr')],1800,2880,'com.taobao.taobao','ocr')
+        runner.control=SimpleNamespace(now=lambda:0,check=Mock(),wait=Mock())
+        runner.click=Mock()
+        runner.read_page=Mock(side_effect=[opened,opened,opened])
+        self.assertIs(runner.ensure_expanded(collapsed),opened)
+        runner.click.assert_called_once_with(button)
 
     def test_farm_delayed_promotion_is_closed_without_shopping_action(self):
         runner=self.runner('farm')
@@ -914,6 +932,33 @@ class RescanVerdictTests(unittest.TestCase):
         runner.ensure_expanded = Mock(side_effect=lambda screen, force=False: screen)
         runner.runnable_rows = Mock(return_value=[SimpleNamespace(title='浏览精选店铺')])
         self.assertEqual(runner.rescan(), runner.SCAN_FOUND)
+
+    def test_collapsed_panel_is_opened_before_scanning(self):
+        """折叠态下「更多金币等你赚」右侧还挂着「展开」，队列根本没画出来。
+
+        这种页面同样满足 ``is_task_list``（分区标题都在），翻一屏也不会变——
+        不先展开就会判成“翻到底、没有任务”。这里确认补扫会先把它点开。
+        """
+        runner = make_daily_runner()
+        collapsed = screen_of('更多金币等你赚', '展开')
+        opened = screen_of('更多金币等你赚', '逛支付宝会员频道(0/1)', '去完成')
+        runner.ensure_list = Mock(return_value=collapsed)
+        runner.ensure_expanded = Mock(return_value=opened)
+        runner.runnable_rows = Mock(return_value=[SimpleNamespace(title='逛支付宝会员频道')])
+        runner.is_task_list = Mock(return_value=True)
+        self.assertEqual(runner.rescan(), runner.SCAN_FOUND)
+        runner.ensure_expanded.assert_called_once_with(collapsed)
+
+    def test_unknown_when_collapsed_panel_cannot_be_opened(self):
+        """展不开的折叠段不能算“没有任务”：那等于把整段未读队列当成空的。"""
+        runner = make_daily_runner()
+        collapsed = screen_of('更多金币等你赚', '展开')
+        runner.ensure_list = Mock(return_value=collapsed)
+        runner.ensure_expanded = Mock(return_value=collapsed)
+        runner.runnable_rows = Mock(return_value=[])
+        runner.tasks = Mock(return_value=[])
+        runner.is_task_list = Mock(return_value=True)
+        self.assertEqual(runner.rescan(), runner.SCAN_UNKNOWN)
 
 
 class RescanRestartTests(unittest.TestCase):

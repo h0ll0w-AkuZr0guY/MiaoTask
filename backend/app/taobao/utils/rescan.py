@@ -108,6 +108,45 @@ class RescanPolicy:
             return False
         return any(self.ROW_ACTION_RE.search(normalize(n.text)) for n in screen.nodes)
 
+    def list_collapsed(self, screen):
+        """任务段还折叠着（有「展开」但下面的队列没画出来）。
+
+        折叠态对这张面板来说“看起来完全正常”：分区标题（今日速赚 / 更多专享
+        福利 / 更多金币等你赚）都还在，``is_task_list`` 成立，于是翻一屏内容就
+        不再变化——补扫会把它当成“翻到底了、没有任务”，其实是任务全被折起来了。
+        没有折叠段的活动（如双11）恒为 False。
+        """
+        probe = getattr(self, 'collapsed_panel', None)
+        if not callable(probe):
+            return False
+        try:
+            return bool(probe(screen))
+        except Exception:
+            logger.warning('补扫：判断列表是否折叠失败', exc_info=True)
+            return False
+
+    def ensure_panel_open(self, screen):
+        """把折叠的任务段展开，返回 (屏幕, 是否确认已展开)。
+
+        展不开不能硬算“没有任务”：那等于把整段未读的队列当成空的。
+        """
+        if not self.list_collapsed(screen):
+            return screen, True
+        logger.info('补扫：“%s”还是折叠态，先展开再看', self.list_name())
+        expand = getattr(self, 'ensure_expanded', None)
+        if not callable(expand):
+            return screen, False
+        try:
+            screen = expand(screen)
+        except Exception:
+            logger.warning('补扫：展开任务段失败', exc_info=True)
+            return screen, False
+        if self.list_collapsed(screen):
+            logger.warning('补扫：“%s”点击后仍是折叠态，列表只画了一部分',
+                           self.list_name())
+            return screen, False
+        return screen, True
+
     def app_package(self):
         """当前活动所属客户端的包名（导航时已经确定过就沿用）。"""
         package = getattr(self, 'origin', None)
@@ -166,12 +205,12 @@ class RescanPolicy:
         """回到任务列表并保证整张列表都画出来，返回当前屏幕。
 
         默认走框架/活动自己的入口（``ensure_list``），有「展开」按钮的页面再展开
-        一次。子类可以用自己的导航方式覆盖。
+        一次。展开是否成功由 ``ensure_expanded`` 自己校验并重试，这里不盲点。
         """
         screen = self.ensure_list(auto_open=True)
         expand = getattr(self, 'ensure_expanded', None)
         if callable(expand):
-            return expand(screen, force=True)
+            return expand(screen)
         return screen
 
     def scroll_list(self, screen):
@@ -213,6 +252,12 @@ class RescanPolicy:
         if not self.still_on_list(screen):
             logger.warning('补扫：没能停在任务列表上，本次扫描不算数')
             return self.SCAN_UNKNOWN
+        # 折叠态下这一屏同样“像”任务列表，但队列根本没画出来；不先展开就往下翻，
+        # 翻不动的那一屏会被判成“到底了、没有任务”，然后提前收工。
+        screen, opened = self.ensure_panel_open(screen)
+        if not opened:
+            logger.warning('补扫：“%s”处于折叠态且展不开，本次扫描不算数', name)
+            return self.SCAN_UNKNOWN
         seen = set()
         for index in range(limit):
             try:
@@ -241,6 +286,12 @@ class RescanPolicy:
                 return self.SCAN_UNKNOWN
             if not self.still_on_list(fresh):
                 logger.warning('补扫：翻页后已不在任务列表（可能是浮层或跳转），本次扫描不算数')
+                return self.SCAN_UNKNOWN
+            # 翻页有时会把面板带回折叠态（下拉关闭后重进、页面重绘）。这时
+            # “滑动没有产生新内容”并不能说明到底了，必须先展开再比。
+            fresh, opened = self.ensure_panel_open(fresh)
+            if not opened:
+                logger.warning('补扫：翻页后任务段重新折叠且展不开，本次扫描不算数')
                 return self.SCAN_UNKNOWN
             if normalize(fresh.text) == before:
                 logger.info('补扫：滑动没有产生新内容，已到列表底部')

@@ -92,6 +92,9 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
     application = PROFILE
     claim_actions = DAILY_CLAIMS
     external_apps = EXTERNAL_APPS
+    # 点「展开」的重试上限。展开有动画，一次读完常常还是折叠帧，所以要重试；
+    # 但不能无限点——同一个位置上反复点会把列表收起，也白耗时间。
+    EXPAND_TRIES = 3
 
     @property
     def page(self):
@@ -878,23 +881,30 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
             enriched = self.reader.enrich_regions(screen, [(0,0,screen.width,round(screen.height*.17))])
             enriched.geometry, enriched.obscured = screen.geometry, screen.obscured
             screen = enriched
-        if (self.page.get('expand_label') and self._phase not in ('opening','browsing','searching')
+        if (self.page.get('expand_label') and not getattr(self, '_expanding', False)
+                and self._phase not in ('opening','browsing','searching')
                 and getattr(self, '_expand_fail', 0) < 3
                 and screen.find(r'今日速赚|更多金币等你赚')):
             # The sheet opens collapsed and its 展开 control usually sits one
             # screen below the fold, so navigating once is not enough: the loop
             # scrolls past it and only ever sees the already-finished top rows.
-            button = self.expand_button(screen)
-            if button is not None:
+            # 成功判据是“折叠段已经画出来了”，不是“按钮不见了”：展开后有动画，
+            # 只等 0.9 秒读到的常常还是折叠帧，那时既不会再点、又会被当成已展开。
+            # 只点折叠态，已展开时再点一下会把任务整段收回去。
+            if self.collapsed_panel(screen):
                 try:
-                    self.update(message='展开全部任务')
-                    self.click(button)
-                    self.pause(.9)
+                    self.update(message='展开“%s”里的任务' % self.page.get('expand_context'))
+                    self._expanding = True
+                    self.click(self.expand_button(screen))
+                    self.pause(1.6)
                     fresh = super().read(force_ocr=force_ocr)
-                    self._expand_fail = 0 if self.expand_button(fresh) is None else getattr(self, '_expand_fail', 0)+1
+                    self._expand_fail = (0 if not self.collapsed_panel(fresh)
+                                         else getattr(self, '_expand_fail', 0)+1)
                     screen = fresh
                 except Exception:
                     self._expand_fail = getattr(self, '_expand_fail', 0)+1
+                finally:
+                    self._expanding = False
         # 顺手把挡在任务上的弹窗关掉：领券、入会、活动提醒这类浮层不关，
         # 后面的点击全落在浮层上，任务永远是“进度未增加”。
         popup = self.dismiss_popup(screen)
@@ -1206,30 +1216,79 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
             logging.getLogger('backend.execution').warning('滑动分段启用失败：%s', exc)
 
     def expand_button(self, screen):
-        """The collapsed panel reads 展开⌄; OCR keeps the caret with the label."""
+        """The collapsed panel reads 展开⌄; OCR keeps the caret with the label.
+
+        下拉箭头会被识别成各种符号（⌄ / v / ∨ / 一个小方块），只列白名单必然
+        漏；改成「展开」后面不允许再跟汉字，这样既能带上任意图标，又不会把
+        「展开更多」这类正文误认成按钮。
+        """
         label = self.page.get('expand_label')
         if not label:
             return None
-        pattern = (r'^\s*'+re.escape(label)+r'[\s\u2304\u2303\u02c5^＞>〉·.]*$')
+        pattern = r'^\s*'+re.escape(label)+r'[^\u4e00-\u9fff]{0,4}$'
         node = screen.find(pattern)
         if node is None:
             node = screen.find(label, exact=True)
         return node
 
+    def collapsed_panel(self, screen):
+        """「更多金币等你赚」那一段还折叠着。
+
+        展开后这行标题会被任务行整行替换掉（标题本身消失），所以「展开」按钮
+        还在，就是折叠的直接证据。不能只用“有没有任务行”判断：折叠态上面那
+        排精选清单卡片同样能被解析成任务，一判就错。
+        """
+        if not self.page.get('expand_label') or self.expand_button(screen) is None:
+            return False
+        context = self.page.get('expand_context')
+        return bool(screen.find(context)) if context else True
+
     def ensure_expanded(self, screen, force=False):
-        """Open the 更多金币等你赚 section so the full queue is painted."""
+        """点「展开」把更多金币等你赚整段任务画出来，并确认真的画出来了。
+
+        这一步必须校验：展开有动画，点完只等 0.9 秒常常还在动画里，读到的仍
+        是折叠态；旧实现就此放弃，而且把这次点击记成“已展开”，后面把折叠列表
+        当成完整列表翻一遍，判出“没有任务”直接收工——用户看到的就是“说要去
+        更多金币检查，实际根本没展开”。
+
+        ``force`` 只为兼容旧调用：现在一律按折叠态判断，绝不盲点，否则会把已
+        经展开的列表重新折叠回去。
+        """
         context = self.page.get('expand_context')
         if not context or not self.page.get('expand_label'):
             return screen
-        button = self.expand_button(screen)
-        if button is None:
+        if not self.collapsed_panel(screen):
             return screen
-        if not force and not screen.find(context):
-            return screen
-        self.update(message='展开全部任务')
-        self.click(button)
-        self.pause(.9)
-        return self.read_page(visual=True)
+        for attempt in range(self.EXPAND_TRIES):
+            if not self.collapsed_panel(screen):
+                self._expand_fail = 0
+                return screen
+            button = self.expand_button(screen)
+            if button is None:
+                break
+            self.update(message=('展开“%s”里的任务' % context) if not attempt
+                        else ('再展开一次“%s”' % context))
+            self.click(button)
+            self.pause(1.6)
+            # read() 自己也有一个「看到折叠就展开」的分支；这里的点击已经生效，
+            # 让它再点一次会把刚画出来的任务收回去，所以先挂起那个分支。
+            self._expanding = True
+            try:
+                fresh = self.read_page(visual=True)
+            finally:
+                self._expanding = False
+            if not self.collapsed_panel(fresh):
+                self._expand_fail = 0
+                logger.info('展开：点开“%s”，任务行已画出来', context)
+                return fresh
+            self._expand_fail = attempt + 1
+            logger.warning('展开：第 %d 次点「%s」后仍是折叠态，稍后重试',
+                           attempt + 1, self.page['expand_label'])
+            self.pause(1.0)
+            screen = fresh
+        logger.warning('展开：连续点「%s」都没能展开“%s”，列表可能只画了前几行',
+                       self.page.get('expand_label'), context)
+        return screen
 
     def navigate(self, *, auto_open, recovering=False):
         self.install_swipe_guard()
@@ -1307,13 +1366,13 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
                 screen = self.read_page(visual=True)
                 continue
             if (not taps.get('expanded') and self.page.get('expand_label')
-                    and screen.find(r'今日速赚|更多金币等你赚')
-                    and self.expand_button(screen) is not None):
+                    and self.collapsed_panel(screen)):
                 # The reward sheet paints only its first few rows until 展开 is
                 # tapped, so the queue below 更多专享福利 never reaches the parser.
-                # 这里不走 force：列表已经在展开后的状态时，页面上只剩一个
-                # 游离的「展开」标签，再点一次会把已经露出的队列折叠回去。
-                # 补扫确实需要强制展开时由 rescan 自己传 force。
+                # 只在折叠态点：列表已经展开时，页面上可能还留着一个游离的
+                # 「展开」标签，再点一次会把已经露出的队列折叠回去。
+                # 判定统一走 collapsed_panel（“展开后标题行会被任务行替换”），
+                # 展开失败时 ensure_expanded 内部会重试，不靠这一个 taps 标记。
                 taps['expanded'] = True
                 screen = self.ensure_expanded(screen)
                 continue
