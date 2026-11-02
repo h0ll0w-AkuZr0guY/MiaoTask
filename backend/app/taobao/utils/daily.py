@@ -907,9 +907,14 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
                     self._expanding = False
         # 顺手把挡在任务上的弹窗关掉：领券、入会、活动提醒这类浮层不关，
         # 后面的点击全落在浮层上，任务永远是“进度未增加”。
-        popup = self.dismiss_popup(screen)
-        if popup is not None:
-            screen = popup
+        # 但任务正在“打开/浏览落地页”时不关：这时的 × 往往是**落地页自己的关闭
+        # 控件**，不是浮层。拍立淘的“找同款”结果页、搜索结果页右上角都有这个 ×，
+        # 点它会把刚打开的页面退掉、退回任务列表，随后被判成“没有成功离开列表”，
+        # 计一次任务失败——两次就锁成「今日失败已达上限」，任务整天不再执行。
+        if self._phase not in ('opening', 'browsing', 'searching'):
+            popup = self.dismiss_popup(screen)
+            if popup is not None:
+                screen = popup
         return self.stall_guard(screen, force_ocr=force_ocr)
 
     def progress_signature(self, screen):
