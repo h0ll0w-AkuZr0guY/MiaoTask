@@ -54,6 +54,8 @@ class TaskActions:
 
     def execute(self, task, before):
         self._active_task = task
+        # 每次执行前清掉上一次的到账标记：它只对当前这次浏览有效。
+        self._browse_credited = None
         self.update('opening', current_task=task.title, message='打开任务页面', remaining=0)
         logger.info('执行 %s (%d/%d)，类型 %s', task.title, task.current, task.total, task.kind)
         self.control.check()
@@ -806,6 +808,13 @@ class TaskActions:
                 if (not scrolling or active >= minimum) and screen.find(
                         r'^(?:任务已完成|浏览已完成|浏览完成|完成浏览|奖励已到账|恭喜完成|任务完成啦)[!！。\s]*$'):
                     logger.info('检测到任务完成提示')
+                    return True, cross
+                # 「已得50」是淘金币落地页自带的到账浮层：金币已经进账，只是任务
+                # 面板的进度要过一会儿才刷新。单独记一个标记，交给 verify 认账；
+                # 不混进上面那条“任务已完成”的提示里，免得把别的场景也放宽。
+                if (not scrolling or active >= minimum) and screen.find(r'^已得\s*\d+\s*$'):
+                    logger.info('检测到金币到账提示')
+                    self._browse_credited = task.key
                     return True, cross
                 # Consume each observed countdown once, never extend the timer
                 # on every gesture using the same stale frame.

@@ -1053,11 +1053,12 @@ class RescanLoopTests(unittest.TestCase):
         runner._fake_run = fake_run
         return runner
 
-    def test_finishes_only_after_two_confirmed_empty_scans(self):
-        runner = self.runner_with(['found', 'empty', 'empty'])
+    def test_one_empty_scan_after_a_round_finishes_the_run(self):
+        # 每轮结束只重进一次：这一眼是空的就收工，不再反复重进确认。
+        runner = self.runner_with(['found', 'empty'])
         with patch.object(Activity, 'run', side_effect=runner._fake_run):
             runner.run()
-        self.assertEqual(runner.rescan.call_count, 3)
+        self.assertEqual(runner.rescan.call_count, 2)
 
     def test_keeps_working_when_scan_finds_more_tasks(self):
         runner = self.runner_with(['found', 'found', 'found', 'empty', 'empty'])
@@ -1164,17 +1165,16 @@ class RescanReidentifyTests(unittest.TestCase):
         self.assertEqual(list(runner.records), ['k1'])
 
 
-class RescanWatchTests(unittest.TestCase):
-    """收工前要确认列表真的不再刷新。
+class RescanOneShotTests(unittest.TestCase):
+    """每轮结束只重进一次客户端，判空即收工。
 
-    实测现场：好物沉浸看做完 6/6 之后，淘宝过几分钟又把它重置成「0/6 去完成」。
-    旧逻辑在重置之前就判空收工，新任务整批漏掉，面板上还显示着上一轮的结论。
+    旧的收工前“守望确认”会在列表明明已经空了的时候继续退出重进，看起来像
+    死循环；现在只允许重进一次，没看全才在原地重试（不重进）。
     """
 
     def runner(self, verdicts, **rescan):
         runner = make_daily_runner()
-        runner.config['rescan'] = dict({'rescan_settle_end': 0, 'rescan_watch': 1,
-                                        'rescan_pause': 0}, **rescan)
+        runner.config['rescan'] = dict({'rescan_retries': 2, 'rescan_pause': 0}, **rescan)
         runner.rescan = Mock(side_effect=verdicts)
 
         def fake_run(auto_open=False):
@@ -1183,27 +1183,52 @@ class RescanWatchTests(unittest.TestCase):
         runner._fake_run = fake_run
         return runner
 
-    def test_watch_restarts_work_when_tasks_reset_after_a_short_gap(self):
-        # 两次确认都没任务，等到最后一次守望时淘宝已经把任务重置成新一轮。
-        runner = self.runner(['found', 'empty', 'empty', 'found', 'empty', 'empty'])
+    def test_empty_verdict_finishes_without_a_second_reentry(self):
+        runner = self.runner(['empty', 'empty', 'empty'])
         with patch.object(Activity, 'run', side_effect=runner._fake_run):
             runner.run()
-        self.assertGreaterEqual(runner.stats.attempts, 2)
+        self.assertEqual(runner.rescan.call_count, 1)
 
-    def test_changing_list_fingerprint_blocks_the_finish(self):
-        runner = self.runner([])
-        fingerprints = [('a', 1), ('b', 0), ('b', 0), ('b', 0), ('b', 0), ('b', 0)]
-        seen = []
-
-        def scan(*args, **kwargs):
-            runner._empty_fingerprint = fingerprints[min(len(seen), len(fingerprints) - 1)]
-            seen.append(1)
-            return runner.SCAN_EMPTY
-        runner.rescan = Mock(side_effect=scan)
+    def test_retry_after_unknown_reuses_the_open_list(self):
+        runner = self.runner(['unknown', 'found', 'empty'])
         with patch.object(Activity, 'run', side_effect=runner._fake_run):
             runner.run()
-        # 两次确认的内容不一样（任务被重置），必须重新确认，不能就地收工。
-        self.assertGreaterEqual(runner.rescan.call_count, 4)
+        restarts = [c.kwargs.get('restart') for c in runner.rescan.call_args_list]
+        self.assertEqual(restarts[:2], [True, False])
+
+
+class BrowseCreditTests(unittest.TestCase):
+    """浏览落地页报「已得 N」时，即便列表进度还没刷新也要认这一条已完成。
+
+    真机现场：好物沉浸看 0/6 执行完回到列表，读到的仍是 0，被判失败并锁上
+    「今日只试一次」；而落地页上明明浮着「已得50」，进度后来涨到了 3/6。
+    """
+
+    def runner(self):
+        runner = make_daily_runner()
+        runner.tasks = Mock(return_value=[SimpleNamespace(
+            key='k1', title='好物沉浸看', kind='browse', current=0, total=6, action='去完成')])
+        return runner
+
+    def task(self):
+        return SimpleNamespace(key='k1', title='好物沉浸看', kind='browse',
+                               current=0, total=6, action='去完成')
+
+    def test_credited_browse_is_success_even_when_progress_lags(self):
+        runner = self.runner()
+        screen = screen_of('更多金币等你赚', '好物沉浸看', '去完成')
+        runner._browse_credited = 'k1'
+        self.assertTrue(runner.verify(self.task(), screen, screen))
+
+    def test_credit_only_counts_once_and_only_for_that_task(self):
+        runner = self.runner()
+        screen = screen_of('更多金币等你赚', '好物沉浸看', '去完成')
+        runner._browse_credited = 'k1'
+        runner.verify(self.task(), screen, screen)
+        # 标记已被消费：同一任务再判一次要回到普通证据，不能一直算成功。
+        self.assertFalse(runner.verify(self.task(), screen, screen))
+        runner._browse_credited = 'other'
+        self.assertFalse(runner.verify(self.task(), screen, screen))
 
 
 if __name__=='__main__':

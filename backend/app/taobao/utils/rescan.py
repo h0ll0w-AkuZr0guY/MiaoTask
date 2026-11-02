@@ -206,10 +206,12 @@ class RescanPolicy:
                     if str(k).startswith('task:')]:
             self.unavailable_tasks.pop(key, None)
         policy = getattr(self, 'task_policy', None)
-        granted = getattr(self, '_rescan_retried', None)
-        if granted is None:
-            granted = self._rescan_retried = set()
-        unlocked = self.unlock_once_only(policy, granted)
+        # 每一轮补扫都是“客户端刚重启、列表刚重拉”的全新现场。上一轮放行过不代表
+        # 这一轮不用再放行：任务只要失败一次就会重新上锁，名单不重置的话，第二轮
+        # 之后这条任务就被永久跳过（实测好物沉浸看 3/6 正是卡在这里）。真正防止
+        # 无限重试的是失败额度（max_attempts）和“连续三轮推不动”的兜底。
+        self._rescan_retried = set()
+        unlocked = self.unlock_once_only(policy, self._rescan_retried)
         if dropped or unlocked:
             logger.info('补扫：清空上一轮的任务清单（%d 条记录、%d 条临时锁），按当前页面重新识别',
                         dropped, unlocked)
@@ -424,17 +426,21 @@ class RescanPolicy:
         logger.warning('补扫：翻了 %d 屏仍未到底，无法确认是否还有任务', limit)
         return self.SCAN_UNKNOWN
 
-    def confirm_scan(self, retries=3):
+    def confirm_scan(self, retries=3, restart=True):
         """反复扫描，直到拿到确定结论（还有任务 / 确认没有）。
 
         扫描本身会失败：回列表可能被浮层挡住、翻页可能被跳转打断、列表可能长过
         翻页上限。这些都返回 SCAN_UNKNOWN，只能重试，不能当成“做完了”。重试时
         逐次多翻几屏，给长列表留余量。
+
+        ``restart`` 只对第一次尝试生效：重试是为了“这次没看清”，页面刚刚才重开
+        过，再退一次客户端没有意义——而且会把“确认没有任务”变成永远退不完的
+        循环。所以重试一律在已经打开的列表上做。
         """
         pages = int(self.config.get('max_scroll_pages') or 10)
         verdict = self.SCAN_UNKNOWN
         for attempt in range(max(1, int(retries))):
-            verdict = self.rescan(pages)
+            verdict = self.rescan(pages, restart=restart and attempt == 0)
             if verdict != self.SCAN_UNKNOWN:
                 return verdict
             wait = min(30.0, 8.0 * (attempt + 1))
@@ -452,11 +458,15 @@ class RescanPolicy:
         pending。所以每轮之后都要回列表把整张翻一遍——完工标准就是“再进去也不会
         自动执行任何任务”。
 
-        收工只有一条路：连续 `rescan_confirm` 次完整扫描都确认没有可执行行。
-        每次扫描前都会先退出客户端再重新进入（`rescan_restart_app`），避免读到
-        WebView 的旧缓存。扫描没看全不是“做完了”，会退避重试；三次都确认不了
-        才带着明确日志停下。另外保留一个轮数保险，防止某个任务永远“可执行却推
-        不动”导致空转。
+        每一轮的循环只有两步：
+        1. 跑一轮任务（框架自己那套）；
+        2. 退出客户端重进一次，把列表从头翻到尾看一眼——有可执行的就回到第 1
+           步，一条都没有就直接收工。
+
+        收工判定就是“重进后这一眼是空的”，不搞连续多次确认，也不为了再确认去
+        反复退出重进（那会变成永远退不完的循环）。只有“没看全”（SCAN_UNKNOWN）
+        才在原地重试几次，仍然看不清才带着明确日志停下。另外保留一个轮数保险，
+        防止某个任务永远“可执行却推不动”导致空转。
         """
         if not self.rescan_option('rescan_enabled', True):
             # 总开关：出问题时可退回“一轮就收工”的旧行为，不用改代码。
@@ -469,9 +479,7 @@ class RescanPolicy:
         self._records_snapshot = None
         limit = max(2, int(self.rescan_option('rescan_rounds', None)
                            or self.rescan_option('round_limit', None) or 20))
-        confirm = max(1, int(self.rescan_option('rescan_confirm', 2)))
         retries = max(1, int(self.rescan_option('rescan_retries', 3)))
-        settle = max(0.0, float(self.rescan_option('rescan_pause', 15)))
         try:
             # 默认一批没东西就收工（empty_batch_stop=1），会把后面几批连同刚刷新
             # 出来的任务一起跳过；补扫期间多容忍几个空批，把整张列表翻完。
@@ -479,81 +487,26 @@ class RescanPolicy:
                 int(self.config.get('empty_batch_stop') or 1), 3)
         except Exception:
             logger.warning('无法调整 empty_batch_stop，按框架默认值继续', exc_info=True)
-        stats, stalled, empties, index = None, 0, 0, 0
-        # 收工前两道闸，专门对付“任务做完了、要过一会儿才重置成新一轮”：
-        #   rescan_settle_end  最后一次确认前多等一会儿，跨过这个重置窗口；
-        #   指纹比对           两次确认之间列表内容变了 → 还在刷新，不许收工。
-        settle_end = max(0.0, float(self.rescan_option('rescan_settle_end', 60)))
-        self._rescan_watches = max(0, int(self.rescan_option('rescan_watch', 2)))
-        watch_left = max(1, int(self.rescan_option('rescan_watch', 2)))
-        frames = []
-        # 收工原因要写回面板：只把 status 改成 finished 而 message 还留着
-        # “回到更多金币检查是否还有任务”，会让人以为它还在扫。
+        stats, stalled, index = None, 0, 0
+        # 每一轮结束后的固定动作只有一个：**重进客户端一次，进去看一眼**。
+        # 有可执行任务就接着跑下一轮；一条都没有就直接收工。
+        # 绝不为了“再确认一次”反复退出重进——那会变成一个永远退不完的循环，
+        # 用户看到的就是“明明已经判定没有任务了，还在不停退客户端重进”。
         closing = '本轮任务已处理完毕'
         while index < limit:
             if index > 0:
-                # 每轮开跑前先确认列表里确实还有任务。确认不出东西就收工，
-                # 而不是再空跑一轮；连续两次确认都空才算真的做完。
-                verdict = self.confirm_scan(retries)
-                if verdict == self.SCAN_EMPTY:
-                    empties += 1
-                    frames.append(getattr(self, '_empty_fingerprint', ()))
-                    frames = frames[-(confirm + 1):]
-                    if empties >= confirm:
-                        # 收工前必须确认列表真的“不动了”。淘宝把一条任务做完之后，
-                        # 往往要过一会儿才把它重置成新一轮（6/6 变成 0/6）；这段窗口
-                        # 里收工，就会把紧接着冒出来的任务整批漏掉——用户看到的就是
-                        # “明明还有去完成，程序却说做完了”。
-                        settled, unknown = False, False
-                        while True:
-                            changed = len(frames) >= 2 and frames[-1] != frames[-2]
-                            if changed and self._rescan_watches > 0:
-                                # 两次确认之间内容变了：列表还在刷新，推倒重来再确认。
-                                self._rescan_watches -= 1
-                                logger.info('补扫：两次确认之间列表内容有变化（任务正在刷新），重新确认')
-                                empties, frames = 0, []
-                                self.pause(settle)
-                                break
-                            if watch_left > 0 and settle_end > 0:
-                                # 再多等一段，给“完成后的延迟重置”留出窗口。
-                                watch_left -= 1
-                                logger.info('补扫：连续 %d 次没有任务，等 %.0f 秒后再确认一次'
-                                            '（任务完成后可能要过一会儿才重置，还剩 %d 次）',
-                                            empties, settle_end, watch_left)
-                                self.pause(settle_end)
-                                watch_verdict = self.confirm_scan(retries)
-                                if watch_verdict == self.SCAN_FOUND:
-                                    logger.info('补扫：最后确认时又发现任务，继续执行')
-                                    empties, frames = 0, []
-                                    watch_left = max(1, int(self.rescan_option('rescan_watch', 2)))
-                                    break
-                                if watch_verdict == self.SCAN_UNKNOWN:
-                                    logger.warning('补扫：最后确认没能看清列表，停止；列表里可能还有任务')
-                                    closing = '补扫没能确认列表状态已停止；列表里可能还有任务，可稍后重新开始'
-                                    unknown = True
-                                    break
-                                empties += 1
-                                frames.append(getattr(self, '_empty_fingerprint', ()))
-                                frames = frames[-(confirm + 1):]
-                                continue
-                            settled = True
-                            break
-                        if unknown:
-                            break
-                        if not settled:
-                            continue
-                        logger.info('补扫完毕：连续 %d 次完整扫描都没有可执行任务，收工', empties)
-                        closing = (f'本轮任务已处理完毕：重新进入列表也确认没有可执行任务'
-                                   f'（连续 {empties} 次扫描）')
-                        break
-                    logger.info('补扫：第 %d 次确认没有任务，等 %.0f 秒再确认一次', empties, settle)
-                    self.pause(settle)
-                    continue
-                if verdict == self.SCAN_UNKNOWN:
+                logger.info('补扫：第 %d 轮结束，重进客户端确认是否还有任务', index)
+                verdict = self.confirm_scan(retries, restart=True)
+                if verdict == self.SCAN_FOUND:
+                    logger.info('补扫：重进后仍找到可执行任务，继续下一轮')
+                elif verdict == self.SCAN_EMPTY:
+                    logger.info('补扫完毕：重进后完整扫描没有可执行任务，收工')
+                    closing = '本轮任务已处理完毕：重新进入列表确认没有可执行任务'
+                    break
+                else:
                     logger.warning('补扫：多次扫描都没能确认列表状态，停止；列表里可能还有任务')
                     closing = '补扫没能确认列表状态已停止；列表里可能还有任务，可稍后重新开始'
                     break
-                empties, frames = 0, []
             before = self.progress_mark()
             # 补扫轮从“刚才发现任务的那一屏”接着做：ensure_list 默认会把列表拉回
             # 顶部，而可执行的行往往在下面几屏，回到顶部等于让它重新扫一遍并再次
@@ -583,8 +536,6 @@ class RescanPolicy:
             if index >= limit:
                 logger.warning('补扫达到 %d 轮保险上限，停止；列表里可能还有任务', limit)
                 closing = '补扫达到轮数上限已停止；列表里可能还有任务'
-            else:
-                logger.info('补扫：第 %d 轮结束，回到“%s”重新确认', index, self.list_name())
         self.restore_list_state()
         self.update('finished', message=closing, current_task='', remaining=0)
         return stats

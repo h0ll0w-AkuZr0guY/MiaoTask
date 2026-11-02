@@ -1860,14 +1860,14 @@ class Double11RescanTests(unittest.TestCase):
         self.assertEqual(runner.list_name(), '赚能量任务')
         runner.rescan()
 
-    def test_run_finishes_only_after_two_confirmed_empty_scans(self):
+    def test_run_finishes_after_one_empty_scan(self):
         runner = self.runner()
-        runner.config['rescan'] = {'rescan_rounds': 6, 'rescan_confirm': 2,
-                                   'rescan_retries': 1, 'rescan_pause': 0,
-                                   'rescan_settle_end': 0, 'rescan_watch': 0}
+        runner.config['rescan'] = {'rescan_rounds': 6, 'rescan_retries': 1,
+                                   'rescan_pause': 0}
         runner.rescan = Mock(return_value=runner.SCAN_EMPTY)
         runner.run()
-        self.assertEqual(runner.rescan.call_count, 2)
+        # 重进一次、看一眼是空的就收工，不再反复重进确认。
+        self.assertEqual(runner.rescan.call_count, 1)
 
     def test_unknown_scans_never_count_as_finished(self):
         runner = self.runner()
