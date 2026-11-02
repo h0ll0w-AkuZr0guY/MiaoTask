@@ -749,20 +749,20 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
             return False
         return True
 
-    def can_force_dismiss(self, screen):
-        """guard 的救场动作能不能点这一屏的关闭控件。
+    def can_dismiss_overlay(self, screen):
+        """落地页上还允不允许关浮层：只认“盖在页面中间、且页面写着弹窗内容”的。
 
-        救场是为了拆掉“盖在页面上的浮层”（直播间那张抢到折扣券的卡片）。浮层的
-        关闭控件长在弹层内部，位置通常在页面中段；而任务落地页自己的 × 长在顶上
-        的页面栏里，旁边就是搜索框或返回箭头——点了整页就退了。位置不够可靠时
-        宁可不点，交给后面的拦截判定。
+        浮层的关闭控件长在弹层内部，位置在页面中段，页面上还写着恭喜/奖励/领券
+        这类话；任务落地页自己的 × 长在顶上那排页面栏里，旁边就是搜索框或返回
+        箭头，点了整页就退了。两个条件都满足才动手，宁可漏关一个浮层，也不能
+        把刚打开的任务页面关掉。
         """
         if self.can_auto_dismiss(screen):
             return True
-        close = self.popup_close_node(screen)
-        if close is None:
+        if not POPUP_HINT_RE.search(normalize(screen.text)):
             return False
-        return close.center[1] >= screen.height * .13
+        close = self.popup_close_node(screen)
+        return bool(close) and close.center[1] >= screen.height * .13
 
     def dismiss_popup(self, screen, force=False):
         """把挡在任务上的弹窗关掉再继续，而不是整轮停下来等人。
@@ -879,7 +879,7 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
             # 一盖上，下面的带货横幅就会被读成“确认付款”，关掉浮层就干净了。
             # 但任务落地页顶栏那个 × 是页面自己的，点掉等于把任务退出来，不点。
             fresh = (self.dismiss_popup(screen, force=True)
-                     if self.can_force_dismiss(screen) else None)
+                     if self.can_dismiss_overlay(screen) else None)
             if fresh is not None:
                 fresh_text = normalize(fresh.text)
                 if not HARD_STOP_RE.search(fresh_text):
@@ -956,7 +956,7 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
                 pass
         # 顺手把挡在任务清单上的弹窗关掉：领券、入会、活动提醒这类浮层不关，
         # 后面的点击全落在浮层上，任务永远是“进度未增加”。
-        if self.can_auto_dismiss(screen):
+        if self.can_dismiss_overlay(screen):
             popup = self.dismiss_popup(screen)
             if popup is not None:
                 screen = popup

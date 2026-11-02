@@ -1337,6 +1337,18 @@ class LandingCloseTests(unittest.TestCase):
             runner.guard(page)
         runner.dismiss_popup.assert_called_once()
 
+    def test_a_real_overlay_still_closes_while_a_task_page_is_open(self):
+        """落在落地页上不等于完全不管：盖在页面中段、写着奖励内容的浮层照旧关。"""
+        runner = make_daily_runner()
+        runner._task_page = True
+        runner.dismiss_popup = Mock(return_value=None)
+        page = Screen([TextNode('恭喜获得 50 金币', (100, 900, 900, 960)),
+                       TextNode('×', (1000, 1200, 1040, 1240))],
+                      1080, 2400, 'com.taobao.taobao', 'ui')
+        with patch.object(Session, 'read', return_value=page):
+            runner.read()
+        runner.dismiss_popup.assert_called_once()
+
     def test_guard_leaves_the_landing_page_chrome_close_alone(self):
         runner = make_daily_runner()
         runner._task_page = True
