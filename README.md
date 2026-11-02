@@ -151,4 +151,4 @@ MuMu 通过实际运行实例发现连接端口；预览按设备比例显示，
 
 ## License
 
-MiaoTask 采用 [Apache License 2.0](LICENSE)。第三方组件、工具和模型遵循各自许可，相关声明见 [NOTICE](NOTICE) 和[许可说明](docs/LICENSING.md)。
+MiaoTask 采用 [Apache License 2.0](LICENSE)。第三方组件、工具和模型遵循各自许可，相关声明见 [NOTICE](NOTICE) 和[许可说明](docs/LICENSING.md)。 
