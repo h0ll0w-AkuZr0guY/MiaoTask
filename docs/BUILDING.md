@@ -117,4 +117,22 @@ GitHub 侧保留既有的发布准备、Windows 构建与审批发布工作流�
 说明开头一句主题，随后用「【新增】」「【优化】」「【修复】」等列主要变化，通常不超过 5 条，保留简短下载解压、使用链接和致谢。不写调试流水、测试数量或过时停用提醒，不承诺随机滚动可以规避风控。历史版本仅在明确授权时修改。
 
 
-发布分发预装使用 `scripts/package_windows.py --preinstall-activity taobao/double11`，从本次源码生成并校验目标活动，放入 exe 旁的 `activities/`；其他活动仍排除在框架和 ZIP 外。参数可重复，但不能和 `--include-activities` 混用。GitHub Windows 发布构建使用同一命令；普通 PR 不构建 Release。纯框架与 Release Builder 的可选预装机制仍保留。实际 exe 必须核验只注册所选预装活动；源码 ZIP 保留全部活动代码。
+GitHub Windows 发布构建使用 `scripts/package_windows.py --preinstall-all`，从本次源码生成并校验全部活动，放入 exe 旁的 `activities/`，同时保留离线恢复副本。只预装部分活动时改用可重复的 `--preinstall-activity taobao/double11`；两种预装方式不能同时使用，也不能和 `--include-activities` 混用。不传预装参数仍生成纯框架，Release Builder 的可选预装机制保留。实际 exe 必须核验只注册所选预装活动；源码 ZIP 保留全部活动代码。普通 PR 不构建 Release。
+
+框架候选还需验证：分支切换不会复用另一分支离线缓存、打开活动中心可发现新应用及更新；配置跨安装路径重启保留但不跨工作区改写运行快照；日完成标记跨进程保留并按日/实例隔离；浏览一次预算重启保留，认证不消耗次数；收工重扫不重复计成功；ADB 只清理本次新增同路径进程。测试包可预装全部源码活动，用实际冻结 EXE 验证应用导航、活动工厂、更新与退出，记录本地候选状态，不自动发布。
+
+### 静态活动资源与 GitHub Pages
+
+`python scripts/build_activity_site.py --output _site/activities` 从干净提交生成静态目录、固定提交索引和全部活动 ZIP；不构建 exe，不创建 Release，不修改源码。当前默认生成 main；其他分支可在对应干净源码中使用 `--source-ref` 生成同协议目录，可对多个干净源码快照重复写入同一输出目录，分支索引合并，包与提交索引保持独立；未进入镜像的分支仍走官方源码备用通道。
+
+`.github/workflows/activity-pages.yml` 已提供活动源码更新后的构建/Pages 部署流程，默认受仓库变量 `MIAOTASK_ACTIVITY_PAGES=true` 控制。维护者审阅合并后，在仓库 Settings → Pages 选择 GitHub Actions，设置该变量，再手动运行工作流。官方站点为 `https://h0ll0w-akuzr0guy.github.io/MiaoTask/activities/`，客户端可在 GitHub API 限流时使用该备用来源。Pages 的发布独立于 Windows Release，普通 PR 不部署。Pages 首页由 `scripts/build_preview_site.py` 复制当前前端，并仅在部署副本加载 `scripts/site-preview/` 的内存演示适配器；前端或活动合并到 main 后自动重新部署。演示不进入桌面入口，不连接后端或手机；更新前端 API 契约时同步维护演示适配与浏览器回归。以后国内资源源复用此静态产物与校验协议，经维护者审核后加入来源配置。
+
+容灾验收应模拟 API 403：备用通道列出新应用和最新提交、仅安装所选活动；卸载后断网恢复、整个活动目录丢失后从随包基线恢复、损坏包拒绝恢复、空闲轮询不反复访问远端。打包预装项会同步写入 `_internal/activity-recovery` 和可写活动恢复缓存。
+
+v0.1.4 发布包使用 `--preinstall-all`，预装本次源码中的全部六项活动及各自恢复包。它与 `--preinstall-activity` 显式选择及 `--include-activities` 内置模式互斥；纯框架默认构建保持不变。
+
+## 测试类别与活动预装策略
+
+回归按类别归并至 21 个 `test_*.py`，保留连接、识别、实例、任务、存储、活动分发、前端及发布隔离用例；相近测试直接合并，不用转发文件维持重复入口。共享合成夹具从所属类别模块导入。脚本保留独立的检查、构建和站点职责，总数低于 30。
+
+直接 Windows 构建默认读取各活动配置的 `bundle_by_default`；现有六项活动均为 true，未来非默认活动设为 false。`--preinstall-all` 同样遵循该策略；`--framework-only` 明确生成纯框架，显式活动列表仍可覆盖默认。Release Builder 未提供活动列表时采用源码默认策略；显式空列表保留纯框架选项。

@@ -144,9 +144,10 @@ class ReleaseBuilderWindow:
         self.target_version, self.summary = tk.StringVar(), tk.StringVar()
         self.python, self.adb_dir = tk.StringVar(), tk.StringVar()
         self.create_env, self.write_back, self.preview = tk.BooleanVar(), tk.BooleanVar(), tk.BooleanVar()
+        self.use_defaults = tk.BooleanVar(value=True)
         self.phase = tk.StringVar(value='选择源码，按需勾选预装活动，然后开始。')
         self.version_hint = tk.StringVar(value='默认递增补丁版本，仅修改构建副本。')
-        self.activity_hint = tk.StringVar(value='不勾选时只打包框架；用户可在活动中心按需下载。')
+        self.activity_hint = tk.StringVar(value='默认按源码配置预装；取消默认策略后可自选，空选生成纯框架。')
 
         window.title('MiaoTask Release Builder')
         window.geometry('1040x820')
@@ -232,6 +233,9 @@ class ReleaseBuilderWindow:
         ttk.Label(bar, text='预装活动（可选）', style='Section.TLabel').pack(anchor='w')
         activity_buttons = ttk.Frame(bar, style='Card.TFrame')
         activity_buttons.pack(fill='x', pady=(9, 0))
+        defaults = ttk.Checkbutton(bar, text='按源码活动配置默认预装', variable=self.use_defaults)
+        defaults.pack(anchor='w', pady=(8,0))
+        self.controls.append(defaults)
         self._button(activity_buttons, '加载官方 GitHub 活动', self.load_catalog).pack(side='left')
         self._button(activity_buttons, '清空勾选', self.clear_activities).pack(side='right', padx=(8, 0))
         self.activity_canvas = tk.Canvas(activity_card, bg='#ffffff', height=100, highlightthickness=0)
@@ -386,6 +390,7 @@ class ReleaseBuilderWindow:
         self.activity_hint.set(f'官方 main · {getattr(self, "catalog_revision", "")} · 已勾选 {count} 个；未预装的活动可由用户后续按需下载。')
 
     def clear_activities(self):
+        self.use_defaults.set(False)
         for control, _compatible in self.activity_vars.values():
             control[0].set(False)
         self.update_activity_hint()
@@ -404,7 +409,7 @@ class ReleaseBuilderWindow:
                                    adb_dir=self.adb_dir.get().strip() or None, create_env=self.create_env.get(),
                                    write_back_notes=self.write_back.get(), preview=self.preview.get())
             selections = [key for key, (control, compatible) in self.activity_vars.items() if compatible and control[0].get()]
-            arguments = options.arguments(selected_activities(self.packages, selections))
+            arguments = options.arguments(None if self.use_defaults.get() else selected_activities(self.packages, selections))
         except ValueError as exc:
             messagebox.showerror('检查构建选项', str(exc), parent=self.window)
             return

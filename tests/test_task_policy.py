@@ -211,3 +211,30 @@ class TaskPolicyTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class ResetPolicyTests(unittest.TestCase):
+    def test_reset_preserves_cumulative_statistics_and_other_instance(self):
+        import tempfile
+        from backend.core.storage.daily_state import DailyState
+        from backend.core.execution.task_policy import TaskPolicy
+        with tempfile.TemporaryDirectory() as folder:
+            store = DailyState(folder, 'synthetic-reset', 'uiautomator2', instance_id='sample@0')
+            other = DailyState(folder, 'synthetic-reset', 'uiautomator2', instance_id='sample@999')
+            store.progress('first', {'completed': 7, 'attempts': 9})
+            decisions = {'a'*24: {'skip': True, 'failures': 2, 'exhausted': True}}
+            store.save_task_decisions(decisions)
+            other.save_task_decisions(decisions)
+            policy = TaskPolicy(); policy.bind(store); policy.reset()
+            self.assertEqual(store.task_decisions(), {})
+            self.assertEqual(store.snapshot()['stats']['completed'], 7)
+            self.assertEqual(other.task_decisions(), decisions)
+
+class ProgressBudgetTests(unittest.TestCase):
+    def test_verified_progress_resets_failures_but_keeps_skip(self):
+        from backend.core.execution.task_policy import TaskPolicy, task_identity
+        from backend.core.models import Task
+        t=Task('synthetic','浏览','浏览15秒','去完成',(1,2,3,4),total=10)
+        policy=TaskPolicy();policy.fail(t,2);policy.choose(task_identity(t),True)
+        policy.progress(t)
+        self.assertEqual(policy.failures(t),0)
+        self.assertIn('用户选择',policy.reason(t))

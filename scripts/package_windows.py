@@ -129,8 +129,12 @@ def licenses(destination, adb_dir):
     shutil.copy2(adb_notice, destination / 'Android-platform-tools-NOTICE.txt')
 
 
-def selected_packages(catalog, choices):
+def selected_packages(catalog, choices, all_activities=False):
     available = {item['app'] + '/' + item['activity']: item for item in catalog['packages']}
+    if all_activities:
+        if choices:
+            raise ValueError('Choose all activities or explicit selections, not both')
+        return [item for item in available.values() if item.get('bundle_by_default', False)]
     if len(set(choices)) != len(choices) or any(name not in available for name in choices):
         raise ValueError('Choose distinct registered activities as app/activity')
     return [available[name] for name in choices]
@@ -146,15 +150,19 @@ def main():
     parser.add_argument('--local-source', action='store_true',
                         help='Build an audited isolated source copy without requiring Git or changing the version')
     parser.add_argument('--include-activities', action='store_true',
-                        help='Bundle source activities for offline compatibility checks (default: framework only)')
+                        help='Bundle source activities for offline compatibility checks (default: activity configuration policy)')
     parser.add_argument('--preinstall-activity', action='append', default=[], metavar='APP/ACTIVITY',
                         help='Preinstall a selected source activity beside the exe; repeat for multiple selections')
+    parser.add_argument('--preinstall-all', action='store_true', help='Preinstall source activities whose bundle_by_default flag is true')
+    parser.add_argument('--framework-only', action='store_true', help='Exclude default-preinstalled activities')
     args = parser.parse_args()
+    if args.framework_only and (args.preinstall_all or args.preinstall_activity or args.include_activities):
+        parser.error('Pure framework cannot be combined with activity selections')
     if sys.platform != 'win32' or platform.machine().lower() not in ('amd64', 'x86_64'):
         raise SystemExit('Build this package on Windows x64')
     if args.local_source and args.preview:
         parser.error('--local-source and --preview are separate build modes')
-    if args.include_activities and args.preinstall_activity:
+    if args.include_activities and (args.preinstall_activity or args.preinstall_all):
         parser.error('Use either embedded activities or selected external preinstallation')
     revision = '' if args.local_source else source_commit(allow_dirty=args.preview)
     snapshot = worktree_snapshot(local_source=args.local_source)
@@ -205,14 +213,17 @@ def main():
                     packages={d.metadata['Name']: d.version for d in metadata.distributions()},
                     adb_bundled=True, hdc_bundled=(package / '_internal/shared/tools/hdc.exe').exists(),
                     offline_models=True, smoke_test_passed=True)
-    selections = selected_packages(catalog, args.preinstall_activity)
+    selections = selected_packages(catalog, args.preinstall_activity, args.preinstall_all or not (args.preinstall_activity or args.framework_only or args.include_activities))
     if selections:
         from backend.core.plugins.manager import PluginManager
         manager = PluginManager(root=package / 'activities')
+        from backend.core.plugins.recovery import RecoveryStore
+        recovery = RecoveryStore(package / '_internal/activity-recovery')
         installed = []
         for entry in selections:
             path = activity_folder / entry['url'].rsplit('/', 1)[-1]
             manager.install_local(path, entry['sha256'])
+            recovery.remember(path, entry['sha256'])
             installed.append({key: entry[key] for key in ('app', 'activity', 'version', 'sha256')})
         report = work / 'preinstalled-self-test.json'
         check_env = dict(env, MIAO_DATA_DIR=str(work / 'preinstalled-check-data'), MIAO_ACTIVITIES_DIR=str(package / 'activities'))

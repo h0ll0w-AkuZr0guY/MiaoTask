@@ -103,6 +103,8 @@ def main():
 
 
 def launch():
+    from backend.core.device.adb_lifecycle import OwnedAdb
+    owned_adb = OwnedAdb(adb) if tools_dir.is_dir() and adb.exists() else None
     try:
         main()
     except Exception:
@@ -112,6 +114,9 @@ def launch():
             from backend.core.runtime import data_dir
             ctypes.windll.user32.MessageBoxW(0, f'启动失败，请查看日志：\n{data_dir() / "application.log"}', '喵任务', 16)
         raise
+    finally:
+        if owned_adb is not None:
+            owned_adb.close()
 
 
 if __name__ == "__main__":

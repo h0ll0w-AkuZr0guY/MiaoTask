@@ -12,6 +12,7 @@
     "做任务",
     "赚喵币"
   ],
+  "bundle_by_default": true,
   "rescan": {
     "list_name": "赚能量任务",
     "rescan_rounds": 20,

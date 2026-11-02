@@ -76,7 +76,7 @@ HARD_STOP_RE = re.compile(r'将满足描述的所有图片拖放到指定区域|
 LIVE_PAGE_RE = re.compile(r'正在直播|\d+\s*人观看|说点什么|直播间|点赞')
 # 弹窗的关闭按钮：只认“关掉这层浮层”的写法。取消 / 残忍离开 / 确认 一律不点，
 # 它们会把正在做的任务取消掉或替人做决定。
-POPUP_CLOSE_RE = re.compile(r'^(?:×|✕|✖|╳|㐅|关闭|关闭弹窗|关闭窗口|关闭浮层|'
+POPUP_CLOSE_RE = re.compile(r'^(?:×|✕|✖|╳|㐅|X|x|关闭|关闭弹窗|关闭窗口|关闭浮层|'
                             r'我知道了|知道了|知道啦|以后再说|稍后再说|稍后|'
                             r'暂不开启|暂不需要|暂不|不感兴趣|跳过|下次再说|不再提醒|'
                             r'点此关闭|点击关闭|收起)$')
@@ -85,6 +85,7 @@ POPUP_CLOSE_RE = re.compile(r'^(?:×|✕|✖|╳|㐅|关闭|关闭弹窗|关闭�
 POPUP_HINT_RE = re.compile(r'恭喜|抢到|获得|奖励|红包|优惠券|折扣券|入会|权益|'
                            r'开通|绑定|升级|活动规则|邀请|已领取|翻倍|提醒|弹窗|'
                            r'完成任务|限本直播间|领取并使用')
+
 
 
 class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, VerificationPolicy, Activity):
@@ -732,6 +733,11 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
         """
         if getattr(self, '_popup_busy', False):
             return None
+        if screen.source == 'ui' and self.config['ocr'] and self.popup_close_node(screen):
+            # The accessibility tree can expose a hidden tutorial's Skip over
+            # an unrelated painted offer. Confirm the rendered dismiss control.
+            screen = super().read(force_ocr=True)
+            self.assert_instance(screen)
         # 滑块验证页右上角那个 × 等于「放弃这次验证」，关掉只会让任务失败，
         # 不能按普通浮层处理；这种页面交给 solve_slider。
         if self.on_slider_page(screen):
@@ -773,9 +779,10 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
             return None
         finally:
             self._popup_busy = False
-        fresh = self.read()
+        fresh = super().read(force_ocr=bool(self.config['ocr']))
         if normalize(fresh.text) == text:
             return None
+        self._popup_epoch = getattr(self, '_popup_epoch', 0) + 1
         return fresh
 
     def guard(self, screen):
@@ -811,6 +818,20 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
         try:
             check_attention(self, self.sanitized(screen))
         except NeedsAttention:
+            if screen.source == 'ui' and self.config['ocr']:
+                # A hidden tutorial/offer can survive in an accessibility tree.
+                # Never dismiss an invisible control or infer a challenge from it.
+                painted = super().read(force_ocr=True)
+                self.assert_instance(painted)
+                try:
+                    check_attention(self, self.sanitized(painted))
+                except NeedsAttention:
+                    screen, text = painted, normalize(painted.text)
+                else:
+                    self._retreat_screen = painted
+                    return
+            if HARD_STOP_RE.search(text):
+                raise
             if getattr(screen, 'obscured', False):
                 raise
             # 先试着把挡路的弹窗关掉再说：直播间那张“恭喜抢到折扣券”的浮层
@@ -1078,7 +1099,7 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
         # Never accept a generic confirm/open/withdrawal action. Authentication
         # was checked by guard before looking for a dismiss control.
         if (close and normalize(close.text) in ('X','×','✕','✖')
-                and not (self.promotion_visible(screen) or screen.find(r'提现机会|现金提现|恭喜|签到成功|奖励'))):
+                and not (self.promotion_visible(screen) or screen.find(r'提现机会|现金提现|恭喜|签到成功|奖励|送你.{0,6}(?:能量|金币)'))):
             return False
         if close and close.bounds[3]-close.bounds[1] < screen.height*.12:
             self.click(close)
@@ -1225,6 +1246,7 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
         viewport_returns = 0
         suggest_backs = 0
         loading_until = self.control.now()+self.config['page_timeout']
+        seen_popup_epoch = getattr(self, '_popup_epoch', 0)
         if auto_open and recovering and self.device.current_app().get('package') != package:
             # A launch-confirmation window can block app_start's foreground
             # proof. Unwind the external stack first, retaining the same user.
@@ -1248,6 +1270,12 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
         screen = self.read_page()
         while True:
             self.control.check()
+            epoch = getattr(self, '_popup_epoch', 0)
+            if epoch != seen_popup_epoch:
+                taps.clear()
+                seen_popup_epoch = epoch
+                loading_until = self.control.now()+self.config['page_timeout']
+                deadline = min(hard_deadline, max(deadline, loading_until))
             native_frame = screen if screen.source == 'ui' else None
             if native_frame is not None and self.config['ocr']:
                 # Embedded pages can retain the channel grid behind a canvas
@@ -1320,6 +1348,9 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
                 screen = self.read_page()
                 continue
             if self.dismiss_overlay(screen):
+                # Covered entry taps do not consume the visible entry's retry budget.
+                taps.clear()
+                loading_until = self.control.now()+self.config['page_timeout']
                 deadline = min(hard_deadline, max(deadline, self.control.now()+self.config['page_timeout']))
                 screen = self.read_page()
                 continue

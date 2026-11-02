@@ -1,5 +1,6 @@
 """Stable task identity and per-progress retry tracking."""
 import hashlib
+import re
 import logging
 from collections import Counter
 from backend.core.models import normalize
@@ -46,6 +47,8 @@ class TaskTracking:
         if id(self) in cache:
             return cache[id(self)]
         tasks = self.parse_tasks(screen.nodes, screen.width, screen.height)
+        from backend.core.execution.browse_contract import apply_browse_contract
+        tasks = [apply_browse_contract(task) for task in tasks]
         used = set()
         for task in tasks:
             if task.key.startswith('milestone-'):
@@ -54,6 +57,11 @@ class TaskTracking:
             icons = self.task_assets(screen, center_y)
             asset = min(icons, key=lambda n: abs(n.center[1] - center_y)).text if icons else ''
             key = self._asset_keys.get(asset) if asset else None
+            exact = [old for old in self._known_tasks.values()
+                     if old.key not in used and normalize(old.title) == normalize(task.title)
+                     and old.total == task.total and old.seconds == task.seconds]
+            if len(exact) == 1:
+                key = exact[0].key
             old_asset_task = self._known_tasks.get(key)
             if old_asset_task and (old_asset_task.total != task.total or old_asset_task.seconds != task.seconds
                                    or (task.total == 1 and old_asset_task.title != task.title)):
@@ -76,13 +84,21 @@ class TaskTracking:
                                   and old.kind in ('browse', 'search', 'done')
                                   and task.kind in ('browse', 'search', 'done'))
                     if same_title or (close and repeatable):
-                        matches.append((not close, not same_title, abs(old.current - task.current), old.key))
+                        matches.append((not same_title, not close, abs(old.current - task.current), old.key))
                 if matches:
                     key = min(matches)[-1]
             if key is None:
                 key = task.key
                 if key in used or key in self._known_tasks:
                     key += '-' + hashlib.sha256((asset or str(task.bounds)).encode()).hexdigest()[:6]
+            previous = self._known_tasks.get(key)
+            if (previous and previous.kind in ('browse', 'search') and task.total > 1 and previous.total == task.total
+                    and previous.seconds == task.seconds
+                    and re.match(r'^(?:看看|逛逛|浏览)#', normalize(task.title))):
+                # Rotating product promotions are captions for the same contract,
+                # not a new failure budget or a different task type.
+                task.title = previous.title
+                task.kind = previous.kind
             task.key = key
             used.add(key)
             if asset:

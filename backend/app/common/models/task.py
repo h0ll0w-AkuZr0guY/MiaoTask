@@ -22,6 +22,16 @@ def parse_tasks(nodes, width=1440, height=3200, *, rules):
     Geometry handles Themis pages whose accessibility siblings are unrelated,
     and works identically when the page exposes only a bitmap.
     """
+    header = next((n for n in nodes if normalize(n.text) == rules.milestone_header), None)
+    if header and header.bounds[0] > width * .15:
+        # A centered sheet on a tablet leaves product text visible beside it.
+        # Infer its horizontal content band from the header and action controls.
+        buttons = [n for n in nodes if rules.action_re.fullmatch(normalize(n.text))
+                   and n.center[0] > header.center[0]]
+        if buttons:
+            left = max(0, header.bounds[0] - width * .035)
+            right = min(width, max(n.bounds[2] for n in buttons) + width * .035)
+            nodes = [n for n in nodes if left <= n.center[0] <= right]
     actions = []
     for node in nodes:
         label = normalize(node.text)

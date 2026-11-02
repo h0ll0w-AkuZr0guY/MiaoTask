@@ -12,7 +12,7 @@ let pollRequest=null, pollTimer, previewTimer, previewRequest=null, previewReady
 const clockText=seconds=>{seconds=Math.max(0,Math.floor(seconds||0));return `${String(Math.floor(seconds/60)).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}`;};
 function el(tag, cls, text) {const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;}
 function toast(text){$('toast').textContent=text;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,6000);}
-function config(){const swipes={};for(const name of ['distance','duration','interval','burst'])for(const bound of ['min','max'])swipes['swipe_'+name+'_'+bound]=Number($('swipe-'+name+'-'+bound).value)/(name==='distance'?100:1);return {...swipes,default_browse_seconds:Number($('browse-seconds').value),browse_extra_seconds:Number($('browse-extra').value),max_attempts:Number($('max-attempts').value),max_tasks:Number($('max-tasks').value),enabled_task_kinds:['browse','search','visit','claim'].filter(k=>$('kind-'+k).checked),allow_cross_app:$('cross-app').checked,ocr:$('ocr').checked,scroll_browse:$('scroll').checked,claim_rewards:$('claim').checked};}
+function config(){const swipes={};for(const name of ['distance','duration','interval','burst'])for(const bound of ['min','max'])swipes['swipe_'+name+'_'+bound]=Number($('swipe-'+name+'-'+bound).value)/(name==='distance'?100:1);return {...swipes,reset_after_activity:$('reset-after-activity').checked,keep_screen_on:$('keep-screen-on').checked,clear_clipboard:$('clear-clipboard').checked,minimum_volume:$('minimum-volume').checked,minimum_brightness:$('minimum-brightness').checked,default_browse_seconds:Number($('browse-seconds').value),browse_extra_seconds:Number($('browse-extra').value),max_attempts:Number($('max-attempts').value),max_tasks:Number($('max-tasks').value),enabled_task_kinds:['browse','search','visit','claim'].filter(k=>$('kind-'+k).checked),allow_cross_app:$('cross-app').checked,ocr:$('ocr').checked,scroll_browse:$('scroll').checked,claim_rewards:$('claim').checked};}
 function defaultInstanceId(){const instances=state?.app_instances||[];return (instances.find(i=>i.user_id===0&&i.package===state?.catalog?.find(app=>app.id===state.app)?.package)||instances.find(i=>i.user_id===0)||instances[0])?.id||'';}
 function instanceProblem(){
   if(!state?.connected||!state.catalog?.some(app=>app.activities?.length))return '';
@@ -115,6 +115,7 @@ function render(){for(const a of document.querySelectorAll('a[href^="/api/report
   const instanceIssue=instanceProblem();$('instance-attention').hidden=!instanceIssue;$('instance-attention-message').textContent=instanceIssue;$('refresh-instances-visible').disabled=busy||requesting||!state.connected;$('choose-instance-visible').hidden=!(state.app_instances||[]).length;$('choose-instance-visible').disabled=busy||requesting;if(instanceIssue)$('run').disabled=true;
   $('pause').disabled=!running&&!paused;$('pause').textContent=paused?'▶ 继续':'Ⅱ 暂停';$('stop').disabled=!busy||state.status==='stopping';
   $('device-type').disabled=busy;$('serial').disabled=busy;
+  $('reset-tasks').disabled=busy||!state.connected;
   $('save-settings').disabled=busy;
   $('common-settings-open').disabled=false;
   $('settings-device-label').textContent=(state.workspace_label||state.workspaces?.find(item=>item.id===MiaoAPI.device)?.label||'当前设备')+' · 所有已选活动共用';
@@ -135,7 +136,7 @@ function render(){for(const a of document.querySelectorAll('a[href^="/api/report
   const failureTitle=typeof failureTask==='string'?failureTask:failureTask?.title;
   $('last-failure').textContent=state.last_failure?`最近记录：${state.last_failure.reason||'执行未通过'}${failureTitle?' · '+failureTitle:''}`:'遇到验证、恢复失败或核验失败时记录现场，原始截图仅保存在本机。';
   $('package-name').textContent=state.package||'设备未连接';$('preview-source').textContent=state.source==='ocr'?'本地 OCR 识别':state.source==='ui'?'页面控件识别':'手机截图预览';
-  if(!initialized){const c={...config(),...(state.config||{})};for(const name of ['distance','duration','interval','burst'])for(const bound of ['min','max']){const value=Number(c['swipe_'+name+'_'+bound]);if(Number.isFinite(value))$('swipe-'+name+'-'+bound).value=Number((value*(name==='distance'?100:1)).toFixed(3));}$('browse-seconds').value=c.default_browse_seconds;$('browse-extra').value=c.browse_extra_seconds;$('max-attempts').value=c.max_attempts;$('max-tasks').value=c.max_tasks;$('cross-app').checked=c.allow_cross_app;$('ocr').checked=c.ocr;$('scroll').checked=c.scroll_browse;$('claim').checked=c.claim_rewards;for(const k of ['browse','search','visit','claim'])$('kind-'+k).checked=(c.enabled_task_kinds||['browse','search','visit','claim']).includes(k);initialized=true;}
+  if(!initialized){const c={...config(),...(state.config||{})};for(const name of ['distance','duration','interval','burst'])for(const bound of ['min','max']){const value=Number(c['swipe_'+name+'_'+bound]);if(Number.isFinite(value))$('swipe-'+name+'-'+bound).value=Number((value*(name==='distance'?100:1)).toFixed(3));}$('browse-seconds').value=c.default_browse_seconds;$('browse-extra').value=c.browse_extra_seconds;$('max-attempts').value=c.max_attempts;$('max-tasks').value=c.max_tasks;$('cross-app').checked=c.allow_cross_app;$('ocr').checked=c.ocr;$('scroll').checked=c.scroll_browse;$('claim').checked=c.claim_rewards;$('reset-after-activity').checked=Boolean(c.reset_after_activity);$('keep-screen-on').checked=Boolean(c.keep_screen_on);$('clear-clipboard').checked=c.clear_clipboard!==false;$('minimum-volume').checked=Boolean(c.minimum_volume);$('minimum-brightness').checked=Boolean(c.minimum_brightness);for(const k of ['browse','search','visit','claim'])$('kind-'+k).checked=(c.enabled_task_kinds||['browse','search','visit','claim']).includes(k);initialized=true;}
   updateSettingsSummary();renderTasks();renderLogs();preview();MiaoDevices.refresh();
 }
 async function poll(){
@@ -202,3 +203,5 @@ window.addEventListener('miaotask:batch',async event=>{
   }catch(error){toast(error.message);}
 });
 MiaoAPI.request('/api/workspaces').then(data=>{if(data.devices?.length&&!data.devices.some(row=>row.id===MiaoAPI.device))MiaoAPI.selectDevice(data.devices[0].id);}).catch(()=>{}).finally(()=>poll().then(()=>{discover();previewLoop();pollLoop();}));
+
+$('reset-tasks').addEventListener('click',()=>action('reset_tasks'));

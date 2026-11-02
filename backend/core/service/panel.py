@@ -20,7 +20,7 @@ from urllib.parse import urlsplit, parse_qs
 import webbrowser
 
 from backend.core.registry import create_runner as CampaignRunner, default_registry
-from backend.core.config.loader import load_config
+from backend.core.config.loader import load_config, read_config
 from backend.core.config.schema import validate_config
 from backend.core.errors import NeedsAttention, Stopped
 from backend.core.execution.run_control import RunControl
@@ -31,7 +31,7 @@ from backend.core.service.static import static_response
 from backend.core.storage.daily_state import DailyState, local_day
 from backend.core.device.instances import AppInstance, InstanceMismatch
 from backend.core.service.notify import notify_security_attention
-from backend.core.runtime import data_dir, version
+from backend.core.runtime import data_dir, version, assets_dir
 from backend.core.service.branding import PUBLIC_ICON_FILES
 from backend.core.context import device_scoped
 from backend.core.service.pipeline import ActivityPipeline
@@ -97,9 +97,10 @@ class PanelLogHandler(logging.Handler):
 from backend.core.service.preview import PreviewWorker
 
 class Controller(ActivityPipeline, PreviewWorker):
-    def __init__(self, config=None, registry=None, app=None, activity=None):
+    def __init__(self, config=None, registry=None, app=None, activity=None, persist_preferences=False):
         self.registry = registry or default_registry()
         self.registration = self.registry.get(app, activity) if self.registry.has_activities else None
+        self.persist_preferences = persist_preferences
         self._app_instance_plans = {}
         self.lock = threading.RLock()
         self.device = None
@@ -131,6 +132,12 @@ class Controller(ActivityPipeline, PreviewWorker):
                           catalog=self.registry.catalog(),
                           activity_plan=[dict(app=self.registration.app.id, activity=self.registration.activity.id)] if self.registration else [],
                           activity_pipeline=[])
+
+    def _save_preferences(self, config):
+        if self.persist_preferences:
+            from backend.core.storage.preferences import save_preferences
+            keys = set(read_config(assets_dir() / 'backend/core/config/defaults.json'))
+            save_preferences(config={key: copy.deepcopy(value) for key, value in config.items() if key in keys})
 
     def log(self, level, message):
         with self.lock:
@@ -354,14 +361,17 @@ class Controller(ActivityPipeline, PreviewWorker):
                     activities = self._validate_plan(payload.get('activities', self.state['activity_plan']))
                     if not activities:
                         raise ValueError('请至少选择一个已安装活动')
-                    payload = dict(payload, activities=activities)
+                    payload = dict(payload, activities=activities, resume_completed=payload.get('resume_completed',
+                        len(activities) > 1 and self.state['status'] in ('error', 'stopped', 'needs_attention')))
+                    if not isinstance(payload['resume_completed'], bool):
+                        raise ValueError('resume_completed 必须为布尔值')
                     if len(activities) > 1 and not payload.get('auto_open', True):
                         raise ValueError('多个活动的流水线必须自动进入活动')
                 if (self.registration and not planned_run and
                         (payload.get('app', self.registration.app.id) != self.registration.app.id
                          or payload.get('activity', self.registration.activity.id) != self.registration.activity.id)):
                     raise ValueError('请先选择对应应用和活动')
-                if action not in ('connect', 'wifi_pair', 'wifi_connect', 'scan', 'run', 'open_app', 'capture', 'configure', 'select_instance', 'refresh_instances'):
+                if action not in ('connect', 'wifi_pair', 'wifi_connect', 'scan', 'run', 'open_app', 'capture', 'configure', 'reset_tasks', 'select_instance', 'refresh_instances'):
                     raise ValueError('未知操作')
                 if action in ('wifi_pair', 'wifi_connect'):
                     if self.registration is None and payload.get('connect_address'):
@@ -408,7 +418,7 @@ class Controller(ActivityPipeline, PreviewWorker):
                         self.state['all_instances'] = payload['all_instances']
                     self.control = RunControl()
                     self.update(config=config, status={'connect': 'connecting', 'wifi_pair': 'connecting', 'wifi_connect': 'connecting', 'scan': 'scanning',
-                                                      'run': 'running', 'capture': 'scanning',
+                                                      'run': 'running', 'capture': 'scanning', 'reset_tasks': 'scanning',
                                                       'open_app':'scanning',
                                                       'select_instance': 'scanning', 'refresh_instances': 'scanning'}[action],
                                 message='正在连接手机' if action in ('connect', 'wifi_pair', 'wifi_connect') else '正在读取手机页面')
@@ -420,7 +430,8 @@ class Controller(ActivityPipeline, PreviewWorker):
             self.log('INFO', {'pause': '用户暂停', 'resume': '用户继续', 'stop': '用户停止'}[action])
             self._persist_state()
         elif action == 'configure':
-            self.log('INFO', '执行设置已应用')
+            self._save_preferences(config)
+            self.log('INFO', '执行设置已应用并保存')
 
     @device_scoped
     def _work(self, action, payload, config):
@@ -488,6 +499,14 @@ class Controller(ActivityPipeline, PreviewWorker):
                 self._start_preview()
                 self._instance_availability('设备已连接，请确认应用实例后开始自动执行')
                 self.log('INFO', f'设备连接成功：{device}')
+            elif action == 'reset_tasks':
+                self._ensure_daily()
+                self.task_policy.reset()
+                self.unavailable_tasks.clear()
+                self._persist_state()
+                self.update(tasks=[], task_scope=uuid.uuid4().hex, status='ready', phase='ready', current_task='',
+                            message='任务标记已清空，今日累计保留；点击开始重新识别')
+                self.log('INFO', '已清空当前活动实例的任务标记，累计统计保留')
             elif action == 'open_app':
                 self.control.check()
                 with self.device.instance_session():
@@ -517,6 +536,7 @@ class Controller(ActivityPipeline, PreviewWorker):
                 self.update(status='ready', phase='ready', instance_queue=[], message='已选择实例，开始后才会打开对应应用')
             else:
                 if action == 'run':
+                    self._save_preferences(config)
                     self._run_activity_pipeline(action, payload, config)
                 else:
                     self._execute_current_activity(action, payload, config)
@@ -588,6 +608,13 @@ class Controller(ActivityPipeline, PreviewWorker):
             if instance_id:
                 self._select_instance(instance_id)
             self._ensure_daily()
+            started_daily = self.daily
+            if action == 'run' and payload.get('resume_completed') is True and started_daily and started_daily.activity_finished():
+                self.log('INFO', '今日此活动已执行完成，跳过所选实例并继续流水线')
+                self._queue_status(instance_id, 'finished')
+                continue
+            if action in ('scan', 'run') and started_daily:
+                started_daily.mark_activity_finished(False)
             self._queue_status(instance_id, 'running')
             session_id = uuid.uuid4().hex
             self._round_last_stats[session_id] = {}
@@ -601,11 +628,33 @@ class Controller(ActivityPipeline, PreviewWorker):
             self.log('INFO', ('开始识别任务' if action == 'scan' else '开始执行任务') +
                      ('：' + known[instance_id]['label'] if instance_id in known else ''))
             context = self.device.instance_session() if instance_id else nullcontext()
-            with context:
+            from backend.core.device.comfort import device_comfort
+            with context, device_comfort(self.device, config if action == 'run' else {}, notify=self.log):
                 if action == 'scan':
                     runner.scan(auto_open=auto_open)
                 else:
+                    if config.get('clear_clipboard', True):
+                        self.control.check()
+                        try:
+                            self.device.clear_clipboard()
+                        except (Stopped, InstanceMismatch):
+                            raise
+                        except Exception:
+                            # Never log clipboard contents or change the IME to
+                            # gain access on a restricted device.
+                            self.log('INFO', '当前设备未能清空剪贴板，已继续执行；如出现链接弹窗请手动关闭')
+                        self.control.check()
                     runner.run(auto_open=auto_open)
+            if (action == 'run' and getattr(runner, 'daily_exhausted', False) is True
+                    and started_daily is not None and self.daily is started_daily and started_daily.date == local_day()):
+                started_daily.mark_activity_finished()
+            if action == 'run' and config.get('reset_after_activity', False) and runner.stats.attempts < config['max_tasks']:
+                runner.reset_task_marks()
+                self.log('INFO', '清理任务标记后复查一次，累计统计保留')
+                with (self.device.instance_session() if instance_id else nullcontext()), device_comfort(self.device, config, notify=self.log):
+                    runner.run(auto_open=True)
+                if started_daily is not None:
+                    started_daily.mark_activity_finished(bool(getattr(runner, 'daily_exhausted', False)))
             self._persist_state()
             self._queue_status(instance_id, 'finished')
             self._save_report()
@@ -696,10 +745,13 @@ def make_handler(controller, token):
                 return
             path = urlsplit(self.path).path
             origin = f'http://127.0.0.1:{self.server.server_port}'
-            if path == '/api/plugins' and hasattr(root, 'plugins_snapshot'):
+            if path in ('/api/plugins', '/api/plugins/branches') and hasattr(root, 'plugins_snapshot'):
                 try:
-                    refresh = parse_qs(urlsplit(self.path).query).get('refresh', ['0'])[0] == '1'
-                    self.reply(200, root.plugins_snapshot(origin, refresh=refresh))
+                    if path.endswith('/branches'):
+                        self.reply(200, {'branches': root.activity_branches(origin)})
+                    else:
+                        refresh = parse_qs(urlsplit(self.path).query).get('refresh', ['0'])[0] == '1'
+                        self.reply(200, root.plugins_snapshot(origin, refresh=refresh))
                 except (ValueError, OSError) as exc:
                     self.reply(400, {'error': str(exc)})
                 return
@@ -813,7 +865,7 @@ def make_handler(controller, token):
                     folder = root.open_activity_folder(f'http://127.0.0.1:{self.server.server_port}')
                     self.reply(200, {'ok': True, 'path': folder})
                     return
-                if path in ('/api/plugins/install', '/api/plugins/uninstall') and hasattr(root, 'change_plugin'):
+                if path in ('/api/plugins/install', '/api/plugins/uninstall', '/api/plugins/source', '/api/plugins/restore') and hasattr(root, 'change_plugin'):
                     root.change_plugin(path.rsplit('/', 1)[-1], payload,
                                        f'http://127.0.0.1:{self.server.server_port}')
                     self.reply(202, {'ok': True})
@@ -865,7 +917,17 @@ def make_handler(controller, token):
 
 def serve(port=8765, open_browser=True, config=None, port_file=None, app=None, activity=None):
     from backend.core.service.devices import DeviceHub
-    controller = DeviceHub(config, app=app, activity=activity)
+    from backend.core.storage.preferences import read_preferences
+    saved = read_preferences().get('config', {})
+    shared_keys = set(read_config(assets_dir() / 'backend/core/config/defaults.json'))
+    saved = {key: value for key, value in saved.items() if key in shared_keys} if isinstance(saved, dict) else {}
+    # Revalidate stored values; corrupt preferences never prevent startup.
+    try:
+        initial = load_config(app=app, activity=activity, overrides={**(config or {}), **saved})
+    except ValueError:
+        logger.warning('已保存的公共配置无效，使用本次默认配置')
+        initial = config
+    controller = DeviceHub(initial, app=app, activity=activity, persist_preferences=True)
     logging.getLogger().addHandler(PanelLogHandler(controller))
     handler = make_handler(controller, secrets.token_urlsafe(32))
     def existing_assistant():

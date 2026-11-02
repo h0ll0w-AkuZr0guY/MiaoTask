@@ -1039,3 +1039,22 @@ class RescanLoopTests(unittest.TestCase):
 
 if __name__=='__main__':
     unittest.main()
+
+class PaintedDismissalTests(unittest.TestCase):
+    def test_hidden_skip_never_beats_visible_close(self):
+        runner=TaobaoDailyTests().runner();runner.click=Mock();runner.control.wait=Mock()
+        native=Screen([TextNode('跳过',(300,400,400,440))],1000,1600,'com.taobao.taobao','ui')
+        close=TextNode('X',(470,1000,520,1050),'ocr')
+        visual=Screen([TextNode('送你能量',(300,400,700,450),'ocr'),close],1000,1600,native.package,'ocr')
+        after=Screen([TextNode('日常版',(800,200,950,300),'ocr')],1000,1600,native.package,'ocr')
+        with patch.object(Session,'read',side_effect=[visual,after]):
+            self.assertIs(runner.dismiss_popup(native),after)
+        runner.click.assert_called_once_with(close)
+
+    def test_invisible_skip_without_painted_popup_does_nothing(self):
+        runner=TaobaoDailyTests().runner();runner.click=Mock()
+        native=Screen([TextNode('跳过',(300,400,400,440))],1000,1600,'com.taobao.taobao','ui')
+        visual=Screen([TextNode('日常版',(800,200,950,300),'ocr')],1000,1600,native.package,'ocr')
+        with patch.object(Session,'read',return_value=visual):
+            self.assertIsNone(runner.dismiss_popup(native))
+        runner.click.assert_not_called()

@@ -331,7 +331,7 @@ def rollup_local(root, summary=''):
                 body = body[:position] + '\n' + '\n'.join(additions) + body[position:]
             history = history[:heading.end()] + body + '\n\n' + history[following:]
         else:
-            section = f'## {version}\n\n' + ((summary.strip() + '\n\n') if summary.strip() else '') + '\n'.join(lines) + '\n\n'
+            section = f'## {version}\n\n' + ((summary.strip() + '\n\n') if summary.strip() else '') + '\n'.join(lines) + '\n\n下载 MiaoTask Windows x64 ZIP，完整解压后运行 `MiaoTask.exe`，保留 `_internal/` 与 `activities/`。安全认证需本人处理。\n\n'
             position = headings[0].start() if headings else len(history.rstrip())
             history = history[:position].rstrip() + '\n\n' + section + history[position:]
         history_path.write_text(history, encoding='utf-8')
@@ -421,6 +421,8 @@ def install_preselected(destination, activities, downloads, *, provider_factory=
         archive = downloads / f'selected-{index}.zip'
         digest = provider.build_archive(entry, archive)
         record = manager.install_local(archive, digest, expected_app=item['app'], expected_activity=item['activity'])
+        from backend.core.plugins.recovery import RecoveryStore
+        RecoveryStore(destination.parent / '_internal/activity-recovery').remember(archive, digest)
         if record.get('source_commit') != revision:
             raise ValueError('安装活动未保留所选 GitHub 提交')
         installed.append({key: record[key] for key in ('app', 'activity', 'version', 'source_commit', 'sha256')})
@@ -562,12 +564,19 @@ def _build(source, home, *, python=None, adb_dir=None, summary='', create_env=Fa
         run_logged([executable, Path(__file__).resolve(), '--legacy-build-worker', workspace,
                     '--legacy-original-version', original_version, '--adb-dir', Path(adb_dir).resolve()], workspace, env, log)
     else:
-        run_logged([executable, 'scripts/package_windows.py', '--local-source', '--skip-tests', '--adb-dir',
+        policy_args = (['--framework-only'] if activities is not None and
+                       '--framework-only' in (workspace / 'scripts/package_windows.py').read_text(encoding='utf-8') else [])
+        run_logged([executable, 'scripts/package_windows.py', '--local-source', *policy_args, '--skip-tests', '--adb-dir',
                     Path(adb_dir).resolve()], workspace, env, log)
     archive = workspace / 'dist' / f'{version}-windows-x64.zip'
     if not archive.is_file():
         raise RuntimeError('构建没有生成预期 ZIP')
     preinstalled = preload_package(workspace, archive, activities or [], executable, env, log, run)
+    if activities is None:
+        with zipfile.ZipFile(archive) as bundle:
+            manifest_name = 'MiaoTask/build-manifest.json'
+            if manifest_name in bundle.namelist():
+                preinstalled = json.loads(bundle.read(manifest_name)).get('preinstalled_activities', [])
     output.mkdir(parents=True)
     target = output / archive.name
     shutil.copy2(archive, target)

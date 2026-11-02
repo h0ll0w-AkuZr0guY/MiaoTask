@@ -45,7 +45,8 @@
     "rescan_pause": 15,
     "rescan_restart_app": true,
     "rescan_restart_max": 12,
-    "rescan_start_pause": 3
+    "rescan_start_pause": 3,
+    "promotion_markers": "送你能量"
   },
   "max_scroll_pages": 10,
   "jump_words": {
@@ -66,5 +67,6 @@
       "允许一次",
       "仅本次"
     ]
-  }
+  },
+  "bundle_by_default": true
 }

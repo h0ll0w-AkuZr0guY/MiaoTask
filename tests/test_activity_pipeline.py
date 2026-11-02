@@ -146,6 +146,26 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual([row['status'] for row in state['activity_pipeline']], ['finished', 'finished'])
         self.assertEqual([row['stats']['completed'] for row in state['activity_pipeline']], [1, 1])
 
+    def test_clipboard_setting_applies_before_run_and_can_be_disabled(self):
+        for enabled in (True, False):
+            with self.subTest(enabled=enabled):
+                controller = self.controller()
+                order = []
+                controller.device.clear_clipboard = Mock(side_effect=lambda: order.append('clear'))
+                with patch('backend.core.service.panel.CampaignRunner', self.runner_factory(
+                        [], rendezvous=lambda runner: order.append('run'))):
+                    self.run_controller(controller, {'config': {'clear_clipboard': enabled}})
+                self.assertEqual(order, ['clear', 'run'] if enabled else ['run'])
+
+    def test_clipboard_restriction_does_not_block_or_install_input_method(self):
+        controller = self.controller()
+        controller.device.clear_clipboard = Mock(side_effect=PermissionError('synthetic restricted device'))
+        calls = []
+        with patch('backend.core.service.panel.CampaignRunner', self.runner_factory(calls)):
+            state = self.run_controller(controller)
+        self.assertEqual(state['status'], 'finished')
+        self.assertEqual(len(calls), 1)
+
     def test_cross_app_round_trip_restores_each_apps_explicit_instance(self):
         controller = self.controller()
         controller._app_instance_plans['beta'] = ['org.example.beta@999']
@@ -293,6 +313,33 @@ class PipelineTests(unittest.TestCase):
                         self.assertIn(controller.state['status'], ('error', 'needs_attention'))
                 self.assertEqual(calls, [])
 
+
+    def test_explicit_start_ignores_old_finished_marker(self):
+        controller = self.controller()
+        controller.daily = Mock()
+        controller.daily.activity_finished.return_value = True
+        calls = []
+        with patch('backend.core.service.panel.CampaignRunner', self.runner_factory(calls)):
+            self.run_controller(controller)
+        self.assertEqual(len(calls), 1)
+        controller.daily.mark_activity_finished.assert_called_with(False)
+
+    def test_completed_instance_is_skipped_and_next_app_executes(self):
+        controller = self.controller()
+        self.select(controller, ('alpha', 'first'), ('beta', 'first'))
+        calls = []
+        def bind_daily():
+            if controller.registration.app.id == 'alpha':
+                controller.daily = Mock()
+                controller.daily.activity_finished.return_value = True
+            else:
+                controller.daily = None
+        controller._ensure_daily.side_effect = bind_daily
+        with patch('backend.core.service.panel.CampaignRunner', self.runner_factory(calls)):
+            state = self.run_controller(controller, {'resume_completed': True})
+        self.assertEqual([row['name'] for row in calls], ['beta-first'])
+        self.assertEqual(state['status'], 'finished')
+        self.assertEqual([row['status'] for row in state['activity_pipeline']], ['finished', 'finished'])
 
 if __name__ == '__main__':
     unittest.main()

@@ -2,6 +2,48 @@
 
 按新到旧维护用户可见变化。GitHub Release 正文从对应的 `## 版本号` 小节提取，发布状态以 [Releases](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/releases) 为准。
 
+## MiaoTask-v0.1.5
+
+任务复查、持续滑动与设备兼容修复。
+
+* 【修复】手动开始重新读取任务，旧完成标记不再阻止启动（#23）；新增「清理任务标记」及默认关闭的结束后复查开关，保留累计统计。
+* 【优化】滚动浏览采用后台 OCR 与有效手势计时，零间隔不插入等待，截图、识别和额外间隔不抵扣浏览时间；重复任务按自身进度核验，进度增加后重置连续失败预算。
+* 【修复】平板居中任务面板、领奖后旧控件树、遮挡弹窗及搜索兜底；补充头条「浏览器打开」等跳转确认，返回后继续核验。
+* 【新增】可选执行期间保持亮屏，结束后恢复；开始前清空设备剪贴板默认开启、可关闭；最低媒体音量兼容新旧系统命令，设置及恢复后读回核验。
+* 【维护】活动说明缩为选择框内的小图标，识别日志明确为正常本地 OCR；合并同类测试。活动新增 `bundle_by_default` 配置，本包默认预装现有全部六项活动。
+
+下载 Windows x64 ZIP，完整解压后运行 `MiaoTask.exe`，保留 `_internal/` 与 `activities/`。升级前从托盘退出旧助手；日记录与公共配置保留在系统用户目录。安全认证需本人处理，诊断截图分享前请脱敏。跨应用任务以返回列表的进度为准，无法通过核验的任务保留失败记录，不计为完成。
+
+感谢 [MonsterNone/tmall-miao](https://github.com/MonsterNone/tmall-miao) 提供早期实现思路参考。[使用说明](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/blob/main/docs/USAGE.md) · [项目介绍](https://github.com/h0ll0w-AkuZr0guY/MiaoTask#readme)
+
+### 框架与公共组件修改
+
+| 模块 | 主要修改文件 | 行为变化 |
+| --- | --- | --- |
+| 启动与任务记录 | `backend/core/service/panel.py`、`backend/core/execution/task_policy.py` | 手动启动重读列表；清理任务标记不清累计统计；完成后可选复查一次，仍保留设备、活动和实例隔离。 |
+| 执行循环与任务身份 | `backend/core/execution/loop.py`、`retry.py`、`session.py` | 重复任务按当前进度继续；有效进度重置连续失败预算；语义优先于行位置，收尾有界重扫。 |
+| 读屏与连续滑动 | `backend/core/device/screen.py`、`backend/core/execution/session.py` | 新增单帧在途的后台视觉识别接口；OCR 线程不访问设备；手势返回时长，供动作层累计有效滑动时间；保留停止、身份和画面新鲜度检查。 |
+| 设备输入 | `backend/core/device/adapter.py` | 滑动 RPC 超时可有界回退系统滑动；新增清空设备剪贴板接口，不读取内容或切换输入法。 |
+| 公共运行设置 | `backend/core/device/comfort.py`、`backend/core/config/defaults.json`、`schema.py` | 增加亮屏、复查和剪贴板选项；媒体音量优先现代系统命令、兼容旧命令，设置与恢复均读回核验，结果进入运行日志。 |
+| 公共识别与导航 | `backend/app/common/models/task.py`、`utils/destinations.py`、`backend/core/execution/navigator.py` | 居中面板排除背景文字干扰；跳转词表补充浏览器打开场景；入口处理遮挡后重新观察。 |
+| 淘宝共享策略 | `backend/app/taobao/utils/actions.py`、`daily.py`、`search.py`、`verification.py` | 接入后台识别和有效滑动计时；完善可见输入框兜底、弹窗处理与重复任务核验，供淘宝活动复用。 |
+| 网页与预览 | `frontend/index.html`、`frontend/js/app.js`、`components/activity-selector.js`、`frontend/css/base.css`、`scripts/site-preview/adapter.js` | 增加清理标记与公共配置交互；缩小活动说明图标，演示页同步相应交互。 |
+| 构建与维护 | `scripts/package_activities.py`、`package_windows.py`、`local_release.py`、`release_builder_gui.py`；`tests/`、`docs/` | 按活动布尔配置决定默认预装，保留显式选择及纯框架选项；构建元数据反映实际预装内容；测试归并至 21 个模块，更新接口、使用和贡献规范。 |
+
+## MiaoTask-v0.1.4
+
+活动扩展、资源容灾与执行体验更新。
+
+* 【新增】支付宝「月月赚」浏览活动与可选活动说明；优化淘金币任务识别、弹窗处理及收工重扫。感谢 @ashen0116（#17）与 @Chilzen-smx（#18）的贡献。
+* 【修复】活动目录支持官方分支选择；API 限流时尝试静态资源与官方源码归档，新增卸载后离线恢复。仅打开时检查一次，后续手动刷新。
+* 【新增】公共配置保存在用户目录；最低媒体音量、亮度选项默认关闭，执行结束后尝试恢复原值。
+* 【优化】恢复流水线时跳过当日已确认完成的活动实例；浏览任务按副标题判断，收尾重扫并避免重复执行已核验进度。
+* 【修复】退出时清理本次启动的当前安装 ADB。启用 GitHub Pages 在线工作台预览与活动备用下载，main 的界面和活动更新后自动同步。
+
+Windows x64 ZIP 预装全部六项活动，完整解压后运行 `MiaoTask.exe`，保留 `_internal/` 与 `activities/`。升级前从托盘退出旧助手；日记录与公共配置保留在用户目录。安全认证需本人处理，诊断截图分享前请脱敏。GitHub Pages 与官方源码归档提供备用下载，本机保留活动恢复副本。[在线预览](https://h0ll0w-akuzr0guy.github.io/MiaoTask/) 使用演示数据，不连接手机或执行真实任务。
+
+感谢 [MonsterNone/tmall-miao](https://github.com/MonsterNone/tmall-miao) 提供早期实现思路参考。[使用说明](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/blob/main/docs/USAGE.md) · [项目介绍](https://github.com/h0ll0w-AkuZr0guY/MiaoTask#readme)
+
 ## MiaoTask-v0.1.3
 
 淘宝日常活动、设备工作台与框架稳定性更新。

@@ -5,6 +5,7 @@ from functools import lru_cache
 import hashlib
 import logging
 import os
+import queue
 import re
 import time
 
@@ -80,6 +81,10 @@ class ScreenReader:
         self._ocr_cache_nodes = None
         self.last_observation_seconds = 0.0
         self.image_processor = image_processor or IdentityImageProcessor()
+
+    def visual_observer(self):
+        """Capture on the owner thread; recognize frames without blocking input."""
+        return VisualObserver(self)
 
     def _flatten(self, tree, foreground_package=None):
         nodes = []
@@ -180,7 +185,7 @@ class ScreenReader:
         source = "ui"
         if self.ocr_enabled and (force_ocr or len(meaningful) < 5):
             if not self._ocr_notice:
-                logger.info("页面控件不可读，启用本地 OCR 识别（截图不上传）")
+                logger.info("正在本地识别页面文字（正常识别方式，截图不上传）")
                 self._ocr_notice = True
             image = self._capture()
             nodes = [] if max(hi for lo,hi in image.getextrema()) < 8 else self._image_nodes(image)
@@ -203,3 +208,79 @@ class ScreenReader:
         self.last_screen = screen
         self.last_observation_seconds = time.monotonic() - started
         return screen
+
+
+class VisualObserver:
+    """One in-flight frame, no device access or callbacks on the OCR thread.
+
+    The private reader owns its recognition cache/engine. Closing discards late
+    results; even a slow recognizer cannot send input or mutate the session.
+    """
+    def __init__(self, reader):
+        self.source = reader
+        self.reader = ScreenReader(None, image_processor=reader.image_processor)
+        self.requests = queue.Queue(maxsize=1)
+        self.results = queue.Queue(maxsize=1)
+        self.closed = threading.Event()
+        self.pending = False
+        self.captured = None
+        self.thread = threading.Thread(target=self._run, daemon=True, name='miao-browse-ocr')
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def request(self):
+        if self.pending or self.closed.is_set():
+            return False
+        # Capture is serialized by the adapter, just like the preview. Expensive
+        # OCR does not own its device lock and cannot delay the next swipe.
+        started = time.monotonic()
+        foreground = self.source.device.current_app()
+        image = self.source._capture()
+        screen = Screen([], *image.size, foreground.get('package', ''), 'ocr',
+                        user_id=foreground.get('user_id'))
+        geometry = getattr(self.source.device, 'display_geometry', None)
+        if isinstance(geometry, DisplayGeometry) and (geometry.width, geometry.height) == image.size:
+            screen.geometry = geometry
+        self.captured = screen
+        self.pending = True
+        self.requests.put_nowait((screen, image, started))
+        return True
+
+    def _run(self):
+        while not self.closed.is_set():
+            request = self.requests.get()
+            if request is None or self.closed.is_set():
+                break
+            screen, image, started = request
+            try:
+                screen.obscured = max(hi for lo, hi in image.getextrema()) < 8
+                screen.nodes = [] if screen.obscured else self.reader._image_nodes(image)
+                result = (screen, None, time.monotonic() - started)
+            except Exception as exc:
+                result = (None, exc, time.monotonic() - started)
+            if not self.closed.is_set():
+                self.results.put_nowait(result)
+
+    def poll(self):
+        try:
+            screen, error, elapsed = self.results.get_nowait()
+        except queue.Empty:
+            return None
+        self.pending = False
+        if error:
+            raise error
+        self.source.last_screen = screen
+        self.source.last_observation_seconds = elapsed
+        return screen
+
+    def __exit__(self, *exc):
+        self.closed.set()
+        try:
+            self.requests.put_nowait(None)
+        except queue.Full:
+            pass
+        # No UI/RPC can outlive this context. Only private, read-only CPU work
+        # may finish later; never wait several seconds to honor a stop request.
+        self.thread.join(timeout=.2)

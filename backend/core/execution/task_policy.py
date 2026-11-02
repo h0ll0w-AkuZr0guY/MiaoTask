@@ -33,6 +33,8 @@ class TaskPolicy:
             item = self.entries.get(task_identity(task), {})
             if item.get('skip'):
                 return '已跳过：用户选择今日跳过'
+            if item.get('browse_once_attempted'):
+                return '已跳过：无明确浏览时长，今日已尝试一次'
             if item.get('exhausted'):
                 return '已跳过：今日失败已达上限，点击执行可重新尝试'
             return ''
@@ -48,6 +50,28 @@ class TaskPolicy:
             item['exhausted'] = item['failures'] >= limit
             self._save()
             return item['failures']
+
+    def progress(self, task):
+        """A verified advance ends the failure streak, without changing user choices."""
+        with self.lock:
+            identity = task_identity(task)
+            item = self.entries.get(identity)
+            if item and ('failures' in item or 'exhausted' in item):
+                item.pop('failures', None)
+                item.pop('exhausted', None)
+                if not item:
+                    self.entries.pop(identity, None)
+                self._save()
+
+    def mark_browse_once(self, task):
+        with self.lock:
+            self.entries.setdefault(task_identity(task), {})['browse_once_attempted'] = True
+            self._save()
+
+    def reset(self):
+        with self.lock:
+            self.entries.clear()
+            self._save()
 
     def choose(self, identity, skip):
         with self.lock:

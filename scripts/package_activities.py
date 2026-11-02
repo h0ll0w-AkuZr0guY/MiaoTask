@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from backend.core.config.loader import read_config
 from backend.core.plugins.contracts import (ALLOWED_SUFFIXES, FRAMEWORK_API,
     OFFICIAL_REPOSITORY, PACKAGE_SCHEMA, module_id, package_version)
 from backend.core.plugins.manager import validate_archive
@@ -86,6 +87,9 @@ def build_packages(root, output, tag, version=None, *, require_clean=True, local
                      'app_label', 'label', 'version', 'framework_api', 'python', 'source_commit')}
             entry.update(url=f'https://github.com/{OFFICIAL_REPOSITORY}/releases/download/{tag}/{name}',
                          sha256=digest, size=destination.stat().st_size, device_types=activity['device_types'])
+            entry['bundle_by_default'] = read_config(registration.activity_dir / registration.activity.config).get('bundle_by_default', False)
+            if type(entry['bundle_by_default']) is not bool:
+                raise ValueError('bundle_by_default must be boolean')
             catalog['packages'].append(entry)
     (output / 'activity-catalog.json').write_text(json.dumps(catalog, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     return catalog

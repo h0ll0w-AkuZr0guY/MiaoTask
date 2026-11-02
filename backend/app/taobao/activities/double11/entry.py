@@ -165,7 +165,14 @@ class EntryPolicy:
                         # the actual foreground again instead of tapping old OCR.
                         screen = self.read(force_ocr=bool(self.config['ocr']))
                         continue
-                    target = self.task_panel_entry(native) or target
+                    close = native.find(r'^关闭$|^关闭弹窗$|^关闭按钮$')
+                    if close and 0 < close.bounds[3]-close.bounds[1] < native.height*.12:
+                        self.click(close)
+                        self.control.wait(.5)
+                        screen = self.read(force_ocr=bool(self.config['ocr']))
+                        continue
+                    # Prefer painted button geometry over a broad accessibility caption.
+                    target = target or self.task_panel_entry(native)
             if target and attempts < 3 and self.control.now() - last_tap >= 1.2:
                 self.update(message=f'打开赚能量菜单（页面内第{local_pass + 1}轮，第{attempts + 1}/3次）')
                 logger.info('任务菜单点击：页面内第%d轮，第%d次，来源%s，文案%s',

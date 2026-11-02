@@ -34,5 +34,6 @@
       }
     ]
   },
-  "max_scroll_pages": 1
+  "max_scroll_pages": 1,
+  "bundle_by_default": true
 }

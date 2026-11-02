@@ -189,7 +189,22 @@ class DeviceAdapter:
                 self._checked_shell(['input','-d',str(self._display_id),'swipe',
                     *[str(round(n)) for n in (x1,y1,x2,y2)], str(max(1,round(duration*1000)))])
             else:
-                self._device.swipe(x1, y1, x2, y2, duration=duration)
+                try:
+                    self._device.swipe(x1, y1, x2, y2, duration=duration)
+                except (TimeoutError, ConnectionError):
+                    # Retry only a scroll, never a click or submission.
+                    if not getattr(self, '_swipe_fallback_notice', False):
+                        logger.info('手势通道繁忙，使用系统滑动继续浏览')
+                        self._swipe_fallback_notice = True
+                    self._checked_shell(['input','swipe',str(round(x1)),str(round(y1)),
+                                         str(round(x2)),str(round(y2)),str(round(duration*1000))],timeout=8)
+
+    @serialized
+    def clear_clipboard(self):
+        """Erase device clipboard only; never read it or change the user's IME."""
+        if self.device_type != 'uiautomator2':
+            raise NotImplementedError('当前设备驱动不支持清空剪贴板')
+        self._device.set_clipboard('')
 
     @serialized
     def swipe_ext(self, direction, box=None):

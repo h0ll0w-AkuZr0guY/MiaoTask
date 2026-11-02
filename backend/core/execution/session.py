@@ -23,6 +23,7 @@ class Session:
         from backend.core.execution.task_policy import TaskPolicy
         self.task_policy = task_policy or TaskPolicy()
         self.records = {}
+        self._verified_progress = set()
         target = getattr(device, 'selected_instance', None)
         self.target_instance = target if isinstance(target, AppInstance) else None
         self.origin = self.target_instance.package if self.target_instance else None
@@ -39,6 +40,21 @@ class Session:
         self._phase = 'locating'
         self._task_restart_used = False
 
+
+    def reset_task_marks(self):
+        """Discard scheduling decisions/aliases, retaining accumulated run statistics."""
+        self.task_policy.reset()
+        self.records.clear()
+        self.failures.clear()
+        self._verified_progress.clear()
+        self._known_tasks.clear()
+        self._asset_keys.clear()
+        self._active_task = None
+        self._task_restart_used = False
+        self._task_budget_counted = False
+        for key in list(self.unavailable_tasks):
+            if key.startswith('task:'):
+                self.unavailable_tasks.pop(key, None)
 
     def report_failure(self, reason, task=None, phase=None):
         """Capture evidence at the failing page, before recovery changes it."""
@@ -97,6 +113,7 @@ class Session:
         else:
             x1, y1, x2, y2, duration = self.gestures.sample(screen.width, screen.height)
         self.device.swipe(x1, y1, x2, y2, duration=duration)
+        return duration
 
 
     def scan(self, auto_open=False):

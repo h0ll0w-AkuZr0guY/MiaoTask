@@ -107,7 +107,8 @@ class SessionLoop:
             raise
 
     def run(self, auto_open=False):
-        self.started = time.monotonic()
+        self.daily_exhausted = False
+        self.started = time.monotonic() - self.stats.elapsed
         try:
             screen = self.ensure_list(auto_open)
         except (Stopped, NeedsAttention, InstanceMismatch):
@@ -118,10 +119,12 @@ class SessionLoop:
             self.report_failure('初始页面读取异常', phase='locating')
             screen = self.recover(cold_start=True)
         seen_pages = set()
+        final_rescan = False
+        verified_progress = self._verified_progress
         scrolls, total_attempts, page_turns = 0, 0, 0
         # 换批后仍没有可执行任务时，连续空批次达到上限就收工，不再翻完剩余批次
         empty_batches, paged = 0, False
-        empty_batch_stop = max(1, int(self.config.get('empty_batch_stop', 1)))
+        empty_batch_stop = max(1, int(self.config.get('empty_batch_stop', 3)))
         while total_attempts < self.config['max_tasks']:
             self.control.check()
             self.guard(screen)
@@ -129,6 +132,12 @@ class SessionLoop:
             self.remember(tasks)
             candidates = []
             for task in tasks:
+                from backend.core.execution.task_policy import task_identity
+                if (task_identity(task), task.current) in verified_progress:
+                    if task.key in self.records:
+                        self.records[task.key].update(status='pending' if task.current < task.total else 'done', enabled=False,
+                                                     reason='本次进度已核验，等待页面刷新；未视为全部完成')
+                    continue
                 if task.kind in ('done', 'manual') or self.records[task.key]['status'] == 'disabled':
                     continue
                 if task.kind not in self.config['enabled_task_kinds']:
@@ -146,6 +155,12 @@ class SessionLoop:
                 empty_batches += 1
                 if empty_batches >= empty_batch_stop:
                     logger.info('连续 %d 批没有可执行任务，提前结束本轮扫描', empty_batches)
+                    if not final_rescan:
+                        final_rescan = True
+                        screen = self.ensure_list(True)
+                        seen_pages.clear()
+                        scrolls = empty_batches = 0
+                        continue
                     break
             if candidates:
                 empty_batches, paged = 0, False
@@ -200,6 +215,8 @@ class SessionLoop:
                     screen = self.recover_task(task, cold_start=True)
                     # Reopening may reveal already-settled server progress.
                     success = self.verify(task, before, screen)
+                if getattr(task, 'browse_once', False):
+                    self.task_policy.mark_browse_once(task)
                 if not success and not disabled_reason and task.target_packages:
                     # Some deeplinks silently stay on a landing page. Only after
                     # that real attempt fails verification do we confirm absence.
@@ -209,6 +226,9 @@ class SessionLoop:
                     self.records[task.key].update(status='disabled', reason=disabled_reason, enabled=False)
                     logger.info('已跳过 %s：%s', task.title, disabled_reason)
                 elif success:
+                    self.task_policy.progress(task)
+                    if task.total == 1 or task.kind == 'claim':
+                        verified_progress.add((task_identity(task), task.current))
                     if task.kind == 'claim':
                         self.stats.claims += 1
                     else:
@@ -276,6 +296,13 @@ class SessionLoop:
                     logger.exception('任务列表翻页识别异常')
                     next_page = None
                 if next_page is None:
+                    if not final_rescan:
+                        final_rescan = True
+                        self.update('scanning', message='收工前重新识别任务', current_task='')
+                        screen = self.ensure_list(True)
+                        seen_pages.clear()
+                        scrolls = 0
+                        continue
                     break
                 page_turns += 1
                 self.update('scanning', message='打开下一批任务', current_task='', remaining=0)
@@ -311,6 +338,8 @@ class SessionLoop:
                 logger.exception('任务列表读取异常')
                 self.report_failure('任务列表读取异常', phase='scanning')
                 screen = self.recover(cold_start=True)
+        self.daily_exhausted = bool(self.records) and total_attempts < self.config['max_tasks'] and not any(
+            row.get('status') in ('pending', 'running', 'failed') for row in self.records.values())
         # 会话结束（无可执行任务或已达上限）：回到应用首页，避免停在活动页/抽奖页
         try:
             screen = self.return_to_home(screen)

@@ -133,7 +133,7 @@ class Navigator:
                     # A homepage overlay can expose the covered search/icon
                     # controls in its accessibility tree. Dismiss it before
                     # using those background controls.
-                    if screen.find(r'^关闭按钮$|^关闭弹窗$'):
+                    if screen.find(r'^关闭按钮$|^关闭弹窗$|^关闭$'):
                         if not step_back():
                             break
                         continue

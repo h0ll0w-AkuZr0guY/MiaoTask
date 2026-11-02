@@ -26,5 +26,6 @@
       }
     ]
   },
-  "max_scroll_pages": 4
+  "max_scroll_pages": 4,
+  "bundle_by_default": true
 }

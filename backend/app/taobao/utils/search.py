@@ -26,7 +26,24 @@ class SearchPolicy:
         return self.device.dump_hierarchy()
 
     def fill_search_field(self, query, edit):
-        self.device.input_text(query)
+        try:
+            self.device.input_text(query)
+        except TimeoutError:
+            ascii_input = getattr(self.device, 'input_ascii', None)
+            if (self.device.device_type != 'uiautomator2' or not callable(ascii_input)
+                    or normalize(query) == normalize(self.config['search_keyword'])):
+                raise
+            screen = self.read(force_ocr=bool(self.config['ocr']))
+            self.guard(screen)
+            self.check_search_context(screen, live=True)
+            box = bounds_of(edit.get('bounds', edit.get('rect')))
+            if (not screen.find(r'^历史搜索$|^搜索发现$|^搜索有福利$|^猜你想搜$')
+                    or not (0 <= box[0] < box[2] <= screen.width and
+                            0 <= box[1] < box[3] <= screen.height*.3)):
+                raise NeedsAttention('搜索框状态已变化，停止备用输入')
+            self.click(TextNode('', box))
+            ascii_input(query if re.fullmatch(r'[0-9]{1,32}', query) else '123')
+
 
     @staticmethod
     def search_results_ready(screen):

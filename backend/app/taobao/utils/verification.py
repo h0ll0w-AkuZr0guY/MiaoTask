@@ -26,7 +26,7 @@ class VerificationPolicy:
 
     def verify(self, task, before, after, explicit=False):
         after_task = next((x for x in self.tasks(after) if x.key == task.key), None)
-        if after_task and (after_task.current > task.current or after_task.kind == 'done'
+        if after_task and (after_task.current > task.current or (after_task.kind == 'done' and after_task.current >= task.total)
                            or (task.kind != 'claim' and after_task.action in self.claim_actions)):
             return True
         if task.kind == 'claim' and after_task and after_task.action != task.action:
@@ -34,7 +34,13 @@ class VerificationPolicy:
         if task.key.startswith('milestone-'):
             return after_task is None and self.milestone_received(task, after)
         old, new = self.list_progress(before), self.list_progress(after)
-        if old is not None and new is not None and new > old:
+        if task.total == 1 and old is not None and new is not None and new > old:
+            return True
+        if (task.total > 1 and task.current == task.total-1 and old is not None
+                and new is not None and new > old and after_task is not None
+                and after_task.current == 0 and after_task.total == task.total):
+            # The server can replace a finished batch immediately with a fresh
+            # 0/N batch. This proves the last repetition, not the new batch done.
             return True
         # At the final search repetition the application removes the row entirely. The
         # cumulative counter can already be capped at 50/50, so require both
@@ -71,4 +77,4 @@ class VerificationPolicy:
                     if (min(shifts) > after.height * .04 and abs(shifts[0] - shifts[1]) < after.height * .025
                             and abs(found[following[0].key].bounds[1] - task.bounds[1]) < after.height * .04):
                         return True
-        return explicit and after_task is None
+        return explicit and after_task is None and task.total == 1

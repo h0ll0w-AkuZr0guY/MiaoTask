@@ -244,7 +244,11 @@ Session(device, config=None, control=None, emit=None, on_image=None,
 
 `TaskActions` 可选 `destination_ready(screen)` 钩子决定是否已出现目标内容；日常活动不把仅有状态栏文字的白屏当作搜索页。未实现钩子的原活动保持原有等待判定。已确认推广但关闭图标不可读时，可用一次 Back 关闭，再重读；不点击折扣/提现主按钮作为关闭兜底。
 
-`TaskActions` 的可选钩子 `browse_countdown(screen)` 返回当前页剩余秒数或 `None`，只可在原有任务硬上限内延长观察；`browse_observation_interval(scrolling)` 决定下次读屏前的连续滑动窗口。未提供钩子的原活动保持一秒观察间隔。日常活动在滚动时连续操作约三秒再读屏，每个手势仍检查暂停、停止与实例，避免高耗时 OCR 反复打断浏览计数。
+`TaskActions.wait_for_browse(task, screen, cross, seconds)` 在单任务硬上限内计时。滚动任务只累计 `Session.browse_swipe(screen)` 返回的手势时长，并以实际调用耗时为上限，不把识别、传输额外开销或主动间隔算作滑动。该返回值为新增兼容能力，忽略返回值的原调用不变。`browse_countdown(screen)` 返回剩余秒数或 `None`；同一帧只消费一次倒计时，防止陈旧画面反复延长。完成提示在满足任务基础时长后才可提前结束，成功仍由返回页核验。
+
+启用滚动与 OCR 时，`with reader.visual_observer() as observer` 提供一帧在途的异步识别：`request()` 在所有者线程采集截图与前台身份，`poll()` 非阻塞返回识别后的 `Screen` 或 `None`，异常回到调用者。`observer.pending/captured` 用于确认识别状态和采集时的尺寸、身份；工作线程只处理该帧像素，不访问设备、操作页面、调用 Session 回调或共享另一读屏器的缓存。关闭后迟到结果丢弃。`browse_observation_interval(scrolling)` 决定截图请求节奏，未提供时一秒，双十一与日常滚动时三秒；OCR耗时不再阻塞后续手势。每个手势仍检查暂停、停止与实例；检测到新前台或尺寸变化时，先等该帧确认，不沿用旧坐标；识别画面超过 `page_timeout` 未刷新时停止输入并交还恢复逻辑。OCR关闭时沿用同步原生观察，有效滑动计时同样排除读屏耗时。活动下载到不具备 `visual_observer` 的旧框架时也回退同步观察，不因新增接口崩溃；后台识别与零间隔连续滑动需要更新框架 ZIP。
+
+`DeviceAdapter.clear_clipboard()` 只写空设备剪贴板，不读取旧内容、不切换输入法。当前支持 uiautomator2，未支持的驱动抛 `NotImplementedError`。控制器仅在开始执行前按公共配置 `clear_clipboard`（默认 True）调用；失败提示后继续，停止和实例异常仍传播。活动不应自行读取或记录剪贴板内容。
 
 `search_page_markers/search_reward_markers` 分别匹配顶部搜索活动标题与奖励提示，并结合右上搜索按钮和至少两处商品价格确认结果；历史搜索、联想页和仅有标题的页面均不接受。农场“搜索有福利 / 滑动浏览得肥料”等差异只需扩展这些词表。
 
@@ -412,3 +416,40 @@ controller.dispatch('run', {'auto_open': True})
 `configure/run` 可携带布尔 `all_instances`，保存在当前服务工作区的状态中，默认关闭。流水线在每个活动装配后，开启时从当前 `app_instances` 重新生成全部 ID；显式关闭时选主应用，不继承上次的全部分身队列。批量启动沿用各工作区自身开关，不复制发起设备的选择；原有显式 `instance_ids` API 保留。身份核对、串行执行、异常中断及日记录隔离继续生效。
 
 无线表单统一用 `wifi-full-address` 控制两项地址的四段 IPv4/完整地址模式，保留独立的配对与连接端口；切换模式同步已填值，设备切换恢复该工作区草稿。表单布局不再套用通用连接网格的跨列按钮规则。退出操作统一由系统托盘提供，未加入浏览器关闭自动退出，避免刷新或关闭一个标签时停止其他设备。
+
+## 分支、用户配置与会话收尾
+
+* `GitHubSourceProvider(fetch=None, clock=None, source_ref='main')` 保留原默认与注入契约。`branches()` 返回官方仓库分支；`catalog()` 把所选分支解析到固定 SHA，后续下载不追踪移动分支。`branch_name()` 校验 Git ref；所有 URL 仍限定官方仓库。`PluginManager.catalog()` 拒绝把其他分支缓存当离线回退。
+* `POST /api/plugins/source` 接受 `source_ref`，仅所有设备空闲且无安装事务时切换，持久化来源并清空服务快照。`GET /api/plugins/branches` 返回官方分支；原目录 API 与安装 SHA 校验保留。框架 API 仍为 1。
+* `storage.preferences` 的 `read_preferences/save_preferences` 原子维护用户目录文件，更新时保留其他配置项。服务明确启用持久化；测试控制器默认不写真实用户配置。公共字段白名单来自 defaults.json，保存后不改变其他运行工作区的配置快照。
+* `device_comfort(device, config)` 是可选 Android 会话上下文，读原值再修改并在 finally 恢复；每条 shell 有界且复用设备 IO 锁。权限不足仅日志提示，不安装工具、不更换输入法。
+* `apply_browse_contract(task)` 基于副标题解释浏览约束，不能绕过支付/登录/邀请等边界。可选 `Task.browse_once` 默认为 False，序列化默认任务保持旧字段；`TaskPolicy.mark_browse_once` 按日保存普通尝试，认证和停止不消耗该次数。共用控制器仍负责隔离。
+* `DailyState.activity_finished()/mark_activity_finished()` 是设备、实例、活动和日期范围内的完成标记；旧记录缺失时默认 False。仅正常耗尽候选且无未核验任务的会话标记，任务选择变更解除。流水线在启动该实例前读取；不跨应用或跨实例继承。
+* `OwnedAdb` 在启动前记录同一路径已有进程，退出时只清理新增且创建时间仍一致的进程，归属不明则不操作。不会调用共享服务器的全局 kill-server。
+
+### 活动资源多通道与恢复
+
+`GitHubSourceProvider` 在限流时先尝试 `RESOURCE_MIRRORS` 中审核过的静态目录，再通过官方 Git HTTP refs 和固定提交 codeload 归档读取源码。全程保留固定 SHA、路径/大小/符号链接检查及活动包摘要/工厂验证；不启动外部 Git，不切换 IP，不嵌入访问凭据。API 冷却期内不重试 API；操作总预算仍受读屏之外的原有源码下载预算约束。
+
+`ResourceMirror(base, fetch=None, source_ref='main')` 是 Pages 与未来国内镜像共用的静态协议：`branches/<分支SHA256>.json`、`commits/<提交SHA>/<分支SHA256>.json`、`packages/<包名>.zip`，目录为 github-source 格式，包按 SHA256 与提交校验。来源在 `RESOURCE_MIRRORS` 集中维护，不信任远端索引提供的任意下载 URL。镜像服务器不得改包，只同步同一静态产物。未部署或不可用时继续官方归档通道；开发分支未发布到镜像时也可使用官方源码通道。
+
+`RecoveryStore` 将校验后的安装包与索引保存在独立目录。`PluginManager.restore(app,activity)` 只接受本机索引中的包，使用原有安装事务/共享文件冲突/工厂验证；`POST /api/plugins/restore` 复用全部工作区空闲锁和身份校验。安装成功后缓存原包，卸载不删恢复包。打包器同时生成只读随包恢复基线，初次活动目录全删后仍有入口。`snapshot` 的活动项增加 `offline_recovery`，本机恢复项标记 `source=bundled-recovery`；不会冒充远端最新版。
+
+活动配置可选 `description` 字段：最多 4000 字符纯文本，`Registration.description` 与已安装活动目录 API 只在非空时提供。前端在活动选择旁显示独立说明按钮，阅读不改变计划、不会启动任务；正文使用 textContent，支持换行，禁止 HTML 执行。说明随活动源码更新，不修改执行契约或框架 API。
+
+## 任务复查与分发默认值
+
+`TaskPolicy.reset()` 仅清空当前绑定日记录中的任务决策，保留计数和诊断。`reset_tasks` 为指定工作区的空闲写操作，清理当前活动实例的任务/不可用标记，运行中拒绝。显式 `run` 默认重新识别；只有显式 `resume_completed=true` 才可复用已完成活动标记。调用者不得用设备相同推断登录账号相同。`reset_after_activity` 默认 false，正常穷尽后有界复查一次；`keep_screen_on` 默认 false，由 `device_comfort` 读取并恢复原系统超时。
+
+活动 `config.json` 可声明 `bundle_by_default`（布尔值，缺省 false）。分发目录保留该字段；默认 Windows 构建只预装 true 的活动，可用 `--framework-only` 或显式 `--preinstall-activity` 覆盖。此字段不决定活动是否可在线下载。
+
+`Session.reset_task_marks()` 用于同一会话内的有界复查，清理任务选择、失败预算、已核验去重、标题/图标别名与任务级不可用标记，保留累计 RunStats 和已确认应用缺失事实；仅在当前步骤结束后调用。
+
+`TaskPolicy.progress(task)` 只在进度已核验后结束当前失败连击，保留用户选择；同一进度连续失败仍受当天预算约束。重复批次最后一次从 N−1/N 直接替换为 0/N 时，需累计进度同步增加才能核验上一轮成功，新一轮仍为待执行。
+
+
+### 设备媒体音量与临时显示设置
+
+`core.device.comfort.device_comfort(device, config, notify=None)` 保留现有上下文调用，`notify(level, message)` 可接入控制台运行日志；不提供时写普通日志。`minimum_volume` 默认 False，只针对 Android 媒体流3，在执行开始时读取原值，优先使用 `cmd media_session volume --stream 3 --get/--set`，失败时有界回退旧 `media volume`。读回值必须等于系统报告的最低值才显示成功，通常为0，不假设所有设备最大音量都是15。命令入口依据 [AOSP MediaShellCommand / VolumeCtrl](https://android.googlesource.com/platform/frameworks/base/+/master/services/core/java/com/android/server/media/VolumeCtrl.java)。
+
+跨命令回退保留第一次读到的原值，避免写入已生效但读回失败时把0误存为原值；无法读取原值则不写入。结束或异常时尝试恢复并读回核验，失败明确提示，不覆盖原任务异常。命令单次超时5秒，不发送音量长按，不调整铃声/闹钟，也不靠改变全局静音模式实现。HDC原生驱动尚无对应支持时显示限制，Android兼容设备按 uiautomator2 路径处理。亮屏和亮度仍沿用原有读取、临时设置、反序恢复流程。

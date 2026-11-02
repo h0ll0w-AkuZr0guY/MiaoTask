@@ -3,7 +3,7 @@ import logging
 import math
 import random
 import re
-import time
+from contextlib import nullcontext
 from backend.core.models import normalize
 from backend.core.errors import TaskUnavailable
 logger = logging.getLogger('backend.execution')
@@ -92,6 +92,16 @@ class TaskActions:
                 continue
             pending=getattr(self,'is_launch_prompt',None)
             if callable(pending) and pending(screen):
+                if self.config['ocr'] and confirmations < 2:
+                    visual = self.read(force_ocr=True)
+                    self.guard(visual)
+                    button = confirm(visual) if callable(confirm) else None
+                    if button:
+                        confirmations += 1
+                        self.click(button)
+                        self.pause(.8)
+                        deadline = min(opening_hard_deadline, self.control.now()+self.config['page_timeout'])
+                        continue
                 return skip_launch()
             if screen.package == self.origin and self.is_task_list(screen.nodes):
                 after = next((x for x in self.tasks(screen) if x.key == task.key), None)
@@ -724,7 +734,8 @@ class TaskActions:
                 return self.recover(), False, False
             self.stats.cross_app += 1
             logger.info('跨应用浏览：%s', screen.package)
-        if re.search(r'答题|趣味课堂|问答', normalize(task.title + ' ' + (task.detail or ''))):
+        if (re.search(r'答题|趣味课堂|问答', normalize(task.title + ' ' + (task.detail or '')))
+                and not (task.kind == 'browse' and re.search(r'浏览|逛|看', task.detail or ''))):
             return self.answer_quiz(task, screen, cross)
         # Captions rotate between browse/search promotions. The destination is
         # authoritative when a browse caption opens the activity search form.
@@ -749,50 +760,99 @@ class TaskActions:
         if task.kind in ('browse', 'search'):
             seconds += self.config['browse_extra_seconds']
         seconds += self.config['settle_seconds']
-        browse_started = self.control.now()
-        hard_deadline = browse_started + self.config['max_task_seconds']
-        browse_deadline = browse_started + min(seconds, self.config['max_task_seconds'])
-        remaining = browse_deadline - self.control.now()
-        explicit_success = False
-        next_observation = self.control.now() + 1
-        while remaining > 0:
-            self.control.check()
-            self.check_destination(screen)
-            self.guard(screen)
-            if screen.package == self.origin and self.is_task_list(screen.nodes):
-                break
-            if screen.package != self.origin:
-                if not cross:
-                    self.stats.cross_app += 1
-                    cross = True
-                if not self.config['allow_cross_app']:
-                    break
-            if screen.find(r'任务已完成|浏览已完成|浏览完成|完成浏览|奖励已到账|恭喜完成|任务完成啦'):
-                explicit_success = True
-                logger.info('检测到任务完成提示')
-                break
-            # Visible remaining countdown may extend, but never exceed the task cap.
-            countdown = re.search(r'(?:还需|再逛|再浏览|剩余|再看)[^\d]{0,3}(\d{1,2})\s*秒', screen.text)
-            counter = getattr(self, 'browse_countdown', None)
-            visible_remaining = counter(screen) if callable(counter) else None
-            visible_remaining = visible_remaining if visible_remaining is not None else int(countdown.group(1)) if countdown else None
-            if visible_remaining is not None:
-                browse_deadline = max(browse_deadline, min(self.control.now() + visible_remaining + 1,
-                                                           hard_deadline))
-            remaining = browse_deadline - self.control.now()
-            self.update('browsing', message='跨应用浏览中' if cross else '浏览中', remaining=max(0, int(remaining + .9)))
-            # Sustained scroll gestures keep the activity's browse counter running.
-            # Bounded varying bursts reverse direction before a finite page stalls.
-            scrolling = self.config['scroll_browse'] and not cross and task.kind in ('browse', 'search')
-            if scrolling and remaining > 0:
-                self.browse_swipe(screen)
-            interval = max(0, min(self.gestures.interval() if scrolling else 1, browse_deadline - self.control.now()))
-            self.pause(interval)
-            # Pause time must not count as browse time; wait() itself excludes pauses.
-            remaining = browse_deadline - self.control.now()
-            if remaining > 0 and self.control.now() >= next_observation:
-                screen = self.read()
-                cadence = getattr(self, 'browse_observation_interval', None)
-                next_observation = self.control.now() + (cadence(scrolling) if callable(cadence) else 1)
-                remaining = browse_deadline - self.control.now()
+        explicit_success, cross = self.wait_for_browse(task, screen, cross, seconds)
         return self.recover(), explicit_success, cross
+
+    def wait_for_browse(self, task, screen, cross, seconds):
+        started = self.control.now()
+        hard_deadline = started + self.config['max_task_seconds']
+        browse_deadline = started + min(seconds, self.config['max_task_seconds'])
+        scrolling = self.config['scroll_browse'] and not cross and task.kind in ('browse', 'search')
+        # Only time spent sending actual gestures counts towards scroll tasks.
+        # Capture, OCR, intentional gaps and RPC overhead cannot use this budget.
+        active, target = 0.0, seconds
+        minimum = task.seconds or self.config['default_browse_seconds']
+        next_observation, last_observation = started + 1, started
+        counted_screen = None
+        observer_factory = getattr(self.reader, 'visual_observer', None)
+        observer_context = (observer_factory() if scrolling and self.config['ocr'] and callable(observer_factory)
+                            else nullcontext(None))
+        with observer_context as observer:
+            while self.control.now() < hard_deadline:
+                self.control.check()
+                if observer:
+                    fresh = observer.poll()
+                    if fresh is not None:
+                        screen = fresh
+                        last_observation = self.control.now() - self.reader.last_observation_seconds
+                        self.assert_instance(screen)
+                        self.update(package=screen.package, source=screen.source,
+                                    observation_ms=round(self.reader.last_observation_seconds * 1000))
+                    if observer.pending and self.control.now() - last_observation > self.config['page_timeout']:
+                        raise TimeoutError('浏览画面识别超时，已停止滑动，返回后重新核验')
+                self.check_destination(screen)
+                self.guard(screen)
+                if screen.package == self.origin and self.is_task_list(screen.nodes):
+                    break
+                if screen.package != self.origin:
+                    if not cross:
+                        self.stats.cross_app += 1
+                        cross = True
+                    if not self.config['allow_cross_app']:
+                        break
+                    scrolling = False
+                # An unrelated/premature banner cannot cut a 15-second scroll
+                # down to just a few gestures. Completion is verified on return.
+                if (not scrolling or active >= minimum) and screen.find(
+                        r'^(?:任务已完成|浏览已完成|浏览完成|完成浏览|奖励已到账|恭喜完成|任务完成啦)[!！。\s]*$'):
+                    logger.info('检测到任务完成提示')
+                    return True, cross
+                # Consume each observed countdown once, never extend the timer
+                # on every gesture using the same stale frame.
+                if screen is not counted_screen:
+                    counted_screen = screen
+                    countdown = re.search(r'(?:还需|再逛|再浏览|剩余|再看)[^\d]{0,3}(\d{1,2})\s*秒', screen.text)
+                    counter = getattr(self, 'browse_countdown', None)
+                    visible = counter(screen) if callable(counter) else None
+                    visible = visible if visible is not None else int(countdown[1]) if countdown else None
+                    if visible is not None:
+                        if scrolling:
+                            target = max(target, active + visible + 1)
+                        else:
+                            browse_deadline = max(browse_deadline, min(self.control.now() + visible + 1, hard_deadline))
+                remaining = min(target - active if scrolling else browse_deadline - self.control.now(),
+                                hard_deadline - self.control.now())
+                if remaining <= 0:
+                    break
+                self.update('browsing', message='跨应用浏览中' if cross else '持续滑动浏览中' if scrolling else '浏览中',
+                            remaining=max(0, int(remaining + .9)))
+                if self.control.now() >= next_observation:
+                    if observer:
+                        if not observer.pending:
+                            observer.request()
+                            captured = observer.captured
+                            self.assert_instance(captured)
+                            cadence = getattr(self, 'browse_observation_interval', None)
+                            next_observation = self.control.now() + (cadence(scrolling) if callable(cadence) else 1)
+                    else:
+                        screen = self.read()
+                        last_observation = self.control.now()
+                        next_observation = last_observation + 1
+                        continue  # Guard the fresh page before any more input.
+                if observer and observer.pending and (
+                        observer.captured.package != self.origin or
+                        (observer.captured.width, observer.captured.height) != (screen.width, screen.height)):
+                    # A foreground/rotation change needs its own checked frame;
+                    # do not reuse the preceding page's swipe geometry.
+                    self.control.wait(.05)
+                    continue
+                if scrolling:
+                    before = self.control.now()
+                    duration = self.browse_swipe(screen)
+                    elapsed = max(0, self.control.now() - before)
+                    active += min(elapsed, duration if isinstance(duration, (int, float)) else self.config['swipe_duration_max'])
+                interval = self.gestures.interval() if scrolling else 1
+                interval = max(0, min(interval, hard_deadline - self.control.now()))
+                if interval > 0:
+                    self.control.wait(interval)
+        return False, cross
