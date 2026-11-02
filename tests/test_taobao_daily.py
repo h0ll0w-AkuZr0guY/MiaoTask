@@ -1038,8 +1038,12 @@ class RescanRestartTests(unittest.TestCase):
 class RescanLoopTests(unittest.TestCase):
     """收工条件：连续两次完整扫描都确认没有可执行任务。"""
 
-    def runner_with(self, verdicts, progress=True):
+    def runner_with(self, verdicts, progress=True, watch=0):
         runner = make_daily_runner()
+        # 收工守望（默认还要额外等 60 秒再确认几次）在这里关掉：这组用例只验证
+        # “确认几次才收工”，守望本身由 RescanWatchTests 单独覆盖。
+        runner.config['rescan'] = dict(runner.config.get('rescan') or {},
+                                       rescan_settle_end=0, rescan_watch=watch)
         runner.rescan = Mock(side_effect=verdicts)
 
         def fake_run(auto_open=False):
@@ -1158,6 +1162,48 @@ class RescanReidentifyTests(unittest.TestCase):
         self.assertEqual(runner.records, {})
         runner.restore_list_state()
         self.assertEqual(list(runner.records), ['k1'])
+
+
+class RescanWatchTests(unittest.TestCase):
+    """收工前要确认列表真的不再刷新。
+
+    实测现场：好物沉浸看做完 6/6 之后，淘宝过几分钟又把它重置成「0/6 去完成」。
+    旧逻辑在重置之前就判空收工，新任务整批漏掉，面板上还显示着上一轮的结论。
+    """
+
+    def runner(self, verdicts, **rescan):
+        runner = make_daily_runner()
+        runner.config['rescan'] = dict({'rescan_settle_end': 0, 'rescan_watch': 1,
+                                        'rescan_pause': 0}, **rescan)
+        runner.rescan = Mock(side_effect=verdicts)
+
+        def fake_run(auto_open=False):
+            runner.stats.attempts += 1
+            return None
+        runner._fake_run = fake_run
+        return runner
+
+    def test_watch_restarts_work_when_tasks_reset_after_a_short_gap(self):
+        # 两次确认都没任务，等到最后一次守望时淘宝已经把任务重置成新一轮。
+        runner = self.runner(['found', 'empty', 'empty', 'found', 'empty', 'empty'])
+        with patch.object(Activity, 'run', side_effect=runner._fake_run):
+            runner.run()
+        self.assertGreaterEqual(runner.stats.attempts, 2)
+
+    def test_changing_list_fingerprint_blocks_the_finish(self):
+        runner = self.runner([])
+        fingerprints = [('a', 1), ('b', 0), ('b', 0), ('b', 0), ('b', 0), ('b', 0)]
+        seen = []
+
+        def scan(*args, **kwargs):
+            runner._empty_fingerprint = fingerprints[min(len(seen), len(fingerprints) - 1)]
+            seen.append(1)
+            return runner.SCAN_EMPTY
+        runner.rescan = Mock(side_effect=scan)
+        with patch.object(Activity, 'run', side_effect=runner._fake_run):
+            runner.run()
+        # 两次确认的内容不一样（任务被重置），必须重新确认，不能就地收工。
+        self.assertGreaterEqual(runner.rescan.call_count, 4)
 
 
 if __name__=='__main__':

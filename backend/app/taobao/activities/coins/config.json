@@ -46,7 +46,9 @@
     "rescan_restart_app": true,
     "rescan_restart_max": 12,
     "rescan_start_pause": 3,
-    "promotion_markers": "送你能量"
+    "promotion_markers": "送你能量",
+    "rescan_settle_end": 60,
+    "rescan_watch": 2
   },
   "max_scroll_pages": 10,
   "jump_words": {

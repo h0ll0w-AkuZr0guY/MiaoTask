@@ -1863,7 +1863,8 @@ class Double11RescanTests(unittest.TestCase):
     def test_run_finishes_only_after_two_confirmed_empty_scans(self):
         runner = self.runner()
         runner.config['rescan'] = {'rescan_rounds': 6, 'rescan_confirm': 2,
-                                   'rescan_retries': 1, 'rescan_pause': 0}
+                                   'rescan_retries': 1, 'rescan_pause': 0,
+                                   'rescan_settle_end': 0, 'rescan_watch': 0}
         runner.rescan = Mock(return_value=runner.SCAN_EMPTY)
         runner.run()
         self.assertEqual(runner.rescan.call_count, 2)

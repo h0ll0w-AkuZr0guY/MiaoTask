@@ -25,6 +25,8 @@
     "scroll_top": 0.66,
     "scroll_step": 0.12,
     "scroll_times": 3,
-    "scroll_pause": 0.35
+    "scroll_pause": 0.35,
+    "rescan_settle_end": 60,
+    "rescan_watch": 2
   }
 }
