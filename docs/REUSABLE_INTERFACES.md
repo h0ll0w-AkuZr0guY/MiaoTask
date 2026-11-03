@@ -254,6 +254,8 @@ Session(device, config=None, control=None, emit=None, on_image=None,
 
 日常导航使用当前控件区域与 OCR 文字框，不按参考设备的像素坐标点击；已确认前进的步骤可获得加载时间，总预算、点击次数、返回和重启仍有上限。HyperOS 控件树明确抛 `RPCStackOverflowError` 时，在本活动内改读本地 OCR，保留停止与实例守卫；其他错误继续按框架边界处理。不安装输入法、不替换全局守卫、不接受脱离跳转场景的确认按钮。现有四个日常活动仅声明 Android，成就中心未初始化时不会选择地址或参加抽奖。
 
+`daily_page.landing_markers` 描述活动内容，不能只使用同名首页图标的短标签。红包签到以“红包签到·领现金 / 累计签到奖励 / 再攒”等为落地证据；`entry_labels` 仍保留首页“红包签到”。`main_view_markers` 缺失时的顶部恢复还必须排除已确认的淘宝首页，即使旧活动配置使用了宽泛标记，也先点击首页入口，不在首页商品流反复滚动。该分支不增加读屏次数，仍保留活动内最多四次恢复上限。
+
 ## 7. 今日队列与持久化
 
 实现：[task_policy.py](../backend/core/execution/task_policy.py)、[retry.py](../backend/core/execution/retry.py)、[daily_state.py](../backend/core/storage/daily_state.py)、[namespace.py](../backend/core/storage/namespace.py)。

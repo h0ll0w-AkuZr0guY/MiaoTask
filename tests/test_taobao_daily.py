@@ -484,6 +484,35 @@ class TaobaoDailyTests(unittest.TestCase):
         _,y1,_,y2=runner.device.swipe.call_args.args
         self.assertLess(y1,y2)
 
+    def test_cash_home_icon_and_product_prices_do_not_trigger_activity_scroll_restore(self):
+        for width, height in ((1080,2400),(1800,2880),(2880,1800)):
+            with self.subTest(size=(width,height)):
+                runner = self.runner('cash-signin')
+                def text(label,x,y,w=.16,h=.03):
+                    return TextNode(label,(round(width*x),round(height*y),
+                                           round(width*(x+w)),round(height*(y+h))),'ocr')
+                icon = text('红包签到',.48,.18)
+                home = Screen([icon,text('购物车',.65,.92),text('我的淘宝',.81,.92),
+                               text('¥20',.1,.45),text('¥30',.6,.6)],
+                              width,height,'com.taobao.taobao','ocr')
+                panel = Screen([text('红包签到·领现金',.1,.08,.45),
+                                text('累计签到奖励(2/7)',.05,.26,.5)],
+                               width,height,home.package,'ocr')
+                self.assertIsNone(home.find(runner.page['landing_markers']))
+                # Older installed activity configs can still contain this
+                # broad label. The navigator must also protect a proved home.
+                runner.page['landing_markers'] += '|红包签到'
+                runner.device.current_app = Mock(return_value={'package':home.package})
+                runner.device.swipe = Mock()
+                runner.device.go_back = Mock()
+                runner.read_page = Mock(side_effect=[home,panel])
+                runner.click = Mock()
+                runner.control.wait = Mock()
+                self.assertIs(runner.navigate(auto_open=True),panel)
+                runner.click.assert_called_once_with(icon)
+                runner.device.swipe.assert_not_called()
+                runner.device.go_back.assert_not_called()
+
     def test_cash_main_view_restoration_stops_after_four_attempts(self):
         runner=self.runner('cash-signin')
         lower=Screen([TextNode('红包签到·领现金',(191,174,654,244),'ocr'),

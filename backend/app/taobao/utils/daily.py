@@ -1352,6 +1352,7 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
                 continue
             main_view = self.page.get('main_view_markers')
             if (main_view and screen.find(self.page['landing_markers']) and not screen.find(main_view)
+                    and not self.homepage_visible(screen)
                     and not self.promotion_visible(screen)
                     and sum(bool(re.search(r'[¥￥]\d',normalize(n.text))) for n in screen.nodes)>=2):
                 if viewport_returns >= 4 or self.control.now() >= hard_deadline:
