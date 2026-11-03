@@ -78,6 +78,14 @@ class PreferencesStoreTests(unittest.TestCase):
 
 
 class PreferenceWiringTests(unittest.TestCase):
+    def test_capability_query_activates_overlay_before_importing_ort(self):
+        order = []
+        ort = SimpleNamespace(get_available_providers=lambda: order.append('providers') or ['CPUExecutionProvider'])
+        with patch('backend.core.device.runtime_plugin.activate_runtime_plugin',
+                   side_effect=lambda: order.append('overlay')), patch.dict(sys.modules, {'onnxruntime': ort}):
+            _Hub().get_preferences()
+        self.assertEqual(order, ['overlay', 'providers'])
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
