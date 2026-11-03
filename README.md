@@ -8,7 +8,7 @@
 
 一个本地网页，管理手机、平板与模拟器的重复任务。
 
-[![下载](https://img.shields.io/github/v/release/h0ll0w-AkuZr0guY/MiaoTask?label=Download&color=f97316)](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/releases/latest)
+[![下载](https://img.shields.io/github/v/release/h0ll0w-AkuZr0guY/MiaoTask?label=Download&color=f97316&filter=MiaoTask-v*&sort=date)](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/releases/latest)
 ![平台](https://img.shields.io/badge/Windows_x64-Android-315f56)
 [![License](https://img.shields.io/badge/License-Apache_2.0-2563eb)](LICENSE)
 [![Star](https://img.shields.io/github/stars/h0ll0w-AkuZr0guY/MiaoTask?style=flat&color=e8ab38)](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/stargazers)
@@ -56,7 +56,7 @@
 
 在线更新需要电脑访问官方资源源。每次打开活动中心检查一次，之后可手动刷新；API 限流时尝试备用通道。安装过的活动保留恢复包，卸载后可点「离线恢复」；预装项另有随包恢复基线。已有内置活动的旧包仍可照常使用，升级时完整解压新框架。
 
-可选GPU加速：另下载匹配版本的CUDA扩展ZIP，先退出托盘服务，再将其中的 `runtime_plugins/` 放到 `MiaoTask.exe` 同级，重启后在高级选项选择自动或CUDA。无需安装Torch，不覆盖 `_internal/`。详见[扩展安装与回退](docs/USAGE.md#安装可选cuda扩展)。
+可选GPU加速：[CUDA扩展 v1.0 独立下载](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/releases/tag/MiaoTask-CUDA-v1.0)。它不包含主程序，CPU基础包无需安装扩展即可运行。先退出托盘服务，将扩展的 `runtime_plugins/` 放到 `MiaoTask.exe` 同级，重启后在高级选项选择自动或CUDA。无需安装Torch，不覆盖 `_internal/`；更新框架时可迁移兼容的扩展目录。详见[使用条件、安装与回退](docs/USAGE.md#安装可选cuda扩展)。
 
 ### USB 连接
 

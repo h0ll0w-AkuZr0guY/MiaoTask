@@ -14,6 +14,7 @@ import sys
 import zipfile
 
 ROOT = Path(__file__).resolve().parent.parent
+CUDA_PLUGIN_VERSION = '1.0'
 PORTABLE_DOCS = ('USAGE.md', 'CONFIGURATION.md', 'SAFETY.md', 'RELEASES.md', 'LICENSING.md')
 PROJECT_LICENSES = ('LICENSE', 'NOTICE')
 LICENSE_TEXT_SUFFIXES = {'', '.txt', '.md', '.rst', '.html', '.apache', '.bsd',
@@ -46,7 +47,8 @@ def cuda_plugin_archive(output):
            for distribution in metadata.distributions()):
         raise ValueError('CUDA环境混装了CPU ORT，请使用独立环境')
     base = Path(sysconfig.get_paths()['purelib']).resolve()
-    manifest = dict(schema=1, kind='cuda', python=f'{sys.version_info.major}.{sys.version_info.minor}',
+    manifest = dict(schema=1, kind='cuda', version=CUDA_PLUGIN_VERSION,
+                    tested_with='MiaoTask-v0.2.0', python=f'{sys.version_info.major}.{sys.version_info.minor}',
                     system=platform.system(), machine=platform.machine().lower(),
                     onnxruntime=metadata.version('onnxruntime-gpu'),
                     packages={name: metadata.version(name) for name in plugin_names})
@@ -56,9 +58,13 @@ def cuda_plugin_archive(output):
     with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED, compresslevel=3) as archive:
         archive.writestr(str(prefix / 'manifest.json'), json.dumps(manifest, indent=2))
         archive.writestr(str(prefix / 'README.txt'),
+            f'MiaoTask CUDA扩展 v{CUDA_PLUGIN_VERSION}，不包含主程序。\n'
             '退出MiaoTask托盘服务后，将本ZIP的runtime_plugins目录放到MiaoTask.exe旁。\n'
             '重启服务，在高级选项选择自动或CUDA。没有可用CUDA设备时回退CPU。\n'
             '移除扩展：退出服务后删除runtime_plugins/cuda目录。不要覆盖_internal。\n'
+            '兼容：Windows x64、Python 3.13、ORT 1.31.0；已验证MiaoTask v0.2.0。\n'
+            '需要支持本包CUDA运行库的NVIDIA显卡与驱动，无需另外安装Torch或CUDA Toolkit。\n'
+            '更新主程序时可迁移相同兼容版本的runtime_plugins目录，无需重复下载。\n'
             '此扩展包含本地可执行代码，仅安装可信来源；兼容版本见manifest.json。\n')
         seen = set()
         for name in plugin_names:
@@ -93,6 +99,9 @@ def copy_documentation(destination, *, include_activities=False):
         + activity_help +
         '活动源码位于 exe 旁的 `activities/`，可在活动中心查看实际位置或打开文件夹；'
         '日记录与设备信息另存于本机用户数据目录。\n\n'
+        '可选GPU加速：[CUDA扩展v1.0](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/releases/tag/MiaoTask-CUDA-v1.0)。'
+        '先退出托盘服务，将扩展的runtime_plugins目录放到MiaoTask.exe同级，不覆盖_internal；'
+        'CPU包可独立运行，扩展不包含主程序。\n\n'
         '[使用说明](docs/USAGE.md) · [风险与隐私](docs/SAFETY.md) · '
         '[发布记录](docs/RELEASES.md) · [许可与声明](docs/LICENSING.md)\n',
         encoding='utf-8')
