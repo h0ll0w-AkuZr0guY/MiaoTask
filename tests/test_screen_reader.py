@@ -1,10 +1,14 @@
+import importlib.util
+import os
+import time
 import unittest
 import threading
 from unittest.mock import Mock, patch
 
 from PIL import Image
 
-from backend.core.device.screen import ScreenReader
+from backend.core.device import screen as screen_module
+from backend.core.device.screen import ScreenReader, local_ocr_engine, ocr_engine_lock
 from backend.app.taobao.activities.double11.tasks import TextNode
 
 
@@ -329,3 +333,101 @@ class FreshFrameTests(unittest.TestCase):
             phone.current_app()
             phone.screenshot(max_age=.15)
         self.assertEqual(phone._device.screenshot.call_count, 2)
+
+
+def recognized(texts):
+    class Result:
+        boxes = [((0, 0), (10, 0), (10, 5), (0, 5)) for _ in texts]
+        txts = list(texts)
+        scores = [.99 for _ in texts]
+    return Result()
+
+
+class RecognizerScopeTests(unittest.TestCase):
+    """One OCR model per physical device, shared by worker and observer threads."""
+
+    def test_scope_follows_the_device_and_survives_a_thread_change(self):
+        phone = Mock(serial='usb-1')
+        reader = ScreenReader(phone)
+        self.assertEqual(reader.engine_scope, ('device', 'usb-1'))
+        self.assertEqual(ScreenReader(Mock(serial='usb-1')).engine_scope, reader.engine_scope)
+        self.assertNotEqual(ScreenReader(Mock(serial='usb-2')).engine_scope, reader.engine_scope)
+        seen = []
+        worker = threading.Thread(target=lambda: seen.append(reader.engine_scope))
+        worker.start()
+        worker.join()
+        self.assertEqual(seen, [reader.engine_scope])
+
+    def test_usb_and_wifi_aliases_share_the_physical_device_scope(self):
+        usb = Mock(serial='usb-1', identity_serial='R58M123456')
+        wifi = Mock(serial='192.168.1.7:5555', identity_serial='R58M123456')
+        self.assertEqual(ScreenReader(usb).engine_scope, ScreenReader(wifi).engine_scope)
+
+    def test_browse_observer_recognizes_with_the_owner_device_scope(self):
+        phone = Mock(serial='usb-1')
+        reader = ScreenReader(phone)
+        scopes = []
+
+        def build(scope=None):
+            scopes.append(scope)
+            return Mock(side_effect=lambda *args, **kwargs: recognized(['浏览 15 秒']))
+
+        image = Image.new('RGB', (500, 1000), 'white')
+        with patch.object(screen_module, 'local_ocr_engine', build):
+            reader._ocr_tile(image)
+            observer = reader.visual_observer()
+            self.assertEqual(observer.reader.engine_scope, reader.engine_scope)
+            observer.reader._ocr_tile(image)
+        self.assertEqual(scopes, [reader.engine_scope, reader.engine_scope])
+
+    def test_same_device_inference_is_serialized_and_other_devices_run_parallel(self):
+        peak, active, guard = 0, 0, threading.Lock()
+
+        def hold(scope):
+            nonlocal peak, active
+            with ocr_engine_lock(scope):
+                with guard:
+                    active += 1
+                    peak = max(peak, active)
+                time.sleep(.02)
+                with guard:
+                    active -= 1
+
+        shared = [threading.Thread(target=hold, args=(('device', 'usb-1'),)) for _ in range(4)]
+        for thread in shared:
+            thread.start()
+        for thread in shared:
+            thread.join()
+        self.assertEqual(peak, 1)
+
+        barrier = threading.Barrier(2, timeout=1)
+
+        def meet(scope):
+            with ocr_engine_lock(scope):
+                barrier.wait()
+
+        first = threading.Thread(target=meet, args=(('device', 'usb-1'),))
+        second = threading.Thread(target=meet, args=(('device', 'usb-2'),))
+        first.start(), second.start()
+        first.join(), second.join()
+        self.assertFalse(barrier.broken)
+
+    @unittest.skipUnless(importlib.util.find_spec('rapidocr'), '未安装本地 OCR')
+    def test_concurrent_callers_share_one_engine_per_scope(self):
+        screen_module._scoped_ocr_engine.cache_clear()
+        self.addCleanup(screen_module._scoped_ocr_engine.cache_clear)
+        built = []
+        start = threading.Barrier(4)
+
+        def run():
+            start.wait()
+            built.append(id(local_ocr_engine(('device', 'usb-concurrent'))))
+
+        threads = [threading.Thread(target=run) for _ in range(4)]
+        with patch.dict(os.environ, {'MIAO_OCR_DEVICE': 'cpu'}):
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        self.assertEqual(len(set(built)), 1)
+        self.assertEqual(screen_module._scoped_ocr_engine.cache_info().misses, 1)
