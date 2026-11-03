@@ -995,6 +995,10 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
         return min(nodes, key=lambda n: n.center[1]) if nodes else None
 
     def handle_search(self, screen, query=None, activity_search=False):
+        # Daily rewards may open a direct timed product grid with no search
+        # form. Preserve that activity-specific landing contract.
+        if not activity_search and self.search_results_ready(screen):
+            return True
         voice = self.page.get('voice_search_markers')
         task = self._active_task
         if not (voice and task is not None and re.search(voice, task.title)):

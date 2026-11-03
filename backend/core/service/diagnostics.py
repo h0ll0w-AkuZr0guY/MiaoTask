@@ -86,7 +86,13 @@ def self_test(output, *, activity_package=None, activity_sha256=None):
         from backend.core.device.screen import ScreenReader
         image = Image.new('RGB', (900, 180), 'white')
         ImageDraw.Draw(image).text((30, 45), 'BROWSE 15 SECONDS', fill='black', font=ImageFont.load_default(size=52))
-        recognized = ScreenReader(None)._ocr(image)
+        reader = ScreenReader(None)
+        recognized = reader._ocr(image)
+        checks['ocr_backend'] = reader.ocr_backend
+        checks['ocr_providers'] = getattr(getattr(reader._engine, 'engine', None), 'miao_providers', {})
+        import onnxruntime
+        checks['ocr_runtime_source'] = ('plugin' if 'runtime_plugins' in Path(onnxruntime.__file__).parts
+                                        else 'bundled')
         text = ' '.join(n.text for n in recognized)
         checks['ocr_text'] = text
         if '15' not in text:

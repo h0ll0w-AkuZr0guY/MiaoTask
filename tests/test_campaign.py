@@ -890,6 +890,32 @@ class RunnerTests(unittest.TestCase):
         screen.nodes = screen.nodes[:3] + [node('历史搜索', 30, 600), node('搜索发现', 30, 1100)]
         self.assertFalse(CampaignRunner.search_results_ready(screen))
 
+    def test_embedded_products_before_submit_still_require_a_search(self):
+        r = self.clock_runner()
+        landing, tree = self.search_page()
+        landing.nodes = [node('浏览15秒可领400', 700, 160),
+                         node('搜索', 1180, 350, 200), node('a', 180, 350),
+                         node('商品甲', 30, 1300), node('¥21.68', 30, 1450),
+                         node('金币热卖价', 300, 1450), node('商品乙', 760, 1300),
+                         node('¥448.23', 760, 1450)]
+        landing.tree = tree
+        r.device.dump_hierarchy.return_value = tree
+        r.read = Mock(return_value=self.results_page())
+        self.assertTrue(r.handle_search(landing))
+        r.device.input_text.assert_called_once_with('手机壳')
+        r.device.click.assert_called_once()
+
+    def test_slow_search_landing_waits_for_input_before_submitting(self):
+        r = self.clock_runner()
+        blank = Screen([node('12:00', 20, 20)], 1440, 3200, r.origin)
+        form, tree = self.search_page()
+        r.device.dump_hierarchy.side_effect = [{}, {}, {}, tree, tree]
+        r.read = Mock(side_effect=[blank, blank, form, self.results_page()])
+        self.assertTrue(r.handle_search(blank))
+        r.device.input_text.assert_called_once_with('手机壳')
+        r.device.click.assert_called_once_with(1290, 221)
+        r.device.swipe.assert_not_called()
+
     def test_home_search_waits_for_editable_field_after_overlay_consumes_tap(self):
         r = self.clock_runner()
         home = Screen([node('搜索栏', 100, 150)], 1440, 3200, r.origin)
@@ -1092,6 +1118,7 @@ class RunnerTests(unittest.TestCase):
         screen, tree = self.search_page()
         tree['children'] = tree['children'][1:]
         r.device.dump_hierarchy.return_value = tree
+        r.read = Mock(return_value=screen)
         self.assertFalse(r.handle_search(screen))
         r.device.input_text.assert_not_called()
         r.device.click.assert_not_called()
@@ -2152,6 +2179,27 @@ class PartialTitleCompatibilityTests(unittest.TestCase):
 
 class SerialBrowseProtocolTests(unittest.TestCase):
     def runner(self):return RunnerTests().scrolling_runner()
+
+    def test_earned_energy_header_ends_browse_without_extra_supplements(self):
+        r, _, _ = self.runner()
+        for text in ('已得400能量', '已得400下单再得2000最高'):
+            with self.subTest(text=text):
+                page = Screen([node(text, 500, 170)], 1440, 3200, r.origin)
+                self.assertTrue(r.browse_completed(page))
+                page.nodes.append(node('还需浏览2秒', 500, 250))
+                self.assertFalse(r.browse_completed(page))
+
+    def test_cuda_first_pass_checks_and_supplements_remaining_countdown(self):
+        r, clock, destination = self.runner()
+        r.reader._engine = Mock(engine=Mock(miao_backend='cuda'))
+        pending = Screen([node('还需浏览2秒', 100, 150)], 1440, 3200, r.origin)
+        done = Screen([node('任务已完成', 100, 150)], 1440, 3200, r.origin)
+        r.read.side_effect = [pending, pending, done]
+        explicit, _ = r.wait_for_browse(r.tasks(task_screen())[0], destination, False, 17)
+        self.assertTrue(explicit)
+        self.assertEqual(r.read.call_count, 3)
+        self.assertGreaterEqual(clock[0], 19)
+        self.assertLess(clock[0], 21)
 
     def test_retry_stops_after_completion_and_does_not_recheck_during_initial_window(self):
         r,clock,destination=self.runner();task=r.tasks(task_screen())[0]

@@ -138,6 +138,29 @@ class ScopedOCRBackendTests(unittest.TestCase):
 
 
 class CUDAFailureRegressionTests(unittest.TestCase):
+    def test_runtime_manifest_requires_matching_python_ort_and_platform(self):
+        from backend.core.device.runtime_plugin import validate_manifest
+        manifest = dict(schema=1, kind='cuda', python='3.13', onnxruntime='1.31.0',
+                        system='Windows', machine='amd64')
+        expected = dict(python_version='3.13', ort_version='1.31.0', system='Windows', machine='AMD64')
+        validate_manifest(manifest, **expected)
+        for key in manifest:
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                validate_manifest({**manifest, key: 'incompatible'}, **expected)
+
+    def test_runtime_locks_share_identical_common_dependencies(self):
+        from pathlib import Path
+        from packaging.requirements import Requirement
+        root = Path(__file__).resolve().parents[1]
+        def locked(name):
+            return {Requirement(line).name: str(Requirement(line).specifier)
+                    for line in (root / name).read_text(encoding='utf-8').splitlines()
+                    if line.strip() and not line.startswith('#')}
+        cpu = locked('requirements-windows.lock')
+        gpu = locked('configs/environments/requirements-cuda.lock')
+        self.assertEqual(cpu.pop('onnxruntime'), gpu.pop('onnxruntime-gpu'))
+        self.assertEqual(cpu, {key: value for key, value in gpu.items() if not key.startswith('nvidia-')})
+
     def test_model_initialization_failure_retries_cpu_once(self):
         from backend.core.device import ocr
         fake=SimpleNamespace(RapidOCR=Mock(side_effect=[RuntimeError('CUDA dll missing'),Mock()]))

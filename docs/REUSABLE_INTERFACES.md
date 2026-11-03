@@ -480,7 +480,7 @@ controller.dispatch('run', {'auto_open': True})
 | `TaskActions.wait_for_browse(task, screen, cross, seconds)` | 首轮无中途观察，经过时长后返回；TaskPolicy.retry_needed(task)为真的浏览/搜索任务才启用停1秒检查与补滑1秒检查；补滑次数由browse_recheck_rounds约束 |
 | `TaskActions.browse_completed(screen)` | 只接受明确完成/到账证据；正数倒计时优先，不能替代返回列表的最终进度核验 |
 
-`browse_recheck_rounds` 默认3，范围0～10，表示失败后的第二轮最多额外补滑几次；第二轮基础时长后仍有一次初始检查。`max_task_seconds` 限定当前浏览与补滑窗口，截图/原生传输另有有界超时。失败预算继续按当天设备、活动与实例持久化；TaskPolicy.progress只在真实进度通过核验后清除失败连击，之后恢复首轮快速路径。
+`browse_recheck_rounds` 默认3，范围0～10，表示最多额外补滑几次（CPU失败后的第二轮，或实际CUDA首轮末尾检查）；第二轮基础时长后仍有一次初始检查。`max_task_seconds` 限定当前浏览与补滑窗口，截图/原生传输另有有界超时。失败预算继续按当天设备、活动与实例持久化；TaskPolicy.progress只在真实进度通过核验后清除失败连击，之后恢复首轮快速路径。
 
 `DeviceIO.own(cancel)` 在退出时注销资源；若主动停止导致正在读取的socket关闭并抛出传输异常，则统一抛出 `Stopped`，不进入任务失败与重启恢复。未停止时保留原始网络错误，便于诊断。已移除旧观察链的阶段状态字段；调用者不再发布空的 `observation_status`，耗时与来源仍从 `observation_metrics` 读取。
 
@@ -527,3 +527,5 @@ controller.dispatch('run', {'auto_open': True})
 `resolve_ocr_backend` 先选择候选执行器，模型真正初始化后读取det/rec执行器作为实际结果。编译包含CUDA不保证硬件或DLL可用。CUDA初始化或推理失败只回退CPU重试一次，CPU再次失败保留原异常，不吞掉停止/身份/认证检查。`get_preferences.cuda_available`只表示当前安装包声明含CUDA执行器，不表示硬件健康检查已经通过。
 
 修改ocr_device需要所有设备空闲，后台不恢复持续采集或识别并发；代理变化不重建识别引擎。模型世代使旧reader下次读取重建，控制器运行租约和物理设备隔离保持不变。GET/POST `/api/preferences`沿用Host/Origin与写入令牌守卫。
+
+`core.device.runtime_plugin.activate_runtime_plugin()` 在RapidOCR导入ORT前仅尝试一次本地扩展，校验平台、Python ABI与ORT版本；不下载、不运行pip、不覆盖基础包，添加的DLL目录句柄随进程存活。更换扩展必须退出服务重启。`ScreenReader.ocr_backend`只读取已加载模型的实际后端，不触发初始化，CUDA回退后返回cpu；浏览策略据此决定首轮末尾是否做一次有界检查。不要据编译执行器列表启用高速策略。

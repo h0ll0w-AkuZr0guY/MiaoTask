@@ -91,6 +91,12 @@ class TaskActions:
             # read from this device only, never from a bundled skip list.
             self.guard(screen)
             self.check_destination(screen)
+            if (screen.package == self.origin and not self.is_task_list(screen.nodes)
+                    and not any(n.center[1] > screen.height * .1 for n in screen.nodes)):
+                # A fast recognizer can see only the status bar while the H5
+                # destination is still loading. Do not start its browse timer.
+                self.pause(.35)
+                continue
             # Scoped external-app launch confirmation; never accept privacy or login grants.
             confirm = getattr(self,'launch_confirmation',None)
             one_time = confirm(screen) if callable(confirm) else None
@@ -491,12 +497,13 @@ class TaskActions:
         countdown = re.search(r'(?:还需|再逛|再浏览|剩余|再看)[^\d]{0,3}(\d{1,2})\s*秒', screen.text)
         visible = visible if visible is not None else int(countdown[1]) if countdown else None
         earned = any(n.center[1] < screen.height*.2 and re.fullmatch(
-            r'完成[!！。\s]*\d+能量已到账', normalize(n.text)) for n in screen.nodes)
+            r'完成[!！。\s]*\d+能量已到账|已得\d+(?:能量|淘金币|金币)?(?:下单再得\d+(?:最高)?)?',
+            normalize(n.text)) for n in screen.nodes)
         return not visible and bool(earned or screen.find(
             r'^(?:任务已完成|浏览已完成|浏览完成|完成浏览|奖励已到账|恭喜完成|任务完成啦)[!！。\s]*$'))
 
     def wait_for_browse(self, task, screen, cross, seconds):
-        """First pass returns for task-list verification; failed passes recheck sparingly."""
+        """Browse serially; CUDA checks the first deadline, CPU retries stay sparse."""
         started = self.control.now()
         hard_deadline = started + self.config['max_task_seconds']
         scrolling = self.config['scroll_browse'] and not cross and task.kind in ('browse', 'search')
@@ -506,6 +513,7 @@ class TaskActions:
             return True, cross
         retry_needed = getattr(self.task_policy, 'retry_needed', self.task_policy.failures)
         retry = task.kind in ('browse', 'search') and bool(retry_needed(task))
+        first_check = getattr(self.reader, 'ocr_backend', None) == 'cuda'
 
         def browse_for(duration):
             deadline = min(self.control.now() + duration, hard_deadline)
@@ -524,10 +532,12 @@ class TaskActions:
             self.control.check()
 
         browse_for(seconds)
-        if not retry or self.control.now() >= hard_deadline:
+        if not (retry or first_check) or self.control.now() >= hard_deadline:
             return False, cross
-        # Only a task whose previous list verification failed pays for OCR here.
-        self.control.wait(min(1,max(0,hard_deadline-self.control.now())))
+        # Fast CUDA inference checks the real countdown at the first deadline.
+        # CPU retains sparse observation. Both use bounded serial supplements.
+        if retry:
+            self.control.wait(min(1,max(0,hard_deadline-self.control.now())))
         for round_no in range(self.config.get('browse_recheck_rounds', 3) + 1):
             if self.control.now() >= hard_deadline:
                 break

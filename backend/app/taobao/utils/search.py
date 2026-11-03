@@ -138,11 +138,37 @@ class SearchPolicy:
             return bool(self.official_activity_entry(value)) if activity_search else self.search_results_ready(value)
 
         self.check_search_context(screen)
-        if result_ready(screen):
+        # The embedded landing page already contains a banner and product
+        # grid before a query is submitted. It is not evidence of a search.
+        if activity_search and result_ready(screen):
             return True
         tree = screen.tree if screen.tree is not None else self.search_tree()
         edits, _ = self.search_controls(tree)
         edit = self.search_edit(screen, edits)
+        ready_deadline = self.control.now() + self.config['page_timeout']
+        focused = False
+        while not edit and self.control.now() < ready_deadline:
+            # Embedded H5 fields may expose no EditText until focused. Locate
+            # the visible placeholder relative to the submit action first.
+            buttons = self._submit_buttons(screen)
+            field = next((n for n in screen.nodes
+                          if re.fullmatch(r'搜索宝贝|搜索商品|搜索栏|搜索框', normalize(n.text))
+                          and any(n.bounds[2] < b.bounds[0]
+                                  and abs(n.center[1] - b.center[1]) < max(
+                                      n.bounds[3] - n.bounds[1], b.bounds[3] - b.bounds[1])
+                                  for b in buttons)), None)
+            if field and not focused:
+                self.check_search_context(screen, live=True)
+                self.click(field)
+                focused = True
+            self.control.wait(.35)
+            screen = self.read(force_ocr=bool(self.config['ocr']))
+            self.guard(screen)
+            self.check_search_context(screen, live=True)
+            if self.is_task_list(screen.nodes):
+                break
+            edits, _ = self.search_controls(self.search_tree())
+            edit = self.search_edit(screen, edits)
         if not edit:
             logger.warning('没有可确认的输入框，不开始浏览计时')
             self.report_failure('搜索页没有可确认的输入框', phase='searching')
@@ -176,8 +202,6 @@ class SearchPolicy:
                     result = self.read(force_ocr=bool(self.config['ocr']))
                     self.guard(result)
                     self.check_search_context(result)
-                    if result_ready(result):
-                        return True
                 buttons = native or self._submit_buttons(result)
                 self.check_search_context(result, live=True)
                 if submitted < 2 and buttons:

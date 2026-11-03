@@ -140,3 +140,9 @@ GitHub Windows 发布构建使用 `scripts/package_windows.py --preinstall-all`�
 ## 可选 CUDA 环境验证
 
 使用独立 Python 3.13 环境安装 configs/environments/requirements-cuda.lock，再运行同一 scripts/check_project.py。共有依赖与 requirements-windows.lock 对齐，CPU 环境不变。CUDA 需要实际模型推理验证，编译执行器列表不等于硬件可用；Windows 识别模型使用单裁剪批量，避免动态批量的 cuDNN ReduceMean 错误。选择 CUDA 但运行库不可用、初始化或推理失败时，验证 CPU 回退。GPU 便携插件的构建与兼容验收独立于当前 CPU 发布流程。
+
+### 构建CUDA扩展ZIP
+
+在独立CUDA锁定环境中运行 `python scripts/package_windows.py --cuda-plugin 输出路径.zip`。脚本核对CPU/GPU共有依赖版本及实际GPU环境，拒绝ORT混装，仅收集GPU ORT、NVIDIA运行库及其许可/元数据。基础exe仍由CPU环境构建。扩展不自动发布、不替换基础环境。
+
+交付前分别运行基础exe自检、解压扩展后的实际CUDA自检、禁用GPU后的CPU回退自检、移除扩展后的CPU自检；报告中的ocr_backend和ocr_providers须与预期相符。兼容清单损坏/不符时也应保留CPU路径。源码测试不替代冻结包验证。
