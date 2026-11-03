@@ -2,6 +2,33 @@
 
 按新到旧维护用户可见变化。GitHub Release 正文从对应的 `## 版本号` 小节提取，发布状态以 [Releases](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/releases) 为准。
 
+## MiaoTask-v0.2.0
+
+可选 CUDA 加速与活动入口修复。
+
+* 【新增】可选 CUDA 扩展 v1.0，独立下载与更新；基础包继续使用 CPU，扩展不兼容或 GPU 初始化、推理失败时回退 CPU。
+* 【优化】CPU 保留串行稀疏识别；CUDA 在浏览末尾核验并有界补滑。页面加载后再开始浏览计时，减少动画期间过早返回。
+* 【修复】搜索必须确认提交，重新定位可输入控件；输入法 X 键不再被误当弹窗关闭。跳转短暂失焦有界重读，保留实例与显示屏身份检查。
+* 【修复】红包签到首页入口、淘金币任务入口优先级、农场叠层推广关闭，以及月月赚实例唤起与全局搜索入口；奖励仍以回执或对应任务进度核验。
+* 【新增】公共设置支持 OCR 后端与活动下载代理；复用已有偏好存储，保留词表、任务配置和分支选择。代理连接异常有界重试。
+
+下载 Windows x64 ZIP，完整解压后运行 `MiaoTask.exe`，保留 `_internal/` 和 `activities/`。包内预装当前六项活动。升级前退出旧助手，用户目录中的公共配置与日记录保留；安全认证需本人处理。
+
+**可选 GPU 加速：** [CUDA 扩展 v1.0 与安装说明](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/releases/tag/MiaoTask-CUDA-v1.0) · [直接下载扩展 ZIP](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/releases/download/MiaoTask-CUDA-v1.0/MiaoTask-CUDA-v1.0-windows-x64.zip)。退出助手后，将扩展中的 `runtime_plugins/` 放在 `MiaoTask.exe` 旁再启动。需要兼容的 NVIDIA 显卡及驱动；扩展按 Windows x64、Python 3.13 与 ONNX Runtime 1.31.0 校验，不需要安装 PyTorch。以后兼容的框架版本继续引用此独立扩展，无需重复下载。
+
+本版提供运行时扩展加载，源码自动更新与本地重打包启动器尚未实现。
+
+感谢 @jiang123574（#33）的 CUDA 与下载代理贡献，以及 [MonsterNone/tmall-miao](https://github.com/MonsterNone/tmall-miao) 提供的早期思路参考。[使用说明](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/blob/main/docs/USAGE.md) · [项目介绍](https://github.com/h0ll0w-AkuZr0guY/MiaoTask#readme)
+
+| 框架模块 | 主要修改 |
+| --- | --- |
+| `core/device/ocr.py`、`runtime_plugin.py`、`screen.py` | 可选运行库加载、兼容校验、实际执行后端与 CPU 回退；保留物理设备模型复用 |
+| `core/device/adapter.py`、`read_shell.py` | 短暂失焦共享超时预算、窗口信息回退与诊断，保留显示屏和实例守卫 |
+| `core/preferences.py`、`core/service` | OCR 后端与代理偏好持久化；后端切换限定设备空闲，保留既有配置 |
+| `app/taobao/utils`、`app/zfb` | 搜索提交、页面就绪与浏览补时；日常入口和任务核验修复 |
+| `scripts/package_windows.py`、`configs/environments/requirements-cuda.lock` | CPU 基础包与独立版本 CUDA ZIP 分开构建，共有依赖对齐 |
+| `frontend`、`docs` | 后端与代理设置提示，扩展安装、兼容、回退及贡献接口说明 |
+
 ## MiaoTask-v0.1.6
 
 串行低频识别、公共词表与设备兼容优化。
