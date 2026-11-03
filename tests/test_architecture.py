@@ -80,6 +80,9 @@ class MigrationContracts(unittest.TestCase):
             self.assertIs(configured.pop(key), False)
         self.assertTrue(configured.pop('bundle_by_default'))
         self.assertTrue(configured.pop('clear_clipboard'))
+        rescan = configured.pop('rescan')
+        self.assertFalse(rescan['rescan_restart_app'])
+        self.assertEqual(rescan['rescan_rounds'], 3)
         self.assertEqual(configured, fixture['config'])
         for case in fixture['cases']:
             nodes = [TextNode(n['text'], tuple(n['bounds'])) for n in case['nodes']]

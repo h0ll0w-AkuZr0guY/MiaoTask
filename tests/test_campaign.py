@@ -610,6 +610,9 @@ class RunnerTests(unittest.TestCase):
 
     def test_task_exception_accepts_already_restored_list_and_settled_progress(self):
         r = self.clock_runner()
+        # 本用例覆盖的是“框架单轮”的行为：异常后不重启应用、不重复冷恢复。
+        # 补扫会把同一屏重新跑多轮，这里显式关掉，让它只测单轮。
+        r.config.setdefault('rescan', {})['rescan_enabled'] = False
         r.config['max_tasks'] = 1
         before, after = task_screen(), task_screen(1)
         r.ensure_list = Mock(return_value=before)
@@ -847,6 +850,10 @@ class RunnerTests(unittest.TestCase):
 
     def clock_runner(self):
         r = self.runner()
+        # 节奏抖动和落点散布在假时钟下会让时间预算与坐标断言不可复现；
+        # 这两个随机行为由 tests/test_taobao_daily.py 的专门用例覆盖。
+        r.PACE_JITTER = 0
+        r.TAP_SPREAD = 0
         clock = [0.0]
         r.control.now = lambda: clock[0]
         r.control.wait.side_effect = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
@@ -1239,6 +1246,8 @@ class RunnerTests(unittest.TestCase):
 
     def test_new_offer_is_executed_in_the_same_run(self):
         r = self.runner()
+        # 同上：只验证单轮内换批，不让补扫把同一屏再跑一遍。
+        r.config.setdefault('rescan', {})['rescan_enabled'] = False
         first = self.offer_screen('领闪购红包下单直接省', 0, 49)
         replacement = self.offer_screen('去支付宝抽1000元红包', 0, 50)
         done = self.offer_screen('去支付宝抽1000元红包', 1, 50)
@@ -1820,6 +1829,119 @@ class ReplacedBatchTests(unittest.TestCase):
         self.assertEqual(fresh.current,0)
 
 
+class Double11RescanTests(unittest.TestCase):
+    """双11 也要“扫到真没有”才收工：三态判定 + 收工条件。"""
+
+    def done_screen(self):
+        return task_screen(progress=10, action='已完成')
+
+    def runner(self, screen=None):
+        device = Mock(device_type='uiautomator2', selected_instance=None)
+        runner = CampaignRunner(device)
+        runner.origin = 'com.taobao.taobao'
+        runner.control.wait = Mock()
+        runner.pause = lambda seconds, jitter=0: None
+        runner.ensure_list = Mock(return_value=screen or self.done_screen())
+        runner.read = Mock(return_value=screen or self.done_screen())
+        return runner
+
+    def test_rescan_reports_found_when_a_runnable_row_is_visible(self):
+        runner = self.runner(task_screen())
+        self.assertEqual(runner.rescan(), runner.SCAN_FOUND)
+
+    def test_rescan_reports_unknown_when_list_cannot_be_reopened(self):
+        runner = self.runner()
+        runner.ensure_list = Mock(side_effect=RuntimeError('导航失败'))
+        self.assertEqual(runner.rescan(), runner.SCAN_UNKNOWN)
+
+    def test_rescan_reports_unknown_when_page_leaves_the_task_list(self):
+        runner = self.runner()
+        runner.read = Mock(return_value=Screen([node('直播间', 60, 300)], 1440, 3200,
+                                               'com.taobao.taobao'))
+        self.assertEqual(runner.rescan(), runner.SCAN_UNKNOWN)
+
+    def test_rescan_reports_empty_when_scroll_repeats_the_same_rows(self):
+        runner = self.runner()
+        self.assertEqual(runner.rescan(), runner.SCAN_EMPTY)
+
+    def test_double11_scrolls_in_small_steps_to_keep_the_sheet_open(self):
+        runner = self.runner()
+        runner.rescan()
+        screen = self.done_screen()
+        calls = runner.device.swipe.call_args_list
+        # 面板比日常列表矮，长滑会被当成下拉关闭：分三段、每段 0.12 屏。
+        self.assertEqual(len(calls), 3)
+        for call in calls:
+            args = call.args
+            self.assertEqual(args[0], args[2])
+            self.assertAlmostEqual(args[1] - args[3], screen.height * .12, delta=2)
+
+    def test_rescan_uses_this_activitys_own_list_name(self):
+        runner = self.runner()
+        self.assertEqual(runner.list_name(), '赚能量任务')
+        runner.rescan()
+
+    def test_run_finishes_after_one_empty_scan(self):
+        runner = self.runner()
+        runner.config['rescan'] = {'rescan_rounds': 6, 'rescan_retries': 1,
+                                   'rescan_pause': 0}
+        runner.rescan = Mock(return_value=runner.SCAN_EMPTY)
+        runner.run()
+        # 重进一次、看一眼是空的就收工，不再反复重进确认。
+        self.assertEqual(runner.rescan.call_count, 1)
+
+    def test_unknown_scans_never_count_as_finished(self):
+        runner = self.runner()
+        runner.config['rescan'] = {'rescan_rounds': 6, 'rescan_confirm': 2,
+                                   'rescan_retries': 2, 'rescan_pause': 0}
+        runner.rescan = Mock(return_value=runner.SCAN_UNKNOWN)
+        runner.run()
+        # 两次重试都确认不了就停，但绝不把它当成“做完了”继续空跑。
+        self.assertEqual(runner.rescan.call_count, 2)
+
+    def test_switch_restores_single_round_behaviour(self):
+        runner = self.runner()
+        runner.config['rescan'] = {'rescan_enabled': False}
+        runner.rescan = Mock(return_value=runner.SCAN_EMPTY)
+        runner.run()
+        runner.rescan.assert_not_called()
+
+    def runner_with_log(self, screen=None, **rescan):
+        order = []
+        device = Mock(device_type='uiautomator2', selected_instance=None)
+        device.go_home.side_effect = lambda: order.append('home')
+        device.stop_app.side_effect = lambda package: order.append(('stop', package))
+        device.start_app.side_effect = lambda package: order.append(('start', package))
+        runner = CampaignRunner(device)
+        runner.origin = 'com.taobao.taobao'
+        runner.control.wait = Mock()
+        runner.pause = lambda seconds, jitter=0: None
+        shown = screen or self.done_screen()
+        runner.ensure_list = Mock(side_effect=lambda **kw: order.append('list') or shown)
+        runner.read = Mock(return_value=shown)
+        runner.config['rescan'] = dict(runner.config.get('rescan') or {}, **dict({'rescan_restart_app':True}, **rescan))
+        return runner, order
+
+    def test_rescan_restarts_client_before_reopening_the_list(self):
+        runner, order = self.runner_with_log()
+        runner.rescan()
+        # 双11 面板同样是 WebView：不重启客户端，补扫读到的还是旧缓存。
+        self.assertEqual(order, ['home', ('stop', 'com.taobao.taobao'),
+                                 ('start', 'com.taobao.taobao'), 'list'])
+
+    def test_restart_can_be_switched_off(self):
+        runner, order = self.runner_with_log(rescan_restart_app=False)
+        runner.rescan()
+        self.assertEqual(order, ['list'])
+
+    def test_restart_budget_caps_repeated_cold_starts(self):
+        runner, order = self.runner_with_log(rescan_restart_max=1)
+        runner.rescan()
+        runner.rescan()
+        self.assertEqual(order.count(('start', 'com.taobao.taobao')), 1)
+        self.assertEqual(order.count('list'), 2)
+
+
 class YueYueZhuanEntryTests(unittest.TestCase):
     def policy(self):
         from backend.app.zfb.activities.yueyuezhuan.entry import EntryPolicy
@@ -1912,3 +2034,7 @@ class EmptySessionMessageTests(unittest.TestCase):
         self.assertIn('没有识别到任务', message)
         self.assertNotIn('浏览任务', message)
         self.assertFalse(runner.daily_exhausted)
+
+
+if __name__ == '__main__':
+    unittest.main()

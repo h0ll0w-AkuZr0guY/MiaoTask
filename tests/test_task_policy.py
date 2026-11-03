@@ -42,6 +42,9 @@ class TaskPolicyTests(unittest.TestCase):
         device = Mock(device_type='uiautomator2', selected_instance=None)
         runner = CampaignRunner(device, task_policy=policy or self.policy, emit=emit)
         runner.config.update(max_attempts=2, max_tasks=3, max_scroll_pages=0)
+        # 这些用例测的是队列决策本身（一轮内的选择/跳过/计数），补扫会把同一屏
+        # 再跑几轮，把计数搅乱，所以显式关掉。
+        runner.config['rescan'] = {'rescan_enabled': False}
         runner.control.wait = Mock()
         runner.ensure_list = Mock(return_value=screen())
         runner.read = Mock(return_value=screen())

@@ -12,5 +12,17 @@
     "做任务",
     "赚喵币"
   ],
-  "bundle_by_default": true
+  "bundle_by_default": true,
+  "rescan": {
+    "list_name": "赚能量任务",
+    "rescan_rounds": 3,
+    "rescan_retries": 2,
+    "rescan_restart_app": false,
+    "rescan_restart_max": 1,
+    "rescan_start_pause": 3,
+    "scroll_top": 0.66,
+    "scroll_step": 0.12,
+    "scroll_times": 3,
+    "scroll_pause": 0.35
+  }
 }

@@ -7,6 +7,7 @@ from backend.core.config.loader import load_config
 from backend.core.config.schema import validate_config
 from backend.app.taobao.manifest import PROFILE
 from backend.app.common.utils.destinations import DestinationPolicy
+from backend.app.taobao.utils.rescan import RescanPolicy
 from backend.app.taobao.utils.search import SearchPolicy
 from .entry import EntryPolicy
 from .actions import TaskActions
@@ -14,7 +15,7 @@ from .verify import VerificationPolicy
 from .tasks import parse_tasks, is_task_list, CLAIM_ACTIONS, EXTERNAL_APPS
 
 
-class Double11Activity(EntryPolicy, TaskActions, VerificationPolicy, SearchPolicy, DestinationPolicy, Activity):
+class Double11Activity(RescanPolicy, EntryPolicy, TaskActions, VerificationPolicy, SearchPolicy, DestinationPolicy, Activity):
     application = PROFILE
     parse_tasks = staticmethod(parse_tasks)
     is_task_list = staticmethod(is_task_list)

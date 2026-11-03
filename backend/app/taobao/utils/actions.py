@@ -7,14 +7,34 @@ from backend.core.errors import TaskUnavailable
 logger = logging.getLogger('backend.execution')
 
 class TaskActions:
+    def pause(self, seconds):
+        self.control.wait(max(0.0, float(seconds)))
+
+    def record_task_failure(self, task):
+        if not getattr(self, '_task_budget_counted', False):
+            category = ('navigation' if getattr(self, '_attempt_nav_failure', False) else
+                        'settlement' if getattr(self, '_attempt_browsed', False) else '')
+            defer = getattr(self.task_policy, 'defer', None)
+            if category and callable(defer) and defer(task, category):
+                self._task_budget_counted = True
+                logger.info('本次%s尚未核实，保留一次补查机会：%s', category, task.title)
+                return self.task_policy.failures(task)
+        return super().record_task_failure(task)
+
     def execute(self, task, before):
         self._active_task = task
+        # 还没离开清单：这一屏的 × 如果是浮层，可以顺手关掉。
+        self._task_page = False
+        # 本次失败是不是“没打开页面”造成的，由 record_task_failure 归因用。
+        self._attempt_nav_failure = False
+        # 这次到底有没有真的浏览过：只有真浏览过、又没看到进度涨，才算“软失败”。
+        self._attempt_browsed = False
         self.update('opening', current_task=task.title, message='打开任务页面', remaining=0)
         logger.info('执行 %s (%d/%d)，类型 %s', task.title, task.current, task.total, task.kind)
         self.control.check()
         left, top, right, bottom = task.bounds
         self.device.click((left + right) // 2, (top + bottom) // 2)
-        self.control.wait(.6)
+        self.pause(.6)
         deadline = self.control.now() + self.config['page_timeout']
         opening_hard_deadline = deadline + self.config['page_timeout'] * 2
         screen, left = before, False
@@ -42,7 +62,7 @@ class TaskActions:
                 confirmations += 1
                 logger.info('确认本次应用跳转：%s',normalize(one_time.text))
                 self.click(one_time)
-                self.control.wait(.8)
+                self.pause(.8)
                 deadline = min(opening_hard_deadline, self.control.now() + self.config['page_timeout'])
                 continue
             pending=getattr(self,'is_launch_prompt',None)
@@ -54,17 +74,18 @@ class TaskActions:
                     if button:
                         confirmations += 1
                         self.click(button)
-                        self.control.wait(.8)
+                        self.pause(.8)
                         deadline = min(opening_hard_deadline, self.control.now()+self.config['page_timeout'])
                         continue
                 return skip_launch()
             if screen.package == self.origin and self.is_task_list(screen.nodes):
+                self._task_page = False
                 after = next((x for x in self.tasks(screen) if x.key == task.key), None)
                 if task.kind == 'claim' and after and (after.action != task.action or after.current > task.current):
                     return screen, True, False
                 if task.key.startswith('milestone-') and after is None and self.milestone_received(task, screen):
                     return screen, True, False
-                self.control.wait(.6)
+                self.pause(.6)
                 continue
             if not callable(confirm) and screen.find(r'打开.{0,10}应用|是否.{0,12}打开|即将.{0,10}跳转|允许.{0,12}打开|尝试打开'):
                 button = screen.find(r'^(打开|立即打开|继续打开|允许打开|去支付宝|去看看|允许)$')
@@ -72,17 +93,21 @@ class TaskActions:
                     if not self.config['allow_cross_app']:
                         break
                     self.click(button)
-                    self.control.wait(.8)
+                    self.pause(.8)
                     continue
             ready = getattr(self,'destination_ready',None)
             if (not normalize(screen.text) or len(screen.nodes) < 2
                     or callable(ready) and not ready(screen)):
-                self.control.wait(.7)
+                self.pause(.7)
                 continue
             left = True
+            # 已经站在任务落地页上了：从现在到回到清单之前，屏上的 × 都归这个
+            # 页面自己，不能当弹窗关（关掉它 = 任务没打开，白记一次失败）。
+            self._task_page = True
             break
         if not left:
             logger.warning('任务没有成功离开列表：%s', task.title)
+            self._attempt_nav_failure = True
             reason = self.availability_reason(task, check_installed=bool(task.target_packages))
             if reason:
                 raise TaskUnavailable(reason)
@@ -129,7 +154,7 @@ class TaskActions:
         before = {normalize(n.text) for n in screen.nodes if len(normalize(n.text)) > 1}
         self.device.swipe(round(screen.width*.5), round(screen.height*.78),
                           round(screen.width*.5), round(screen.height*.42), duration=.5)
-        self.control.wait(.8)
+        self.pause(.8)
         fresh = self.read()
         after = {normalize(n.text) for n in fresh.nodes if len(normalize(n.text)) > 1}
         if not before or len(before & after) / len(before) > .85:
@@ -162,7 +187,7 @@ class TaskActions:
             if card is None and not retried:
                 # 落地页还在渲染时先等一拍，别把没加载完当成“没有可点的卡”。
                 retried = True
-                self.control.wait(1.2)
+                self.pause(1.2)
                 screen = self.read()
                 continue
             if card is None:
@@ -178,7 +203,7 @@ class TaskActions:
             self.update('browsing', message='点击第 %d 个（共 %d 个）' % (done+1, need))
             logger.info('点击第 %d 个（共 %d 个）：%s', done+1, need, normalize(card.text)[:18])
             self.device.click((left+right)//2, (top+bottom)//2)
-            self.control.wait(1.4)
+            self.pause(1.4)
             done += 1
             after = self.read()
             if after.package != self.origin or self.is_task_list(after.nodes):
@@ -187,7 +212,7 @@ class TaskActions:
                 screen = after
                 continue
             self.device.go_back()
-            self.control.wait(1.0)
+            self.pause(1.0)
             screen = self.read()
         return done
 
@@ -206,9 +231,13 @@ class TaskActions:
         logger.info('点击页面按钮：%s', normalize(button.text))
         self.update('browsing', message='点击 %s' % normalize(button.text)[:6])
         self.click(button)
-        self.control.wait(1.4)
+        self.pause(1.4)
         return button
 
+    # 阿里 nc 滑块。手柄的文案固定是「滑块」，轨道文案是「向右滑动验证」，
+    # 这一类只要把方块拖到轨道右端就能通过。点选图片、拼图缺口对齐不在这里做。
+    # 只把“动作提示”算作验证页：直播间横幅上的「导轨滑块」「窗轨滑块」是商品名，
+    # 不能因为它出现就当成验证。
     @staticmethod
     def quiz_option(screen):
         """找 A 选项。选项既可能是「A.内容」整行，也可能只有字母圆圈。"""
@@ -262,7 +291,7 @@ class TaskActions:
         before = {normalize(n.text) for n in screen.nodes if len(normalize(n.text)) > 1}
         self.device.swipe(round(screen.width*.5), round(screen.height*.72),
                           round(screen.width*.5), round(screen.height*.45), duration=.45)
-        self.control.wait(.8)
+        self.pause(.8)
         fresh = self.read()
         after = {normalize(n.text) for n in fresh.nodes if len(normalize(n.text)) > 1}
         if not before or before == after:
@@ -315,7 +344,7 @@ class TaskActions:
                 self.update('browsing', message='提交答案')
                 self.click(submit)
                 answered = False
-                self.control.wait(1.4)
+                self.pause(1.4)
                 if re.search(r'领取奖励|开心收下|收下奖励', normalize(submit.text)):
                     passed = True
                     break
@@ -342,7 +371,7 @@ class TaskActions:
                 self.update('browsing', message='选择 A 选项')
                 self.click(option)
                 answered = True
-                self.control.wait(1.0)
+                self.pause(1.0)
             else:
                 if advance is not None:
                     if re.search(r'回到主页|返回首页|已成功领取', normalize(advance.text)):
@@ -356,7 +385,7 @@ class TaskActions:
                     self.update('browsing', message='答题')
                     self.click(advance)
                     answered = False
-                    self.control.wait(1.2)
+                    self.pause(1.2)
                     if re.search(r'领取奖励|开心收下|收下奖励', normalize(advance.text)):
                         passed = True
                         break
@@ -377,7 +406,7 @@ class TaskActions:
                 self.device.go_back()
             except Exception:
                 break
-            self.control.wait(1.0)
+            self.pause(1.0)
         return self.recover(), passed, cross
 
     def browse_destination(self, task, screen):
@@ -415,6 +444,7 @@ class TaskActions:
             seconds += self.config['browse_extra_seconds']
         seconds += self.config['settle_seconds']
         explicit_success, cross = self.wait_for_browse(task, screen, cross, seconds)
+        self._attempt_browsed = True
         return self.recover(), explicit_success, cross
 
     def wait_for_browse(self, task, screen, cross, seconds):
