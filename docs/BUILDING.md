@@ -86,7 +86,7 @@ python -m venv build/release-env
 
 默认直接构建要求干净提交；本地未提交候选可加 `--preview`，清单标记预览与实际文件摘要，输出 `-preview.zip`。Release Builder 使用独立的 `--local-source` 构建接口，对清洁副本审计并记录文件摘要，不要求 Git、提交或发布计划，也不伪造提交号；输出正常命名的带环境 ZIP。
 
-默认框架包含网页、设备与执行组件、共用代码、公共配置、离线 OCR、ADB 及许可声明，排除具体应用与活动源码。`--include-activities` 仅用于离线兼容验收，生成 `-with-activities.zip`。不会整体压缩项目或塞入虚拟环境、旧 exe、个人日志和设备截图。HDC 可通过 `--hdc-dir` 另行提供，默认只带 Android ADB。
+框架内部包含网页、设备与执行组件、共用代码、公共配置、离线 OCR、ADB 及许可声明，不内置具体活动源码；默认按bundle_by_default在exe旁外置预装，`--framework-only`生成不预装活动的包。`--include-activities` 仅用于内置模式的离线兼容验收，生成 `-with-activities.zip`。不会整体压缩项目或塞入虚拟环境、旧 exe、个人日志和设备截图。HDC 可通过 `--hdc-dir` 另行提供，默认只带 Android ADB。
 
 工具也支持已核验构建入口的 0.1.0 源码：仅适配无 Git 来源检查，仍使用该源码自身的业务、构建配置和自检，生成它原有的完整包。不会为旧源码注入新框架或在线活动能力；未知旧入口需使用对应构建器。
 
@@ -133,10 +133,34 @@ GitHub Windows 发布构建使用 `scripts/package_windows.py --preinstall-all`�
 
 ## 测试类别与活动预装策略
 
-回归按类别归并至 21 个 `test_*.py`，保留连接、识别、实例、任务、存储、活动分发、前端及发布隔离用例；相近测试直接合并，不用转发文件维持重复入口。共享合成夹具从所属类别模块导入。脚本保留独立的检查、构建和站点职责，总数低于 30。
+回归按类别归并至 24 个 `test_*.py`，保留连接、识别、实例、任务、存储、活动分发、前端及发布隔离用例；相近测试直接合并，不用转发文件维持重复入口。共享合成夹具从所属类别模块导入。脚本保留独立的检查、构建和站点职责，总数低于 30。
 
 直接 Windows 构建默认读取各活动配置的 `bundle_by_default`；现有六项活动均为 true，未来非默认活动设为 false。`--preinstall-all` 同样遵循该策略；`--framework-only` 明确生成纯框架，显式活动列表仍可覆盖默认。Release Builder 未提供活动列表时采用源码默认策略；显式空列表保留纯框架选项。
 
 ## 可选 CUDA 环境验证
 
-使用独立 Python 3.13 环境安装 configs/environments/requirements-cuda.lock，再运行同一 scripts/check_project.py。共有依赖与 requirements-windows.lock 对齐，CPU 环境不变。CUDA 需要实际模型推理验证，编译执行器列表不等于硬件可用；Windows 识别模型使用单裁剪批量，避免动态批量的 cuDNN ReduceMean 错误。选择 CUDA 但运行库不可用、初始化或推理失败时，验证 CPU 回退。GPU 便携插件的构建与兼容验收独立于当前 CPU 发布流程。
+使用独立 Python 3.13 环境安装 configs/environments/requirements-cuda.lock，再运行同一 scripts/check_project.py。共有依赖与 requirements-windows.lock 对齐，CPU 环境不变。CUDA 需要实际模型推理验证，编译执行器列表不等于硬件可用；Windows 识别模型使用单裁剪批量，避免动态批量的 cuDNN ReduceMean 错误。选择 CUDA 但运行库不可用、初始化或推理失败时，验证 CPU 回退。CUDA扩展与CPU基础包分别构建和验收，扩展采用独立版本Release。
+
+### 构建CUDA扩展ZIP
+
+在独立CUDA锁定环境中运行 `python scripts/package_windows.py --cuda-plugin MiaoTask-CUDA-v1.0-windows-x64.zip`。扩展版本由脚本的CUDA_PLUGIN_VERSION维护，写入manifest.json；其版本与框架版本独立。脚本核对CPU/GPU共有依赖版本及实际GPU环境，拒绝ORT混装，仅收集GPU ORT、NVIDIA运行库及其许可/元数据。基础exe仍由CPU环境构建。扩展不自动发布、不替换基础环境。
+
+CUDA扩展 v1.0 的固定入口为 [MiaoTask-CUDA-v1.0](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/releases/tag/MiaoTask-CUDA-v1.0)。完成独立验收后由维护者直接创建该扩展Release并上传ZIP，设置 `--latest=false`，不触发框架发布流水线；说明中列出支持条件、安装/迁移/卸载方式及CPU回退。主程序Release继续走发布准备、CI、云构建和release环境确认流程，正文链接匹配的CUDA扩展，不重复上传该ZIP。扩展有实际依赖变化时才发布新扩展版本，不覆盖已发布版本；ABI或ORT变化必须重新核验并更新兼容链接。README下载徽章仅匹配 `MiaoTask-v*`，避免把扩展版本当作主程序版本。
+
+交付前分别运行基础exe自检、解压扩展后的实际CUDA自检、禁用GPU后的CPU回退自检、移除扩展后的CPU自检；报告中的ocr_backend和ocr_providers须与预期相符。兼容清单损坏/不符时也应保留CPU路径。源码测试不替代冻结包验证。
+
+
+### 0.2.0活动兼容核验范围
+
+| 活动 | 本次重点回归 | 验证边界 |
+| --- | --- | --- |
+| 淘宝双11 | 搜索先提交、加载等待、CPU稀疏观察/CUDA末尾检查、重复进度、停止与实例守卫 | 已有本地CPU/GPU及冻结exe真机结果；本轮焦点修复不接管正在执行的设备 |
+| 淘金币日常、芭芭农场 | 入口优先级、原生菜单补充、叠层推广关闭；CPU/GPU浏览策略；直达奖励页与visit保持原策略 | 真机CPU/CUDA均自动进入并解析任务；CPU最终限两次翻页读取分别为8/7条，CUDA分别为9/8条。任务轮换和扫描范围不同，不将条数视为唯一任务总量 |
+| 成就中心 | 工厂、入口、解析与奖励核验回归 | 本轮不修改入口，沿用已有回归与维护者验收反馈，不宣称重新完整执行 |
+| 红包签到 | 首页入口与活动内容分离；推广关闭，真正滚离顶部时保留有界恢复 | CPU/CUDA真机进入并读取任务；CUDA实际领取定时奖励并通过核验，未声称每日签到全部完成 |
+| 支付宝月月赚 | 所选实例唤起、全局搜索原生输入、排除小程序局部搜索；保留UI优先和短停留、奖励回执及同排核验 | 真机CPU/CUDA均通过搜索进入并解析2条浏览任务；CPU三活动连续切换扫描通过。本轮只验收入口与列表，不宣称执行全部支付宝任务 |
+| 设备与运行时 | 短暂失焦恢复、完整窗口回退、5秒预算、真正跨实例/显示屏拒绝、停止；可选CUDA加载及CPU回退 | 全部使用隔离测试数据；不重启或连接维护者正在运行的设备 |
+
+发布候选的测试结论写明源码回归、合成图像OCR、冻结包自检与真机执行各自范围；不能把工厂注册或合成画面视为真实任务完成。CUDA运行库锁定文件未改变时可复用已验收的扩展ZIP，仍需与本次基础exe验证加载顺序和兼容回退。
+
+验证覆盖快速动画、CPU单次就绪识别、CUDA回退和有界等待；各18张合成竖屏/平板/横屏画面验证实际OCR与坐标映回。日常活动入口另以真机验证；标准浏览动画修复仍需更多账号长程反馈，不将入口验收等同于全部活动任务执行通过。

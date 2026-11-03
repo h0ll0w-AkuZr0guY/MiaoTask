@@ -464,14 +464,19 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
                    and len(normalize(n.text)) < 90 for n in nodes)
 
     def entry_node(self, screen, labels):
-        matches = [n for n in screen.nodes for label in labels
+        preferred = self.page.get('preferred_entries', [])
+        matches = [(preferred.index(label) if label in preferred else len(preferred), n)
+                   for label in labels for n in screen.nodes
                    if re.fullmatch(r'(?:去|进入|回)?'+re.escape(label)+r'[>〉按钮]*', normalize(n.text))
                    and 0 <= n.bounds[0] < n.bounds[2] <= screen.width
                    and 0 <= n.bounds[1] < n.bounds[3] <= screen.height
                    and (screen.geometry is None or screen.geometry.contains(*n.center))
                    and 0 < n.bounds[2]-n.bounds[0] < screen.width*.8
                    and 0 < n.bounds[3]-n.bounds[1] < screen.height*.2]
-        return min(matches, key=lambda n: (n.source != 'ui', -(n.bounds[3]-n.bounds[1]))) if matches else None
+        # Explicit preferences express navigation intent. A tall vertical
+        # "日常版" label must not outrank the direct "去赚金币" task entrance.
+        return min(matches, key=lambda item: (item[0], item[1].source != 'ui',
+                   -(item[1].bounds[3]-item[1].bounds[1])))[1] if matches else None
 
     def official_activity_entry(self, screen):
         if screen.find(r'^历史搜索$|^搜索发现$|^猜你想搜$'):
@@ -995,13 +1000,18 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
         return min(nodes, key=lambda n: n.center[1]) if nodes else None
 
     def handle_search(self, screen, query=None, activity_search=False):
+        self.check_search_context(screen)
+        # Daily rewards may open a direct timed product grid with no search
+        # form. Preserve that activity-specific landing contract.
+        _, native_buttons = self.search_controls(screen.tree)
+        search_form = self._submit_buttons(screen, native_buttons)
+        if not activity_search and not search_form and self.search_results_ready(screen):
+            return True
         voice = self.page.get('voice_search_markers')
         task = self._active_task
         if not (voice and task is not None and re.search(voice, task.title)):
             return super().handle_search(screen, query, activity_search)
         logger = logging.getLogger('backend.execution')
-        if self.search_results_ready(screen):
-            return True
         # 语音搜索不要求真的说话：页面上任意一个分类点一下就进结果页，
         # 直接找输入框只会一路报“没有可确认的输入框”。
         chip = self.voice_chip(screen)
@@ -1033,12 +1043,19 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
             raise NeedsAttention('搜索输入前页面已离开所选应用，已停止输入')
         if not (screen.find(r'^历史搜索$|^搜索发现$|^搜索有福利$|^猜你想搜$') and self._submit_buttons(screen)):
             raise NeedsAttention('无法重新确认搜索输入框，已停止输入')
+        # Focusing the field can resize/rebuild its native node. Never use the
+        # old page's edit rectangle when a current native field is available.
+        edits, _ = self.search_controls(self.search_tree())
+        current_edit = self.search_edit(screen, edits)
+        if current_edit is not None:
+            edit = current_edit
         box = bounds_of(edit.get('bounds', edit.get('rect')))
         if not (0 <= box[0] < box[2] <= screen.width and 0 <= box[1] < box[3] <= screen.height*.3):
             raise NeedsAttention('搜索输入框位置无法确认，已停止输入')
         self.click(TextNode('',box))
         self.pause(.15)
         self.control.check()
+        self.check_search_context(screen, live=True)
         ascii_input = getattr(self.device,'input_ascii',None)
         if (self.config.get('task_search_keywords') and not re.fullmatch(r'[0-9]{1,32}',query)
                 and edit.get('source') != 'ocr'
@@ -1088,9 +1105,22 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
             return None
 
     def dismiss_overlay(self, screen):
-        close = next((n for n in screen.nodes if re.fullmatch(
+        closers = [n for n in screen.nodes if re.fullmatch(
             r'关闭|关闭按钮|取消|以后再说|暂不|下次再说|我知道了|×|✕|✖|[Xx]', normalize(n.text))
-            and not self.is_search_input_node(screen, n)), None)
+            and not self.is_search_input_node(screen, n)
+            and 0 < n.bounds[3]-n.bounds[1] < screen.height*.12]
+        promotion = self.promotion_visible(screen)
+        markers = [n for n in screen.nodes if self.page.get('promotion_markers')
+                   and re.search(self.page['promotion_markers'], normalize(n.text))]
+        if promotion and markers:
+            # The task sheet's close icon can remain readable behind a modal.
+            # A central dismissal below the promotion belongs to the overlay;
+            # otherwise Back dismisses one layer without tapping a hidden X.
+            anchor = min(n.center[1] for n in markers)
+            closers = [n for n in closers if n.center[1] > anchor
+                       and abs(n.center[0]-screen.width*.5) < screen.width*.25]
+        close = (min(closers, key=lambda n: abs(n.center[0]-screen.width*.5))
+                 if promotion and closers else next(iter(closers),None))
         # Never accept a generic confirm/open/withdrawal action. Authentication
         # was checked by guard before looking for a dismiss control.
         if (close and normalize(close.text) in ('X','×','✕','✖')
@@ -1100,7 +1130,7 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
             self.click(close)
             self.pause(.4)
             return True
-        if self.promotion_visible(screen):
+        if promotion:
             # Decorative close icons may not be readable. Dismiss the known
             # promotion with Back rather than clicking its coupon/withdraw CTA.
             self.control.check()
@@ -1340,6 +1370,7 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
                 continue
             main_view = self.page.get('main_view_markers')
             if (main_view and screen.find(self.page['landing_markers']) and not screen.find(main_view)
+                    and not self.homepage_visible(screen)
                     and not self.promotion_visible(screen)
                     and sum(bool(re.search(r'[¥￥]\d',normalize(n.text))) for n in screen.nodes)>=2):
                 if viewport_returns >= 4 or self.control.now() >= hard_deadline:
@@ -1405,6 +1436,11 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
                     screen = self.read_page(visual=True)
                     continue
                 node = self.entry_node(screen, self.config['task_entry_labels'])
+                if (node is None and native_frame is not None and not self.homepage_visible(screen)
+                        and (native_frame.width,native_frame.height)==(screen.width,screen.height)):
+                    native = self.entry_node(native_frame, self.config['task_entry_labels'])
+                    if native and (screen.geometry is None or screen.geometry.contains(*native.center)):
+                        node = native
             if (node is None and auto_open and screen.package == package
                     and (self.homepage_visible(screen) or screen.find('全部频道', exact=True))
                     and not self.search_results_ready(screen)

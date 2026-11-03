@@ -162,6 +162,8 @@ def ocr_engine_params(backend, threads=4):
 
 def engine_params(threads):
     """Build RapidOCR parameters, enabling CUDA only when it is usable."""
+    from backend.core.device.runtime_plugin import activate_runtime_plugin
+    activate_runtime_plugin()
     providers = ()
     try:
         import onnxruntime
@@ -221,6 +223,8 @@ def _sleeping_session(model):
 
 def _create_engine(threads, backend=None):
     global _CV_CONFIGURED
+    from backend.core.device.runtime_plugin import activate_runtime_plugin
+    activate_runtime_plugin()
     from rapidocr import RapidOCR
     import cv2
     with _ENGINE_LOCK:

@@ -327,6 +327,82 @@ class SwipeFallbackTests(unittest.TestCase):
         device._display_id = 2
         self.assertIsNone(device.capture_observation())
 
+    def focus_adapter(self):
+        device = DeviceAdapter.__new__(DeviceAdapter)
+        device.serial = 'synthetic-focus-device'
+        device.device_type = 'uiautomator2'
+        device._display_id = 0
+        device._bounded_capture = True
+        device._capture_jpeg = Mock()
+        return device
+
+    def test_capture_focus_uses_full_windows_when_summary_omits_identity(self):
+        from subprocess import TimeoutExpired
+        for missing in (SimpleNamespace(exit_code=0, output='mTopFocusedDisplayId=0\nmCurrentFocus=null'),
+                        TimeoutExpired(['synthetic-adb', 'dumpsys'], 2)):
+            with self.subTest(missing=type(missing).__name__):
+                device = self.focus_adapter()
+                focused = SimpleNamespace(exit_code=0, output='mCurrentFocus=Window{abc u0 org.example.shop/.Main}')
+                with patch('backend.core.device.read_shell.AdbReadShell') as shell:
+                    shell.return_value.side_effect = [missing, focused]
+                    info, evidence = device._capture_focus()
+                self.assertEqual(info['package'], 'org.example.shop')
+                self.assertEqual(info['user_id'], 0)
+                self.assertEqual(evidence, focused.output)
+                self.assertEqual(shell.return_value.call_args_list[-1].args[0], ['dumpsys', 'window', 'windows'])
+                device._capture_jpeg.assert_not_called()
+
+    def test_capture_focus_waits_for_launch_transition_without_using_cached_identity(self):
+        device = self.focus_adapter()
+        device._foreground_package = ('org.example.old', 999)
+        missing = SimpleNamespace(exit_code=0, output='mTopFocusedDisplayId=0\nmFocusedApp=null')
+        focused = SimpleNamespace(exit_code=0, output='mCurrentFocus=Window{abc u0 org.example.new/.Main}')
+        with patch('backend.core.device.read_shell.AdbReadShell') as shell, \
+                patch('backend.core.device.adapter.time.sleep') as pause:
+            shell.return_value.side_effect = [missing, missing, focused]
+            info, _ = device._capture_focus()
+        self.assertEqual(info['package'], 'org.example.new')
+        pause.assert_called_once_with(.15)
+        self.assertEqual(shell.return_value.call_count, 3)
+
+    def test_capture_focus_exhaustion_is_bounded_and_never_captures_unknown_page(self):
+        from backend.core.device.instances import InstanceMismatch
+        device = self.focus_adapter()
+        with patch('backend.core.device.read_shell.AdbReadShell') as shell, \
+                patch('backend.core.device.adapter.time.sleep'):
+            shell.return_value.side_effect = TimeoutError('synthetic timeout')
+            with self.assertRaisesRegex(InstanceMismatch, '读取超时或断流') as raised:
+                device.capture_observation(compressed=True)
+        self.assertEqual(shell.call_args.kwargs['budget'], 5)
+        self.assertLessEqual(shell.return_value.call_count, 6)
+        self.assertEqual(raised.exception.capture_diagnostics[0], dict(query='displays', error='TimeoutError'))
+        device._capture_jpeg.assert_not_called()
+
+    def test_capture_focus_does_not_retry_actual_instance_mismatch(self):
+        from backend.core.device.instances import AppInstance, InstanceMismatch
+        device = self.focus_adapter()
+        device._instance_guard_active = True
+        device.selected_instance = AppInstance('org.example.shop', 0, 'synthetic main')
+        device._application = SimpleNamespace(matches=lambda package: package == 'org.example.shop')
+        with patch('backend.core.device.read_shell.AdbReadShell') as shell:
+            shell.return_value.return_value = SimpleNamespace(exit_code=0,
+                output='mCurrentFocus=Window{abc u999 org.example.shop/.Main}')
+            with self.assertRaises(InstanceMismatch):
+                device.capture_observation(compressed=True)
+        shell.return_value.assert_called_once()
+        device._capture_jpeg.assert_not_called()
+
+    def test_capture_focus_stop_interrupts_transition_wait(self):
+        from backend.core.errors import Stopped
+        device = self.focus_adapter()
+        device._run_control = Mock()
+        device._run_control.wait.side_effect = Stopped()
+        with patch('backend.core.device.read_shell.AdbReadShell') as shell:
+            shell.return_value.return_value = SimpleNamespace(exit_code=0, output='mCurrentFocus=null')
+            with self.assertRaises(Stopped):
+                device.capture_observation(compressed=True)
+        device._capture_jpeg.assert_not_called()
+
     def test_clipboard_clear_never_reads_contents_or_changes_ime(self):
         adapter = DeviceAdapter.__new__(DeviceAdapter)
         adapter.device_type = 'uiautomator2'

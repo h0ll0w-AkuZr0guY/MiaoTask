@@ -8,7 +8,7 @@
 
 一个本地网页，管理手机、平板与模拟器的重复任务。
 
-[![下载](https://img.shields.io/github/v/release/h0ll0w-AkuZr0guY/MiaoTask?label=Download&color=f97316)](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/releases/latest)
+[![下载](https://img.shields.io/github/v/release/h0ll0w-AkuZr0guY/MiaoTask?label=Download&color=f97316&filter=MiaoTask-v*&sort=date)](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/releases/latest)
 ![平台](https://img.shields.io/badge/Windows_x64-Android-315f56)
 [![License](https://img.shields.io/badge/License-Apache_2.0-2563eb)](LICENSE)
 [![Star](https://img.shields.io/github/stars/h0ll0w-AkuZr0guY/MiaoTask?style=flat&color=e8ab38)](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/stargazers)
@@ -19,7 +19,7 @@
 
 ![MiaoTask 手绘概览：一个本地控制台，通过 USB 或 Wi-Fi 管理独立设备工作区；活动适配执行观察、执行、返回和核验循环](docs/assets/miaotask-overview.png)
 
-连接设备后，一键进入活动、读取任务、浏览或搜索，再返回核验进度。**淘宝的双11赚能量、淘金币日常、芭芭农场、红包签到和成就中心分别作为独立活动**，按需选择与排序；另支持支付宝「月月赚」浏览任务。可选实物打卡的初始化由本人处理。设备接入、读屏、调度与记录已分层，截图与 OCR 在电脑本地处理。
+连接设备后，一键进入活动、读取任务、浏览或搜索，再返回核验进度。**淘宝的双11赚能量、淘金币日常、芭芭农场、红包签到和成就中心分别作为独立活动**，按需选择与排序；另支持支付宝「月月赚」浏览任务。可选实物打卡的初始化由本人处理。底层继续使用 **uiautomator2 + ADB**，UI控件识别优先、OCR辅助；设备接入、读屏、调度与记录已分层，截图与OCR在电脑本地处理。
 
 框架 ZIP 提供网页、设备控制和运行环境；**活动中心默认读取官方仓库 main，也可选择其他分支，按需安装活动源码**。活动适配更新合并后即可获取，无需为每次活动修改重新下载框架。
 
@@ -38,7 +38,8 @@
 - [ ] **持续适配**：特殊开屏弹窗、活动改版、复杂链式跳转及更多机型；现有有限恢复仍可能失败。
 - [ ] **人工认证提示完善**：已有停止与 Windows 提醒，部分新样式可能漏识别；滑块等验证由本人处理。
 - [ ] **扩展应用与设备**：新活动、更多厂商分身及 HarmonyOS 实机验证；接口预留不等于已完成适配。
-- [x] **低频识别与公共词表**：连续浏览后返回核验，失败才补滑；搜索词随机抽取，跳过词可编辑并跨版本保留。
+- [x] **低频识别与公共词表**：连续浏览不并发截图；按真实进度核验，搜索词随机抽取、跳过词跨版本保留。
+- [x] **可选CUDA扩展**：CPU基础包可独立使用，NVIDIA用户可另装兼容扩展，GPU不可用时回退CPU。
 - [x] **点个 Star**：喜欢这个项目的话，欢迎留下一个 ⭐，也欢迎反馈和 PR。
 
 ## 开始使用
@@ -54,6 +55,8 @@
 3. 浏览器打开本地控制台，正式发布包按活动配置预装，当前包含六项活动；更新或恢复活动可在 **活动中心**操作，再按下方任一方式连接设备，勾选本设备的活动并点击 **开始自动执行**。初次可在「任务设置」把本轮上限设为 2 次。活动源码单独保存在 exe 旁的 `activities/apps/`，可从活动中心打开实际位置；部分分发包已预装活动。
 
 在线更新需要电脑访问官方资源源。每次打开活动中心检查一次，之后可手动刷新；API 限流时尝试备用通道。安装过的活动保留恢复包，卸载后可点「离线恢复」；预装项另有随包恢复基线。已有内置活动的旧包仍可照常使用，升级时完整解压新框架。
+
+可选GPU加速：[CUDA扩展 v1.0 独立下载](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/releases/tag/MiaoTask-CUDA-v1.0)。它不包含主程序，CPU基础包无需安装扩展即可运行。先退出托盘服务，将扩展的 `runtime_plugins/` 放到 `MiaoTask.exe` 同级，重启后在高级选项选择自动或CUDA。无需安装Torch，不覆盖 `_internal/`；更新框架时可迁移兼容的扩展目录。详见[使用条件、安装与回退](docs/USAGE.md#安装可选cuda扩展)。
 
 ### USB 连接
 

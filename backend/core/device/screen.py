@@ -127,6 +127,11 @@ class ScreenReader:
         if self.control:
             self.control.check()
 
+    @property
+    def ocr_backend(self):
+        """Actual loaded backend, including a runtime CPU fallback; never loads models."""
+        return getattr(getattr(self._engine, 'engine', None), 'miao_backend', None)
+
     def _ocr_tile(self, image):
         self._check_ocr()
         # A backend switch bumps the generation; rebuild instead of reusing an

@@ -50,6 +50,23 @@ class TaskActions:
     def pause(self, seconds):
         self.control.wait(max(0.0, float(seconds)))
 
+    def page_transition_wait(self):
+        """Let the destination paint before sampling, without extra CPU OCR."""
+        self.pause(1.2)
+
+    @staticmethod
+    def destination_layout(screen):
+        """Compare task/header controls, not animated products or status clocks."""
+        landmarks = []
+        for node in screen.nodes:
+            text = normalize(node.text)
+            if (screen.height*.08 < node.center[1] < screen.height*.3
+                    and re.search(r'^(?:搜索|浏览|再逛|还需|剩余|已得)|(?:能量|奖励).*到账', text)):
+                landmarks.append((re.sub(r'\d+', '#', text),
+                                  round(node.center[0]/screen.width*25),
+                                  round(node.center[1]/screen.height*25)))
+        return screen.package, screen.width, screen.height, tuple(sorted(landmarks))
+
     def record_task_failure(self, task):
         if not getattr(self, '_task_budget_counted', False):
             category = ('navigation' if getattr(self, '_attempt_nav_failure', False) else
@@ -74,11 +91,12 @@ class TaskActions:
         self.control.check()
         left, top, right, bottom = task.bounds
         self.device.click((left + right) // 2, (top + bottom) // 2)
-        self.pause(.6)
+        self.page_transition_wait()
         deadline = self.control.now() + self.config['page_timeout']
         opening_hard_deadline = deadline + self.config['page_timeout'] * 2
         screen, left = before, False
         confirmations = 0
+        ready_layout = None
         def skip_launch():
             reason='应用跳转未确认，今日跳过此任务；其他任务继续'
             self.unavailable_tasks['task:'+normalize(task.title)]=reason
@@ -86,11 +104,18 @@ class TaskActions:
             logger.warning('%s：%s',reason,task.title)
             return self.recover(),False,False
         while self.control.now() < deadline:
+            observed_at = self.control.now()
             screen = self.read(force_ocr=bool(self.config['ocr']))
             # Always make the first real jump attempt. Installation evidence is
             # read from this device only, never from a bundled skip list.
             self.guard(screen)
             self.check_destination(screen)
+            if (screen.package == self.origin and not self.is_task_list(screen.nodes)
+                    and not any(n.center[1] > screen.height * .1 for n in screen.nodes)):
+                # A fast recognizer can see only the status bar while the H5
+                # destination is still loading. Do not start its browse timer.
+                self.pause(.35)
+                continue
             # Scoped external-app launch confirmation; never accept privacy or login grants.
             confirm = getattr(self,'launch_confirmation',None)
             one_time = confirm(screen) if callable(confirm) else None
@@ -137,9 +162,21 @@ class TaskActions:
                     continue
             ready = getattr(self,'destination_ready',None)
             if (not normalize(screen.text) or len(screen.nodes) < 2
-                    or callable(ready) and not ready(screen)):
+                    or callable(ready) and not ready(screen)
+                    or screen.find(r'^(?:正在加载|加载中|页面加载中|请稍候|请稍等)[.。…]*$')):
+                ready_layout = None
                 self.pause(.7)
                 continue
+            if (getattr(self.reader, 'ocr_backend', None) == 'cuda'
+                    and self.control.now() - observed_at < .6):
+                # Only cheap, fast observations need a second painted frame.
+                # CPU (including CUDA fallback) accepts the first ready frame
+                # after the pre-capture settling delay; never double its OCR.
+                layout = self.destination_layout(screen)
+                if ready_layout != layout:
+                    ready_layout = layout
+                    self.pause(.4)
+                    continue
             left = True
             # 已经站在任务落地页上了：从现在到回到清单之前，屏上的 × 都归这个
             # 页面自己，不能当弹窗关（关掉它 = 任务没打开，白记一次失败）。
@@ -491,12 +528,13 @@ class TaskActions:
         countdown = re.search(r'(?:还需|再逛|再浏览|剩余|再看)[^\d]{0,3}(\d{1,2})\s*秒', screen.text)
         visible = visible if visible is not None else int(countdown[1]) if countdown else None
         earned = any(n.center[1] < screen.height*.2 and re.fullmatch(
-            r'完成[!！。\s]*\d+能量已到账', normalize(n.text)) for n in screen.nodes)
+            r'完成[!！。\s]*\d+能量已到账|已得\d+(?:能量|淘金币|金币)?(?:下单再得\d+(?:最高)?)?',
+            normalize(n.text)) for n in screen.nodes)
         return not visible and bool(earned or screen.find(
             r'^(?:任务已完成|浏览已完成|浏览完成|完成浏览|奖励已到账|恭喜完成|任务完成啦)[!！。\s]*$'))
 
     def wait_for_browse(self, task, screen, cross, seconds):
-        """First pass returns for task-list verification; failed passes recheck sparingly."""
+        """Browse serially; CUDA checks the first deadline, CPU retries stay sparse."""
         started = self.control.now()
         hard_deadline = started + self.config['max_task_seconds']
         scrolling = self.config['scroll_browse'] and not cross and task.kind in ('browse', 'search')
@@ -506,6 +544,8 @@ class TaskActions:
             return True, cross
         retry_needed = getattr(self.task_policy, 'retry_needed', self.task_policy.failures)
         retry = task.kind in ('browse', 'search') and bool(retry_needed(task))
+        first_check = (not cross and task.kind in ('browse', 'search')
+                       and getattr(self.reader, 'ocr_backend', None) == 'cuda')
 
         def browse_for(duration):
             deadline = min(self.control.now() + duration, hard_deadline)
@@ -524,10 +564,12 @@ class TaskActions:
             self.control.check()
 
         browse_for(seconds)
-        if not retry or self.control.now() >= hard_deadline:
+        if not (retry or first_check) or self.control.now() >= hard_deadline:
             return False, cross
-        # Only a task whose previous list verification failed pays for OCR here.
-        self.control.wait(min(1,max(0,hard_deadline-self.control.now())))
+        # Fast CUDA inference checks the real countdown at the first deadline.
+        # CPU retains sparse observation. Both use bounded serial supplements.
+        if retry:
+            self.control.wait(min(1,max(0,hard_deadline-self.control.now())))
         for round_no in range(self.config.get('browse_recheck_rounds', 3) + 1):
             if self.control.now() >= hard_deadline:
                 break

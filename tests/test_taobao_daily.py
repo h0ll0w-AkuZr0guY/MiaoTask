@@ -31,6 +31,48 @@ class TaobaoDailyTests(unittest.TestCase):
             self.assertFalse(item.activity.legacy_storage)
             self.assertIn('uiautomator2', item.activity.device_types)
 
+    def test_daily_activities_keep_cpu_sparse_browse_and_cuda_end_check(self):
+        for activity in ('coins', 'farm', 'cash-signin', 'achievements'):
+            for backend in ('cpu', 'cuda'):
+                with self.subTest(activity=activity, backend=backend):
+                    runner = self.runner(activity)
+                    runner.origin = 'com.taobao.taobao'
+                    runner.reader._engine = SimpleNamespace(engine=SimpleNamespace(miao_backend=backend))
+                    clock = [0.0]
+                    runner.control.now = lambda: clock[0]
+                    runner.control.wait = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+                    runner.browse_swipe = lambda screen: clock.__setitem__(0, clock[0] + .5)
+                    runner.guard = Mock()
+                    runner.check_destination = Mock()
+                    runner.config.update(scroll_browse=True, browse_recheck_rounds=3)
+                    pending = Screen([TextNode('浏览商品', (10,300,300,350))], 1080,2400,runner.origin)
+                    completed = Screen([TextNode('任务已完成', (10,300,300,350))],1080,2400,runner.origin)
+                    runner.read = Mock(return_value=completed)
+                    task = Task('synthetic', '浏览商品', '浏览15秒', '去完成', (800,400,950,460), seconds=15)
+                    explicit, _ = runner.wait_for_browse(task, pending, False, 15)
+                    self.assertEqual(explicit, backend == 'cuda')
+                    self.assertEqual(runner.read.call_count, 1 if backend == 'cuda' else 0)
+                    self.assertLess(clock[0], 16)
+
+    def test_daily_search_grid_with_submit_still_uses_shared_search(self):
+        from backend.app.taobao.utils.search import SearchPolicy
+        for activity in ('coins', 'farm', 'cash-signin', 'achievements'):
+            with self.subTest(activity=activity):
+                runner = self.runner(activity)
+                runner.search_results_ready = Mock(return_value=True)
+                page = Screen([TextNode('搜索', (900,120,1050,180))],1080,2400,'com.taobao.taobao')
+                with patch.object(SearchPolicy, 'handle_search', return_value=True) as submit:
+                    self.assertTrue(runner.handle_search(page))
+                submit.assert_called_once_with(page, None, False)
+
+    def test_daily_search_never_accepts_results_from_another_application(self):
+        runner = self.runner()
+        runner.search_results_ready = Mock(return_value=True)
+        page = Screen([],1080,2400,'org.example.chat')
+        with self.assertRaisesRegex(NeedsAttention, '离开所选应用'):
+            runner.handle_search(page)
+        runner.search_results_ready.assert_not_called()
+
     def test_counterless_rows_and_completed_feedback_scale_across_displays(self):
         runner = self.runner()
         for width, height in ((1080, 2400), (1800, 2880), (2880, 1800)):
@@ -109,6 +151,49 @@ class TaobaoDailyTests(unittest.TestCase):
         outer=TextNode('领淘金币',(300,200,450,350))
         caption=TextNode('领淘金币',(300,350,450,390))
         self.assertIs(runner.entry_node(Screen([caption,outer],1800,2880,'com.taobao.taobao'),['领淘金币']),outer)
+
+    def test_coin_task_entry_priority_beats_taller_version_switch(self):
+        runner = self.runner()
+        direct = TextNode('去赚金币',(30,1300,270,1370))
+        version = TextNode('日常版>',(1360,600,1430,810))
+        screen = Screen([version,direct],1440,3200,'com.taobao.taobao','ocr')
+        self.assertIs(runner.entry_node(screen,runner.config['task_entry_labels']),direct)
+
+    def test_activity_menu_uses_current_native_field_when_painted_caption_is_split(self):
+        runner = self.runner('farm')
+        menu = TextNode('集肥料',(1000,2300,1200,2440),'ui')
+        native = Screen([menu],1440,3200,'com.taobao.taobao','ui')
+        painted = Screen([TextNode('芭芭农场|免费领水果',(180,180,900,250)),
+                          TextNode('集',(1000,2390,1060,2440)),
+                          TextNode('肥料',(1060,2390,1200,2440))],1440,3200,native.package,'ocr')
+        panel = Screen([TextNode('肥料明细',(70,600,400,700))],1440,3200,native.package,'ocr')
+        runner.device.current_app = Mock(return_value={'package':native.package})
+        runner.read_page = Mock(side_effect=[native,painted,panel])
+        runner.click = Mock(); runner.control.wait = Mock()
+        self.assertIs(runner.navigate(auto_open=True),panel)
+        runner.click.assert_called_once_with(menu)
+
+    def test_farm_promotion_dismissal_does_not_close_task_sheet_behind_it(self):
+        runner = self.runner('farm')
+        behind = TextNode('X',(1320,650,1400,740))
+        front = TextNode('X',(670,2400,770,2500))
+        screen = Screen([TextNode('肥料明细',(50,650,400,730)),behind,
+                         TextNode('品质农场上新季',(350,800,1100,930)),front],
+                        1440,3200,'com.taobao.taobao','ocr')
+        runner.click = Mock(); runner.control.wait = Mock(); runner.device.go_back = Mock()
+        self.assertTrue(runner.dismiss_overlay(screen))
+        runner.click.assert_called_once_with(front)
+        runner.device.go_back.assert_not_called()
+        screen.nodes.remove(front); runner.click.reset_mock()
+        self.assertTrue(runner.dismiss_overlay(screen))
+        runner.click.assert_not_called()
+        runner.device.go_back.assert_called_once()
+        screen.nodes[2] = TextNode('明日7点后记得来领',(350,800,1100,930))
+        screen.nodes.append(front)
+        self.assertFalse(runner.is_task_list(screen.nodes))
+        runner.click.reset_mock()
+        self.assertTrue(runner.dismiss_overlay(screen))
+        runner.click.assert_called_once_with(front)
 
     def test_confirmed_home_uses_native_icon_when_ocr_merges_adjacent_captions(self):
         runner=self.runner('farm')
@@ -442,6 +527,35 @@ class TaobaoDailyTests(unittest.TestCase):
         _,y1,_,y2=runner.device.swipe.call_args.args
         self.assertLess(y1,y2)
 
+    def test_cash_home_icon_and_product_prices_do_not_trigger_activity_scroll_restore(self):
+        for width, height in ((1080,2400),(1800,2880),(2880,1800)):
+            with self.subTest(size=(width,height)):
+                runner = self.runner('cash-signin')
+                def text(label,x,y,w=.16,h=.03):
+                    return TextNode(label,(round(width*x),round(height*y),
+                                           round(width*(x+w)),round(height*(y+h))),'ocr')
+                icon = text('红包签到',.48,.18)
+                home = Screen([icon,text('购物车',.65,.92),text('我的淘宝',.81,.92),
+                               text('¥20',.1,.45),text('¥30',.6,.6)],
+                              width,height,'com.taobao.taobao','ocr')
+                panel = Screen([text('红包签到·领现金',.1,.08,.45),
+                                text('累计签到奖励(2/7)',.05,.26,.5)],
+                               width,height,home.package,'ocr')
+                self.assertIsNone(home.find(runner.page['landing_markers']))
+                # Older installed activity configs can still contain this
+                # broad label. The navigator must also protect a proved home.
+                runner.page['landing_markers'] += '|红包签到'
+                runner.device.current_app = Mock(return_value={'package':home.package})
+                runner.device.swipe = Mock()
+                runner.device.go_back = Mock()
+                runner.read_page = Mock(side_effect=[home,panel])
+                runner.click = Mock()
+                runner.control.wait = Mock()
+                self.assertIs(runner.navigate(auto_open=True),panel)
+                runner.click.assert_called_once_with(icon)
+                runner.device.swipe.assert_not_called()
+                runner.device.go_back.assert_not_called()
+
     def test_cash_main_view_restoration_stops_after_four_attempts(self):
         runner=self.runner('cash-signin')
         lower=Screen([TextNode('红包签到·领现金',(191,174,654,244),'ocr'),
@@ -735,6 +849,7 @@ class TaobaoDailyTests(unittest.TestCase):
         runner.origin='com.taobao.taobao'
         overflow=type('RPCStackOverflowError',(Exception,),{})
         device=MagicMock(device_type='uiautomator2')
+        device.current_app.return_value = {'package': runner.origin}
         device.input_ascii=None
         device.input_text.side_effect=overflow()
         runner.device=device
@@ -752,6 +867,7 @@ class TaobaoDailyTests(unittest.TestCase):
         runner=self.runner();runner.origin='com.taobao.taobao'
         runner.config['task_search_keywords'] = []
         device=MagicMock(device_type='uiautomator2');runner.device=device
+        device.current_app.return_value = {'package': runner.origin}
         runner.read_page=Mock(return_value=Screen([TextNode('历史搜索',(100,600,400,650)),
                                                   TextNode('搜索',(1510,350,1760,500))],1800,2880,runner.origin,'ocr'))
         runner.click=Mock();runner.control.wait=Mock()
@@ -769,6 +885,43 @@ class TaobaoDailyTests(unittest.TestCase):
         runner.fill_search_field(runner.config['search_keyword'],edit)
         device.input_ascii.assert_not_called()
         device.return_value.set_text.assert_called_once_with(runner.config['search_keyword'],timeout=.25)
+
+    def test_ime_x_keys_and_search_page_glyphs_are_never_popup_closers(self):
+        runner = self.runner()
+        for glyph in ('x', 'X'):
+            for reward_text in ('', '恭喜获得奖励'):
+                with self.subTest(glyph=glyph, reward=reward_text):
+                    page = Screen([TextNode('历史搜索',(40,350,350,410)),
+                                   TextNode('搜索',(850,100,980,170)),
+                                   TextNode(glyph,(200,1500,260,1560)),
+                                   TextNode('中/英',(600,1750,730,1810)),
+                                   TextNode('符',(30,1750,130,1810)),
+                                   TextNode(reward_text,(200,900,700,960))],
+                                  1000,2000,'com.taobao.taobao','ocr')
+                    runner.click = Mock()
+                    self.assertIsNone(runner.popup_close_node(page))
+                    self.assertIsNone(runner.dismiss_popup(page))
+                    self.assertFalse(runner.dismiss_overlay(page))
+                    runner.click.assert_not_called()
+
+    def test_daily_input_relocates_native_field_after_keyboard_rebuild(self):
+        from unittest.mock import MagicMock
+        runner = self.runner()
+        runner.origin = 'com.taobao.taobao'
+        runner.config['task_search_keywords'] = []
+        runner.device = MagicMock(device_type='uiautomator2')
+        runner.device.current_app.return_value = {'package': runner.origin}
+        runner.read_page = Mock(return_value=Screen([
+            TextNode('历史搜索',(100,600,400,650)),TextNode('搜索',(1510,350,1760,500))],
+            1800,2880,runner.origin,'ocr'))
+        current = (140,350,1500,500)
+        runner.search_tree = Mock(return_value={'children':[
+            dict(type='android.widget.EditText',focused='true',bounds=current)]})
+        runner.click = Mock()
+        runner.control.wait = Mock()
+        runner.fill_search_field('2026', {'bounds': (0,9000,1000,10000)})
+        self.assertEqual(runner.click.call_args.args[0].bounds, current)
+        runner.device.input_ascii.assert_called_once_with('2026')
 
     def test_expand_is_scoped_to_coin_task_panel_and_retries_until_painted(self):
         runner=self.runner()

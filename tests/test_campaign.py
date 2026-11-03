@@ -890,6 +890,32 @@ class RunnerTests(unittest.TestCase):
         screen.nodes = screen.nodes[:3] + [node('历史搜索', 30, 600), node('搜索发现', 30, 1100)]
         self.assertFalse(CampaignRunner.search_results_ready(screen))
 
+    def test_embedded_products_before_submit_still_require_a_search(self):
+        r = self.clock_runner()
+        landing, tree = self.search_page()
+        landing.nodes = [node('浏览15秒可领400', 700, 160),
+                         node('搜索', 1180, 350, 200), node('a', 180, 350),
+                         node('商品甲', 30, 1300), node('¥21.68', 30, 1450),
+                         node('金币热卖价', 300, 1450), node('商品乙', 760, 1300),
+                         node('¥448.23', 760, 1450)]
+        landing.tree = tree
+        r.device.dump_hierarchy.return_value = tree
+        r.read = Mock(return_value=self.results_page())
+        self.assertTrue(r.handle_search(landing))
+        r.device.input_text.assert_called_once_with('手机壳')
+        r.device.click.assert_called_once()
+
+    def test_slow_search_landing_waits_for_input_before_submitting(self):
+        r = self.clock_runner()
+        blank = Screen([node('12:00', 20, 20)], 1440, 3200, r.origin)
+        form, tree = self.search_page()
+        r.device.dump_hierarchy.side_effect = [{}, {}, {}, tree, tree]
+        r.read = Mock(side_effect=[blank, blank, form, self.results_page()])
+        self.assertTrue(r.handle_search(blank))
+        r.device.input_text.assert_called_once_with('手机壳')
+        r.device.click.assert_called_once_with(1290, 221)
+        r.device.swipe.assert_not_called()
+
     def test_home_search_waits_for_editable_field_after_overlay_consumes_tap(self):
         r = self.clock_runner()
         home = Screen([node('搜索栏', 100, 150)], 1440, 3200, r.origin)
@@ -1092,6 +1118,7 @@ class RunnerTests(unittest.TestCase):
         screen, tree = self.search_page()
         tree['children'] = tree['children'][1:]
         r.device.dump_hierarchy.return_value = tree
+        r.read = Mock(return_value=screen)
         self.assertFalse(r.handle_search(screen))
         r.device.input_text.assert_not_called()
         r.device.click.assert_not_called()
@@ -1966,6 +1993,64 @@ class Double11RescanTests(unittest.TestCase):
 
 
 class YueYueZhuanEntryTests(unittest.TestCase):
+    def activity_runner(self):
+        from pathlib import Path
+        from types import SimpleNamespace
+        from backend.core.registry import Registry
+        registry = Registry(Path(__file__).resolve().parents[1] / 'backend/app').discover()
+        return registry.instantiate(SimpleNamespace(device_type='uiautomator2', selected_instance=None),
+                                    app='zfb', activity='yueyuezhuan')
+
+    def monthly_panel(self):
+        return self.frame([node('月月赚',100,100,300),
+                           node('逛余额宝领红包',100,600,550),node('去看看',800,600,150),
+                           node('逛乐游记得奖励',100,1100,550),node('去看看',800,1100,150)])
+
+    def test_monthly_shortcut_does_not_inherit_taobao_gpu_browse_duration(self):
+        from types import SimpleNamespace
+        for backend in ('cpu', 'cuda'):
+            with self.subTest(backend=backend):
+                r = self.activity_runner()
+                r.reader._engine = SimpleNamespace(engine=SimpleNamespace(miao_backend=backend))
+                panel = self.monthly_panel()
+                r.read = Mock(return_value=panel)
+                r.recover = Mock(return_value=panel)
+                r.ensure_task_list = Mock(return_value=panel)
+                r.click = Mock()
+                r.control.wait = Mock()
+                r.execute(r.tasks(panel)[0], panel)
+                self.assertEqual([call.args[0] for call in r.control.wait.call_args_list], [.8, 5.0])
+                self.assertFalse(r.config['ocr'])
+
+    def test_monthly_missing_row_or_unrelated_done_label_does_not_prove_success(self):
+        r = self.activity_runner()
+        before = self.monthly_panel()
+        task = r.tasks(before)[0]
+        blank = self.frame([])
+        self.assertFalse(r.verify(task, before, blank))
+        unrelated = self.frame([node('月月赚',100,100,300),
+                                node('逛余额宝领红包',100,600,550),node('去看看',800,600,150),
+                                node('其他项目',100,1100,550),node('已完成',800,1100,150)])
+        self.assertFalse(r.verify(task, before, unrelated))
+        done = self.frame([node('月月赚',100,100,300),
+                          node(task.title,100,600,550),node('已完成',800,600,150)])
+        self.assertTrue(r.verify(task, before, done))
+        self.assertTrue(r.verify(task, before, blank, explicit=True))
+        foreign = Screen([node('恭喜获得',100,600)],1000,2000,'org.example.other')
+        self.assertFalse(r.verify(task, before, foreign, explicit=True))
+
+    def test_monthly_claim_click_without_receipt_is_not_explicit_success(self):
+        r = self.activity_runner()
+        panel = self.monthly_panel()
+        claim = self.frame([*panel.nodes,node('领取',800,1400,150)])
+        r.read = Mock(side_effect=[panel, panel])
+        r.recover = Mock(return_value=claim)
+        r.ensure_task_list = Mock(return_value=claim)
+        r.click = Mock()
+        r.control.wait = Mock()
+        _, explicit, _ = r.execute(r.tasks(panel)[0], panel)
+        self.assertFalse(explicit)
+
     def policy(self):
         from backend.app.zfb.activities.yueyuezhuan.entry import EntryPolicy
         p = EntryPolicy()
@@ -1981,13 +2066,49 @@ class YueYueZhuanEntryTests(unittest.TestCase):
     def frame(self, nodes):
         return Screen(nodes, 1000, 2000, 'com.eg.android.AlipayGphone')
 
-    def test_search_labels_and_exact_preference(self):
+    def test_search_labels_prefer_field_over_homepage_submit_action(self):
         p = self.policy()
         for label in ('搜索框', '搜索得红包', '搜索'):
             entry = node(label, 100, 100, 700, 80)
             self.assertIs(p._search_entry_node(self.frame([entry])), entry)
         exact = node('搜索', 850, 160, 100, 60)
-        self.assertIs(p._search_entry_node(self.frame([node('搜索框', 100, 100), exact])), exact)
+        field = node('搜索框',100,100)
+        self.assertIs(p._search_entry_node(self.frame([field, exact])),field)
+
+    def test_monthly_native_search_accepts_rotating_hint_without_search_caption(self):
+        p = self.policy()
+        frame = self.frame([node('搜索历史',30,300),node('搜索',850,100,100,60)])
+        frame.tree = {'children':[{'type':'android.widget.EditText',
+                                  'id':'org.example:id/search_input_box',
+                                  'text':'限时优惠','bounds':'[180,100][820,200]'}]}
+        self.assertTrue(p._search_page_ready(frame))
+        self.assertEqual(p._search_box(frame).bounds,(180,100,820,200))
+        frame.tree['children'].append({'type':'android.widget.EditText',
+                                      'id':'org.example:id/search_input_box','bounds':'[180,100][820,200]'})
+        self.assertFalse(p._search_page_ready(frame))
+
+    def test_monthly_does_not_use_an_embedded_app_search_or_click_its_input_as_result(self):
+        p = self.policy()
+        frame = self.frame([node('搜索历史',30,300),node('月月赚',100,250,550,70)])
+        frame.tree = {'children':[{'type':'android.widget.EditText','text':'请输入运单号',
+                                  'bounds':'[100,200][800,300]'}]}
+        self.assertFalse(p._search_page_ready(frame))
+        frame.tree['children'][0]['id'] = 'org.example:id/search_input_box'
+        self.assertIsNone(p._search_result(frame))
+
+    def test_monthly_pipeline_launch_uses_profile_contract_and_selected_instance(self):
+        from backend.app.zfb.manifest import PROFILE
+        for selected in (None,'com.eg.android.AlipayGphone.clone'):
+            with self.subTest(selected=selected):
+                p = self.policy()
+                p.application = PROFILE
+                p.origin = selected
+                p.device.device_type = 'uiautomator2'
+                other = Screen([],1000,2000,'com.taobao.taobao')
+                home = self.frame([node('我的',800,1800)])
+                p.read = Mock(side_effect=[other,home])
+                self.assertIs(p._bring_alipay_front(),home)
+                p.device.start_app.assert_called_once_with(selected or PROFILE.package_for('uiautomator2'))
 
     def test_failed_home_navigation_does_not_type(self):
         p = self.policy()
@@ -2152,6 +2273,84 @@ class PartialTitleCompatibilityTests(unittest.TestCase):
 
 class SerialBrowseProtocolTests(unittest.TestCase):
     def runner(self):return RunnerTests().scrolling_runner()
+
+    def test_cpu_entry_waits_before_capture_but_never_requires_a_second_ready_frame(self):
+        for backend, latency in (('cpu', 0), ('cpu', 3), (None, 0)):
+            with self.subTest(backend=backend, latency=latency):
+                r, clock, destination = self.runner()
+                r.reader._engine = Mock(engine=Mock(miao_backend=backend))
+                captures = []
+                def read(**kwargs):
+                    captures.append(clock[0])
+                    clock[0] += latency
+                    return destination
+                r.read.side_effect = read
+                r.browse_destination = Mock(return_value=(destination, False, False))
+                before = task_screen()
+                r.execute(r.tasks(before)[0], before)
+                self.assertEqual(len(captures), 1)
+                self.assertGreaterEqual(captures[0], 1.2)
+                self.assertAlmostEqual(clock[0], 1.2 + latency)
+                r.browse_destination.assert_called_once()
+
+    def test_fast_cuda_confirms_header_position_after_loading_animation(self):
+        r, clock, destination = self.runner()
+        r.reader._engine = Mock(engine=Mock(miao_backend='cuda'))
+        loading = Screen([node('正在加载', 500, 400)], 1440, 3200, r.origin)
+        first = Screen([node('浏览15秒可领400', 500, 400), node('商品列表', 100, 1000)],
+                       1440, 3200, r.origin)
+        settled = Screen([node('浏览15秒可领400', 500, 560), node('商品列表', 100, 1000)],
+                         1440, 3200, r.origin)
+        r.read.side_effect = [loading, first, settled, settled]
+        r.browse_destination = Mock(return_value=(settled, False, False))
+        before = task_screen()
+        r.execute(r.tasks(before)[0], before)
+        self.assertEqual(r.read.call_count, 4)
+        r.browse_destination.assert_called_once_with(r.tasks(before)[0], settled)
+        self.assertAlmostEqual(clock[0], 2.7)
+
+    def test_entry_animation_never_readies_without_a_bounded_failure(self):
+        r, clock, destination = self.runner()
+        r.reader._engine = Mock(engine=Mock(miao_backend='cuda'))
+        r.config['page_timeout'] = 2
+        r.read.return_value = Screen([node('正在加载', 500, 400)], 1440, 3200, r.origin)
+        r.browse_destination = Mock()
+        r.availability_reason = Mock(return_value='')
+        before = task_screen()
+        r.execute(r.tasks(before)[0], before)
+        r.browse_destination.assert_not_called()
+        r.recover.assert_called_once()
+        self.assertLess(clock[0], 4)
+
+    def test_earned_energy_header_ends_browse_without_extra_supplements(self):
+        r, _, _ = self.runner()
+        for text in ('已得400能量', '已得400下单再得2000最高'):
+            with self.subTest(text=text):
+                page = Screen([node(text, 500, 170)], 1440, 3200, r.origin)
+                self.assertTrue(r.browse_completed(page))
+                page.nodes.append(node('还需浏览2秒', 500, 250))
+                self.assertFalse(r.browse_completed(page))
+
+    def test_cuda_visit_does_not_inherit_standard_browse_supplements(self):
+        from dataclasses import replace
+        r, clock, destination = self.runner()
+        r.reader._engine = Mock(engine=Mock(miao_backend='cuda'))
+        task = replace(r.tasks(task_screen())[0], kind='visit')
+        r.wait_for_browse(task, destination, False, 3)
+        r.read.assert_not_called()
+        self.assertLess(clock[0], 3.3)
+
+    def test_cuda_first_pass_checks_and_supplements_remaining_countdown(self):
+        r, clock, destination = self.runner()
+        r.reader._engine = Mock(engine=Mock(miao_backend='cuda'))
+        pending = Screen([node('还需浏览2秒', 100, 150)], 1440, 3200, r.origin)
+        done = Screen([node('任务已完成', 100, 150)], 1440, 3200, r.origin)
+        r.read.side_effect = [pending, pending, done]
+        explicit, _ = r.wait_for_browse(r.tasks(task_screen())[0], destination, False, 17)
+        self.assertTrue(explicit)
+        self.assertEqual(r.read.call_count, 3)
+        self.assertGreaterEqual(clock[0], 19)
+        self.assertLess(clock[0], 21)
 
     def test_retry_stops_after_completion_and_does_not_recheck_during_initial_window(self):
         r,clock,destination=self.runner();task=r.tasks(task_screen())[0]

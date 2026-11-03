@@ -108,6 +108,8 @@ class ActivityCatalogHub:
         preferences = load_preferences()
         providers = []
         try:
+            from backend.core.device.runtime_plugin import activate_runtime_plugin
+            activate_runtime_plugin()
             import onnxruntime
             providers = onnxruntime.get_available_providers()
         except Exception:
