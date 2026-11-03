@@ -748,6 +748,9 @@ def make_handler(controller, token):
                 return
             path = urlsplit(self.path).path
             origin = f'http://127.0.0.1:{self.server.server_port}'
+            if path == '/api/preferences' and hasattr(root, 'get_preferences'):
+                self.reply(200, root.get_preferences())
+                return
             if path in ('/api/plugins', '/api/plugins/branches') and hasattr(root, 'plugins_snapshot'):
                 try:
                     if path.endswith('/branches'):
@@ -864,6 +867,9 @@ def make_handler(controller, token):
                 if not isinstance(payload, dict):
                     raise ValueError('请求必须为 JSON 对象')
                 path = urlsplit(self.path).path
+                if path == '/api/preferences' and hasattr(root, 'update_preferences'):
+                    self.reply(200, root.update_preferences(payload))
+                    return
                 if path == '/api/plugins/open-folder' and hasattr(root, 'open_activity_folder'):
                     folder = root.open_activity_folder(f'http://127.0.0.1:{self.server.server_port}')
                     self.reply(200, {'ok': True, 'path': folder})

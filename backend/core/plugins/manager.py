@@ -26,6 +26,7 @@ import zipfile
 from backend.core.plugins.contracts import (ALLOWED_SUFFIXES, CATALOG_URL, FRAMEWORK_API,
     MAX_ARCHIVE_BYTES, MAX_CATALOG_BYTES, MAX_EXPANDED_BYTES, MAX_FILES,
     OFFICIAL_REPOSITORY, PACKAGE_SCHEMA, module_id, package_version)
+from backend.core.plugins.networking import fetch_with_retry, network_hint, official_opener
 from backend.core.runtime import activities_dir
 
 _LOCK = threading.RLock()
@@ -107,8 +108,12 @@ def _bounded_read(response, maximum):
 
 def _download(url, maximum):
     official_asset_url(url)
+    return fetch_with_retry(lambda: _download_once(url, maximum))
+
+
+def _download_once(url, maximum):
     request = Request(url, headers={'User-Agent': 'MiaoTask-Activity-Installer', 'Accept': 'application/octet-stream'})
-    with build_opener(_OfficialRedirect()).open(request, timeout=20) as response:
+    with official_opener(_OfficialRedirect()).open(request, timeout=20) as response:
         _official_redirect_url(response.geturl())
         return _bounded_read(response, maximum)
 
@@ -344,7 +349,7 @@ class PluginManager:
                     self.last_error = ''
                     return value, False
                 except Exception as exc:
-                    self.last_error = '无法更新官方活动目录：' + str(exc)
+                    self.last_error = '无法更新官方活动目录：' + str(exc) + network_hint(exc)
                     if cached is None:
                         return {'schema': 1, 'repository': OFFICIAL_REPOSITORY, 'packages': []}, False
             return cached, True

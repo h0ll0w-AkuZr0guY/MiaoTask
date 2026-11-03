@@ -80,6 +80,14 @@
             <div class="settings-panel-heading"><div><h3>高级选项</h3><p>跨应用访问、页面识别与设备运行选项。</p></div></div>
             <div class="settings-switch"><label><input type="checkbox" id="cross-app" checked><span>完成跨应用跳转并返回<small>返回失败时有限尝试恢复所选应用实例</small></span></label></div>
             <div class="settings-switch"><label><input type="checkbox" id="ocr" checked><span>页面不可读时使用本地 OCR<small>手机截图在电脑本地识别</small></span></label></div>
+            <div class="advanced-network">
+              <label class="field-label" for="ocr-device">OCR 推理后端</label>
+              <select id="ocr-device"><option value="auto">自动（检测到 CUDA 用 GPU，否则 CPU）</option><option value="cpu">强制 CPU</option><option value="cuda">强制 CUDA（需 NVIDIA 显卡）</option></select>
+              <p class="field-hint" id="ocr-device-hint">保留下次 OCR 重建引擎时生效；自动模式默认 CPU。</p>
+              <label class="field-label" for="download-proxy">活动下载代理</label>
+              <input type="text" id="download-proxy" autocomplete="off" spellcheck="false" placeholder="留空沿用系统代理；http://127.0.0.1:7890；off 强制直连">
+              <p class="field-hint">仅用于活动中心访问 GitHub 下载活动，不影响设备连接。</p>
+            </div>
             <div class="settings-switch"><label><input type="checkbox" id="reset-after-activity"> 活动结束后清理标记并复查一次</label></div><div class="settings-switch"><label><input type="checkbox" id="clear-clipboard" checked><span>开始前清空设备剪贴板<small>减少残留助力链接弹窗；不读取内容，不更换输入法</small></span></label></div><div class="resource-setting-row"><label class="resource-toggle"><input type="checkbox" id="keep-screen-on"><span>开始时唤醒并设置息屏时间<small>修改设备的自动息屏超时，结束后恢复原值</small></span></label><label class="resource-value">息屏 / 分钟<input type="number" id="screen-timeout-minutes" min="1" max="1440" step="1" value="10" required></label></div><div class="settings-switch"><label><input type="checkbox" id="minimum-volume"><span>执行时媒体音量最低<small>开始时降低设备媒体音量并核验，结束后恢复</small></span></label></div><div class="settings-switch"><label><input type="checkbox" id="minimum-brightness"><span>执行时屏幕亮度最低<small>暂时关闭自动亮度，结束后恢复；不关闭屏幕</small></span></label></div><p class="field-hint">公共配置应用或开始时保存到系统用户目录，升级保留。设备不支持的设置仅记录提示。</p>
           <div class="resource-setting-row"><label class="resource-toggle"><input type="checkbox" id="compressed-screenshots"><span>使用压缩截图<small>默认全分辨率 PNG；开启同尺寸 JPEG，减少无线传输量。</small></span></label><label class="resource-value">JPEG 质量<input type="number" id="screenshot-quality" min="30" max="95" step="1" value="70" required></label></div></section>
           <div class="settings-save" id="settings-save" hidden><span>关闭保留本页修改，下次开始时使用</span><button type="button" class="button settings-apply" id="save-settings">应用设置</button></div>            </div>

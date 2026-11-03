@@ -89,6 +89,28 @@ async function action(name, extra={}){
     const result=await response.json();if(!response.ok)throw new Error(result.error||'操作失败');if(name==='shutdown'){toast('助手已退出，可以关闭此页面');return;}if(name==='configure')toast('执行设置已应用');await poll();
   }catch(error){toast(error.message);}finally{requesting=false;}
 }
+let preferencesLoaded=false;
+async function loadPreferences(){
+  if(preferencesLoaded)return;
+  try{
+    const prefs=await MiaoAPI.request('/api/preferences',{timeout:8000});
+    $('ocr-device').value=prefs.ocr_device||'auto';
+    $('download-proxy').value=prefs.download_proxy||'';
+    $('ocr-device-hint').textContent=prefs.cuda_available
+      ?'已检测到 CUDA 执行器；保存后下次识别重建引擎时生效。'
+      :'未检测到 CUDA 执行器，强制 CUDA 会回退 CPU；保存后下次识别生效。';
+    preferencesLoaded=true;
+  }catch(_){/* 旧后端或临时失败时保留表单默认值 */}
+}
+async function savePreferences(){
+  const payload={ocr_device:$('ocr-device').value, download_proxy:$('download-proxy').value.trim()};
+  const response=await fetch(MiaoAPI.url('/api/preferences'),{method:'POST',headers:{'Content-Type':'application/json','X-Miao-Token':token},body:JSON.stringify(payload)});
+  const result=await response.json();
+  if(!response.ok)throw new Error(result.error||'偏好设置保存失败');
+  $('ocr-device-hint').textContent=result.cuda_available
+    ?'已检测到 CUDA 执行器；保存后下次识别重建引擎时生效。'
+    :'未检测到 CUDA 执行器，强制 CUDA 会回退 CPU；保存后下次识别生效。';
+}
 async function discover(){
   $('discover').disabled=true;
   try{const response=await fetch(MiaoAPI.url('/api/inventory'));if(!response.ok)throw new Error('设备检测失败');const data=await response.json();const options=$('device-options');options.replaceChildren();
@@ -169,7 +191,7 @@ function render(){
   const failureTitle=typeof failureTask==='string'?failureTask:failureTask?.title;
   $('last-failure').textContent=state.last_failure?`最近记录：${state.last_failure.reason||'执行未通过'}${failureTitle?' · '+failureTitle:''}`:'遇到验证、恢复失败或核验失败时记录现场，原始截图仅保存在本机。';
   $('package-name').textContent=state.package||'设备未连接';$('preview-source').textContent=state.source==='ocr'?'本地 OCR 识别':state.source==='ui'?'页面控件识别':'手机截图预览';
-  if(!initialized){applyConfig({...config(),...(state.config||{})});initialized=true;}
+  if(!initialized){applyConfig({...config(),...(state.config||{})});initialized=true;loadPreferences();}
   updateSettingsSummary();renderTasks();renderLogs();preview();MiaoDevices.refresh();
 }
 async function poll(){
@@ -200,7 +222,7 @@ window.addEventListener('pagehide',()=>{pageActive=false;clearTimeout(pollTimer)
 window.addEventListener('pageshow',event=>{if(event.persisted){pageActive=true;pollLoop();previewLoop();}});
 for(const id of ['connect','run','capture','stop'])$(id).addEventListener('click',()=>action(id));
 MiaoDialogs.bind($('common-settings'));
-$('common-settings-open').addEventListener('click',()=>showSettings(settingsSection||'tasks'));
+$('common-settings-open').addEventListener('click',()=>{loadPreferences();showSettings(settingsSection||'tasks');});
 for(const button of document.querySelectorAll('[data-open-settings]'))button.addEventListener('click',()=>{if(state)showSettings(settingsSection||'tasks');});
 $('common-settings-close').addEventListener('click',()=>$('common-settings').close());
 for(const button of document.querySelectorAll('[data-settings-toggle]'))button.addEventListener('click',()=>showSettings(button.dataset.settingsToggle));
@@ -212,7 +234,10 @@ $('refresh-instances-visible').addEventListener('click',()=>action('refresh_inst
 $('choose-instance-visible').addEventListener('click',()=>document.querySelector('.device-tab.selected .device-edit')?.click());
 $('sequence-instances').addEventListener('change',async()=>{clonesEnabled=$('sequence-instances').checked;queueOrder=clonesEnabled?(state?.app_instances||[]).map(i=>i.id):[defaultInstanceId()].filter(Boolean);if(!clonesEnabled&&defaultInstanceId()&&state?.selected_instance!==defaultInstanceId())await action('select_instance',{instance_id:defaultInstanceId()});await action('configure',{all_instances:clonesEnabled});if(state)render();});
 $('pause').addEventListener('click',()=>action(state?.status==='paused'?'resume':'pause'));
-$('save-settings').addEventListener('click',()=>action('configure'));
+$('save-settings').addEventListener('click',async()=>{
+  try{await savePreferences();}catch(error){showSettings('advanced');toast(error.message);return;}
+  await action('configure');
+});
 
 $('settings-form').addEventListener('submit',event=>event.preventDefault());
 for(const button of document.querySelectorAll('[data-filter]'))button.addEventListener('click',()=>{filter=button.dataset.filter;document.querySelectorAll('[data-filter]').forEach(b=>b.classList.toggle('active',b===button));if(state)renderTasks(true);});
