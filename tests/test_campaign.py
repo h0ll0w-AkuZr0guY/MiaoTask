@@ -1919,8 +1919,7 @@ class Double11RescanTests(unittest.TestCase):
         shown = screen or self.done_screen()
         runner.ensure_list = Mock(side_effect=lambda **kw: order.append('list') or shown)
         runner.read = Mock(return_value=shown)
-        if rescan:
-            runner.config['rescan'] = dict(runner.config.get('rescan') or {}, **rescan)
+        runner.config['rescan'] = dict(runner.config.get('rescan') or {}, **dict({'rescan_restart_app':True}, **rescan))
         return runner, order
 
     def test_rescan_restarts_client_before_reopening_the_list(self):

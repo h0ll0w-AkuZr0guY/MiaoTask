@@ -121,11 +121,11 @@ class SessionLoop:
         seen_pages = set()
         final_rescan = False
         verified_progress = self._verified_progress
-        scrolls, total_attempts, page_turns = 0, 0, 0
+        scrolls, page_turns = 0, 0
         # 换批后仍没有可执行任务时，连续空批次达到上限就收工，不再翻完剩余批次
         empty_batches, paged = 0, False
         empty_batch_stop = max(1, int(self.config.get('empty_batch_stop', 3)))
-        while total_attempts < self.config['max_tasks']:
+        while self.stats.attempts < self.config['max_tasks']:
             self.control.check()
             self.guard(screen)
             tasks = self.tasks(screen)
@@ -168,7 +168,6 @@ class SessionLoop:
                                                       {'claim': 0, 'browse': 1, 'visit': 2, 'search': 3}.get(t.kind, 4), t.bounds[1]))
                 if self.task_policy.reason(task):
                     continue
-                total_attempts += 1
                 self.stats.attempts += 1
                 self.records[task.key]['status'] = 'running'
                 self.update(tasks=list(self.records.values()))
@@ -340,7 +339,7 @@ class SessionLoop:
                 logger.exception('任务列表读取异常')
                 self.report_failure('任务列表读取异常', phase='scanning')
                 screen = self.recover(cold_start=True)
-        self.daily_exhausted = bool(self.records) and total_attempts < self.config['max_tasks'] and not any(
+        self.daily_exhausted = bool(self.records) and self.stats.attempts < self.config['max_tasks'] and not any(
             row.get('status') in ('pending', 'running', 'failed') for row in self.records.values())
         # 会话结束（无可执行任务或已达上限）：回到应用首页，避免停在活动页/抽奖页
         try:
@@ -349,7 +348,7 @@ class SessionLoop:
             raise
         except Exception:
             logger.exception('返回首页失败')
-        if total_attempts >= self.config['max_tasks']:
+        if self.stats.attempts >= self.config['max_tasks']:
             message = '达到本轮任务次数上限，可再次开始继续'
         elif not self.records:
             # 商业任务（办流量卡/充话费…）在解析层就被过滤了，不会进 records。

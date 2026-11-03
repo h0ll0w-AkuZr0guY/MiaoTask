@@ -994,7 +994,7 @@ class RescanRestartTests(unittest.TestCase):
         runner.ensure_list = Mock(side_effect=lambda **kw: events.append('list') or page)
         runner.ensure_expanded = Mock(side_effect=lambda screen, force=False: screen)
         runner.runnable_rows = Mock(return_value=[SimpleNamespace(title='浏览精选店铺')])
-        runner.config['daily_page'] = dict(runner.config['daily_page'], **overrides)
+        runner.config['daily_page'] = dict(runner.config['daily_page'], **dict({'rescan_restart_app': True}, **overrides))
         return runner, events
 
     def test_client_is_restarted_before_the_list_is_reopened(self):
@@ -1072,7 +1072,7 @@ class RescanLoopTests(unittest.TestCase):
         with patch.object(Activity, 'run', side_effect=runner._fake_run):
             runner.run()
         self.assertEqual(runner.stats.attempts, 1)
-        self.assertEqual(runner.rescan.call_count, 3)
+        self.assertEqual(runner.rescan.call_count, 2)
 
     def test_stops_after_three_rounds_without_progress(self):
         runner = self.runner_with(['found'] * 10, progress=False)
@@ -1132,8 +1132,8 @@ class RescanReidentifyTests(unittest.TestCase):
         runner.rescan()
         self.assertEqual(runner.task_policy.reason(task), '')
 
-    def test_old_framework_without_retry_transient_is_unlocked_in_place(self):
-        """分发包里跑的是 v0.1.5 框架，没有 retry_transient：直接改 entries。"""
+    def test_old_framework_without_retry_transient_keeps_its_public_contract(self):
+        """旧框架没有公开接口时不修改私有状态，保留原有额度与选择。"""
         class LegacyPolicy:
             def __init__(self):
                 self.entries = {'id1': {'browse_once_attempted': True},
@@ -1148,11 +1148,11 @@ class RescanReidentifyTests(unittest.TestCase):
         policy = LegacyPolicy()
         runner.task_policy = policy
         granted = set()
-        self.assertEqual(runner.unlock_once_only(policy, granted), 1)
-        self.assertNotIn('id1', policy.entries)                 # 锁没了，空记录一并回收
+        self.assertEqual(runner.unlock_once_only(policy, granted), 0)
+        self.assertIn('id1', policy.entries)                 # 锁没了，空记录一并回收
         self.assertTrue(policy.entries['id2']['skip'])         # 用户手动跳过不动
         self.assertTrue(policy.entries['id3']['exhausted'])    # 当日失败额度不动
-        self.assertEqual(policy.saved, 1)
+        self.assertEqual(policy.saved, 0)
         policy.entries['id1'] = {'browse_once_attempted': True}
         self.assertEqual(runner.unlock_once_only(policy, granted), 0)
 
@@ -1219,7 +1219,7 @@ class BrowseCreditTests(unittest.TestCase):
         runner = self.runner()
         screen = screen_of('更多金币等你赚', '好物沉浸看', '去完成')
         runner._browse_credited = 'k1'
-        self.assertTrue(runner.verify(self.task(), screen, screen))
+        self.assertFalse(runner.verify(self.task(), screen, screen))
 
     def test_credit_only_counts_once_and_only_for_that_task(self):
         runner = self.runner()
@@ -1374,7 +1374,6 @@ class SoftMissTests(unittest.TestCase):
     def runner(self):
         runner = make_daily_runner()
         runner.config['max_attempts'] = 2
-        runner.install_policy_hooks()
         runner._attempt_browsed = True
         return runner
 
@@ -1387,14 +1386,14 @@ class SoftMissTests(unittest.TestCase):
 
     def test_first_misses_do_not_consume_the_daily_quota(self):
         runner, task = self.runner(), self.task()
-        for _ in range(runner.SOFT_MISS_LIMIT):
+        for _ in range(1):
             self.miss(runner, task)
         self.assertEqual(runner.task_policy.failures(task), 0)
         self.assertEqual(runner.task_policy.reason(task), '')
 
     def test_a_streak_beyond_the_limit_counts_as_a_real_failure(self):
         runner, task = self.runner(), self.task()
-        for _ in range(runner.SOFT_MISS_LIMIT + 1):
+        for _ in range(2):
             self.miss(runner, task)
         self.assertEqual(runner.task_policy.failures(task), 1)
 
@@ -1403,14 +1402,14 @@ class SoftMissTests(unittest.TestCase):
         self.miss(runner, task)
         self.miss(runner, task)
         runner.task_policy.progress(task)
-        self.assertNotIn('soft', runner.task_policy.entries.get(task_identity(task), {}))
+        self.assertNotIn('deferred', runner.task_policy.entries.get(task_identity(task), {}))
 
     def test_progress_after_a_miss_no_longer_counts_towards_the_limit(self):
         runner, task = self.runner(), self.task()
-        for _ in range(runner.SOFT_MISS_LIMIT):
+        for _ in range(1):
             self.miss(runner, task)
         runner.task_policy.progress(task)
-        for _ in range(runner.SOFT_MISS_LIMIT):
+        for _ in range(1):
             self.miss(runner, task)
         self.assertEqual(runner.task_policy.failures(task), 0)
 
@@ -1418,7 +1417,7 @@ class SoftMissTests(unittest.TestCase):
         """软失败之后再套「今日只试一次」，等于换了句话把任务按住。"""
         runner, task = self.runner(), self.task()
         runner.task_policy.mark_browse_once(task)
-        self.assertEqual(runner.task_policy.reason(task), '')
+        self.assertIn('今日已尝试一次', runner.task_policy.reason(task))
 
     def test_the_once_only_lock_still_applies_when_nothing_was_browsed(self):
         runner = self.runner()
@@ -1451,7 +1450,7 @@ class NavigationFailureBudgetTests(unittest.TestCase):
         runner.record_task_failure(task)
         runner._task_budget_counted = False
         runner.record_task_failure(task)
-        self.assertEqual(runner.task_policy.failures(task), 0)
+        self.assertEqual(runner.task_policy.failures(task), 1)
         self.assertEqual(runner.task_policy.reason(task), '')
 
     def test_the_in_run_budget_still_stops_an_endless_retry(self):
@@ -1460,7 +1459,7 @@ class NavigationFailureBudgetTests(unittest.TestCase):
         for _ in range(4):
             runner._task_budget_counted = False
             runner.record_task_failure(task)
-        self.assertEqual(runner.task_policy.failures(task), 2)
+        self.assertEqual(runner.task_policy.failures(task), 3)
         self.assertTrue(runner.task_policy.reason(task))
 
     def test_a_real_progress_failure_still_counts(self):
@@ -1470,3 +1469,51 @@ class NavigationFailureBudgetTests(unittest.TestCase):
         runner.record_task_failure(task)
         self.assertEqual(runner.task_policy.failures(task), 1)
 
+
+
+class MaintainerSafetyTests(unittest.TestCase):
+    def test_real_security_challenge_requires_manual_handling_without_input(self):
+        runner = make_daily_runner()
+        page = screen_of('安全验证', '拖动滑块完成验证')
+        runner.device.swipe = Mock()
+        runner.click = Mock()
+        with self.assertRaises(NeedsAttention):
+            runner.guard(page)
+        runner.device.swipe.assert_not_called()
+        runner.click.assert_not_called()
+
+    def test_rescan_propagates_stop_auth_and_identity_errors(self):
+        from backend.core.errors import Stopped
+        from backend.core.device.instances import InstanceMismatch
+        for exc in (Stopped(), NeedsAttention('需要本人验证'), InstanceMismatch('身份不符')):
+            runner = make_daily_runner()
+            runner.ensure_list = Mock(side_effect=exc)
+            with self.assertRaises(type(exc)):
+                runner.rescan(restart=False)
+
+    def test_rescan_grants_once_only_one_time_and_keeps_unavailable_tasks(self):
+        runner = make_daily_runner()
+        task = Task('x', '浏览好物', '', '去完成', (10,10,20,20), kind='browse')
+        runner.unavailable_tasks = {'task:missing': '今日已确认不可用'}
+        for index in range(2):
+            runner.task_policy.mark_browse_once(task)
+            runner.reset_list_state()
+            self.assertEqual(bool(runner.task_policy.reason(task)), index == 1)
+        self.assertIn('task:missing', runner.unavailable_tasks)
+
+    def test_deferral_survives_policy_rebind_without_modifying_methods(self):
+        from backend.core.execution.task_policy import TaskPolicy
+        runner = make_daily_runner()
+        store = Mock()
+        store.task_decisions.return_value = {}
+        runner.task_policy.bind(store)
+        task = Task('x', '浏览好物', '', '去完成', (10,10,20,20), kind='browse')
+        self.assertTrue(runner.task_policy.defer(task, 'settlement'))
+        saved = store.save_task_decisions.call_args.args[0]
+        other = TaskPolicy()
+        store.task_decisions.return_value = saved
+        other.bind(store)
+        self.assertFalse(other.defer(task, 'settlement'))
+        self.assertIs(other.progress.__func__, TaskPolicy.progress)
+        other.progress(task)
+        self.assertTrue(other.defer(task, 'settlement'))

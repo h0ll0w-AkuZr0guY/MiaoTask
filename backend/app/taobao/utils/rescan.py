@@ -1,24 +1,13 @@
-"""补扫：一轮跑完不代表任务做完，要回列表确认才算。
+"""Bounded three-state rescanning shared by Taobao task panels.
 
-淘金币这类活动是「做完一个才刷出下一个」，而框架单轮的边界是「翻到一批空的
-就结束」——那一批当时确实是空的，于是面板报「本轮结束」，列表里却还挂着
-pending。所以每轮之后必须回到任务列表把整张翻一遍。
-
-收工只有一条路：连续 `rescan_confirm` 次完整扫描都确认没有可执行行；扫描没看全
-只算「不知道」，要重试，不能当成「做完了」。
-
-补扫前默认先把客户端退出再重新进入活动：这两个活动的任务面板都在 WebView 里，
-页面不刷新时补扫读到的是同一份缓存，明明还有任务却连续两次都判定「没有」，于是
-提前收工。重启一次能强制重新拉取列表，代价是几秒的冷启动时间。
-
-抽成 mixin 是因为淘金币日常（DailyActivity）和双11（直接继承 Activity）是两套
-独立实现，但「什么时候才算真的做完」这个判定完全一致，只有「怎么回到列表」和
-「列表长什么样」不同，那两点由子类或配置决定。
+A partial or failed scan is unknown, never proof that all tasks finished.
+Durable failure budgets, user choices and unavailable-app facts survive rescans.
 """
-import contextlib
 import logging
 import re
 from backend.core.models import normalize
+from backend.core.errors import Stopped, NeedsAttention
+from backend.core.device.instances import InstanceMismatch
 
 logger = logging.getLogger('backend.execution')
 
@@ -108,6 +97,8 @@ class RescanPolicy:
                     int(getattr(task, 'total', 0) or 0),
                 ))
             return tuple(sorted(rows))
+        except (Stopped, NeedsAttention, InstanceMismatch):
+            raise
         except Exception:
             logger.warning('补扫：计算列表指纹失败', exc_info=True)
             return ()
@@ -128,6 +119,8 @@ class RescanPolicy:
                 return True
             if not self.tasks(screen):
                 return False
+        except (Stopped, NeedsAttention, InstanceMismatch):
+            raise
         except Exception:
             return False
         return any(self.ROW_ACTION_RE.search(normalize(n.text)) for n in screen.nodes)
@@ -145,6 +138,8 @@ class RescanPolicy:
             return False
         try:
             return bool(probe(screen))
+        except (Stopped, NeedsAttention, InstanceMismatch):
+            raise
         except Exception:
             logger.warning('补扫：判断列表是否折叠失败', exc_info=True)
             return False
@@ -162,6 +157,8 @@ class RescanPolicy:
             return screen, False
         try:
             screen = expand(screen)
+        except (Stopped, NeedsAttention, InstanceMismatch):
+            raise
         except Exception:
             logger.warning('补扫：展开任务段失败', exc_info=True)
             return screen, False
@@ -172,18 +169,7 @@ class RescanPolicy:
         return screen, True
 
     def reset_list_state(self):
-        """把上一轮解析出来的任务清单整份丢掉，让重新进入的页面从头识别。
-
-        补扫前客户端已经强停重开，任务面板会重新请求一次列表；但框架里还留着上一轮
-        的解析结果：``_known_tasks``（按图标/位置继承的旧任务对象）、``records``
-        （status/reason/current）、``_verified_progress``（“这次进度已核验，等页面
-        刷新”），再加上 task_policy 里「今日已试一次」这类临时锁。扫描读的是这些
-        缓存而不是当前屏幕，于是刚刷出来的任务被旧结论继续挡着，连续两次判「没有
-        可执行任务」就收工——用户看到的就是「明明还能做，程序却说做完了」。
-
-        临时锁每个任务在一次运行里只放行一次（``_rescan_retried``），所以「一直
-        失败」的任务不会被清零成无限重试。
-        """
+        """Refresh parsed rows; preserve durable choices, quotas and unavailable-task facts."""
         dropped = 0
         records = getattr(self, 'records', None)
         if isinstance(records, dict) and records:
@@ -200,59 +186,18 @@ class RescanPolicy:
         if getattr(self, '_installed_packages', None) is not None:
             self._installed_packages = None
             self._installed_checked = False
-        # 任务级的「不可用」是上一轮这一次尝试的结论，换成新列表后要重新判；
-        # 应用级（未安装某某）保留，安装状态由上面那次重读负责刷新。
-        for key in [k for k in (getattr(self, 'unavailable_tasks', None) or {})
-                    if str(k).startswith('task:')]:
-            self.unavailable_tasks.pop(key, None)
         policy = getattr(self, 'task_policy', None)
-        # 每一轮补扫都是“客户端刚重启、列表刚重拉”的全新现场。上一轮放行过不代表
-        # 这一轮不用再放行：任务只要失败一次就会重新上锁，名单不重置的话，第二轮
-        # 之后这条任务就被永久跳过（实测好物沉浸看 3/6 正是卡在这里）。真正防止
-        # 无限重试的是失败额度（max_attempts）和“连续三轮推不动”的兜底。
-        self._rescan_retried = set()
+        if not hasattr(self, '_rescan_retried'):
+            self._rescan_retried = set()
         unlocked = self.unlock_once_only(policy, self._rescan_retried)
         if dropped or unlocked:
             logger.info('补扫：清空上一轮的任务清单（%d 条记录、%d 条临时锁），按当前页面重新识别',
                         dropped, unlocked)
         return dropped, unlocked
 
-    ONCE_ONLY_KEYS = ('browse_once_attempted',)
-
     def unlock_once_only(self, policy, granted=None):
-        """解开「无明确浏览时长，今日只试一次」的锁，每个任务每次运行只放行一次。
-
-        新框架用 ``TaskPolicy.retry_transient``；分发包里跑的是 v0.1.5 的旧框架，
-        没有这个方法，只能直接改它的 ``entries``（字段名从 0.1.3 起没变过，带兜底）。
-        失败次数（failures/exhausted）不在放行范围：那是当日额度，清了等于把
-        max_attempts 变成无限重试。用户手动跳过的 skip 永远不动。
-        """
-        granted = set() if granted is None else granted
         retry = getattr(policy, 'retry_transient', None)
-        if callable(retry):
-            return retry(granted)
-        entries = getattr(policy, 'entries', None)
-        if not isinstance(entries, dict):
-            return 0
-        lock = getattr(policy, 'lock', None)
-        with (lock if lock is not None else contextlib.nullcontext()):
-            cleared = 0
-            for identity in list(entries):
-                item = entries[identity]
-                if not isinstance(item, dict) or item.get('skip') or identity in granted:
-                    continue
-                if not item.get('browse_once_attempted'):
-                    continue
-                item.pop('browse_once_attempted', None)
-                granted.add(identity)
-                cleared += 1
-                if not item:
-                    entries.pop(identity, None)
-        if cleared:
-            save = getattr(policy, '_save', None)
-            if callable(save):
-                save()
-        return cleared
+        return retry(granted) if callable(retry) else 0
 
     def restore_list_state(self):
         """清空重认之后如果没跑出新的任务清单，把快照放回去。
@@ -275,21 +220,17 @@ class RescanPolicy:
         driver = getattr(getattr(self, 'device', None), 'device_type', '') or ''
         try:
             return self.application.package_for(driver)
+        except (Stopped, NeedsAttention, InstanceMismatch):
+            raise
         except Exception:
             # 测试替身或非常规驱动下没有 device_type，按安卓包名兜底。
             return getattr(self.application, 'android_package', None)
 
     def restart_client(self):
-        """补扫前把客户端彻底退出再冷启动，返回是否真的重启了。
-
-        为什么必须这么做：任务面板是 WebView，页面本身不会因为“又点进来一次”而
-        重新拉数据，补扫看到的还是上一次的缓存——两次扫描都读同一份旧列表，于是
-        判定“没有可执行任务”提前收工，其实任务还在。force-stop 再启动会重建进程，
-        列表必然重新请求。
-        """
-        if not self.rescan_option('rescan_restart_app', True):
+        """Optional bounded restart; ordinary rescans stay on the current client."""
+        if not self.rescan_option('rescan_restart_app', False):
             return False
-        budget = max(0, int(self.rescan_option('rescan_restart_max', 12)))
+        budget = max(0, int(self.rescan_option('rescan_restart_max', 1)))
         used = int(getattr(self, '_rescan_restarts', 0) or 0)
         if used >= budget:
             if not getattr(self, '_rescan_restart_capped', False):
@@ -303,16 +244,19 @@ class RescanPolicy:
             return False
         self.update('returning', message='先退出客户端，重新进入活动后再补扫',
                     current_task='', remaining=0)
-        logger.info('补扫：退出客户端 %s 并重新进入，强制刷新任务列表', package)
+        logger.info('补扫：按配置退出客户端 %s 并重新进入，强制刷新任务列表', package)
+        self._rescan_restarts = used + 1
         try:
             # 先回桌面再 force-stop：留在活动页上强停，部分机型下一次启动会直接
             # 恢复那个旧页面，等于没重启。
             self.device.go_home()
-            self.pause(.6)
+            self.control.wait(.6)
             self.device.stop_app(package)
-            self.pause(1.2)
+            self.control.wait(1.2)
             self.device.start_app(package)
             self.pause(max(0.0, float(self.rescan_option('rescan_start_pause', 3.0))))
+        except (Stopped, NeedsAttention, InstanceMismatch):
+            raise
         except Exception:
             logger.warning('补扫：重启客户端失败，改为直接刷新当前页面', exc_info=True)
             return False
@@ -349,15 +293,7 @@ class RescanPolicy:
             self.pause(wait)
 
     def rescan(self, pages=None, restart=True):
-        """先把客户端重开一遍，再回任务列表从头翻到尾，看还有没有能执行的任务。
-
-        只做判断，不执行任何任务。
-
-        返回值：
-        - ``SCAN_FOUND``：找到可执行行，应该再来一轮；
-        - ``SCAN_EMPTY``：整张列表完整翻到底，确认没有可执行行；
-        - ``SCAN_UNKNOWN``：这次没看全，调用方应当重试，不能据此收工。
-        """
+        """Return found, empty or unknown after a bounded scan; partial scans stay unknown."""
         limit = max(2, int(pages or self.config.get('max_scroll_pages') or 10))
         name = self.list_name()
         if restart:
@@ -369,6 +305,8 @@ class RescanPolicy:
         self.reset_list_state()
         try:
             screen = self.reopen_list()
+        except (Stopped, NeedsAttention, InstanceMismatch):
+            raise
         except Exception:
             logger.warning('补扫：回到任务列表失败', exc_info=True)
             return self.SCAN_UNKNOWN
@@ -385,6 +323,8 @@ class RescanPolicy:
         for index in range(limit):
             try:
                 rows = self.runnable_rows(screen)
+            except (Stopped, NeedsAttention, InstanceMismatch):
+                raise
             except Exception:
                 logger.warning('补扫：解析当前屏失败', exc_info=True)
                 return self.SCAN_UNKNOWN
@@ -407,6 +347,8 @@ class RescanPolicy:
             try:
                 self.scroll_list(screen)
                 fresh = self.read(force_ocr=bool(self.config['ocr']))
+            except (Stopped, NeedsAttention, InstanceMismatch):
+                raise
             except Exception:
                 logger.warning('补扫：滚动失败', exc_info=True)
                 return self.SCAN_UNKNOWN
@@ -426,24 +368,15 @@ class RescanPolicy:
         logger.warning('补扫：翻了 %d 屏仍未到底，无法确认是否还有任务', limit)
         return self.SCAN_UNKNOWN
 
-    def confirm_scan(self, retries=3, restart=True):
-        """反复扫描，直到拿到确定结论（还有任务 / 确认没有）。
-
-        扫描本身会失败：回列表可能被浮层挡住、翻页可能被跳转打断、列表可能长过
-        翻页上限。这些都返回 SCAN_UNKNOWN，只能重试，不能当成“做完了”。重试时
-        逐次多翻几屏，给长列表留余量。
-
-        ``restart`` 只对第一次尝试生效：重试是为了“这次没看清”，页面刚刚才重开
-        过，再退一次客户端没有意义——而且会把“确认没有任务”变成永远退不完的
-        循环。所以重试一律在已经打开的列表上做。
-        """
+    def confirm_scan(self, retries=2, restart=False):
+        """Retry unknown scans locally; never treat failed navigation as an empty list."""
         pages = int(self.config.get('max_scroll_pages') or 10)
         verdict = self.SCAN_UNKNOWN
         for attempt in range(max(1, int(retries))):
             verdict = self.rescan(pages, restart=restart and attempt == 0)
             if verdict != self.SCAN_UNKNOWN:
                 return verdict
-            wait = min(30.0, 8.0 * (attempt + 1))
+            wait = 1.0
             logger.warning('补扫：第 %d/%d 次扫描未能确认，%.0f 秒后重试',
                            attempt + 1, retries, wait)
             self.pause(wait)
@@ -451,23 +384,7 @@ class RescanPolicy:
         return verdict
 
     def run(self, auto_open=False):
-        """一直补扫到整张列表真的没有可执行任务，才收工。
-
-        框架一轮的边界是：翻到某一批没有可执行行就判定本轮结束（任务做完一个才
-        刷出下一个，这一批当时就是空的），于是面板报“本轮结束”，列表里却还挂着
-        pending。所以每轮之后都要回列表把整张翻一遍——完工标准就是“再进去也不会
-        自动执行任何任务”。
-
-        每一轮的循环只有两步：
-        1. 跑一轮任务（框架自己那套）；
-        2. 退出客户端重进一次，把列表从头翻到尾看一眼——有可执行的就回到第 1
-           步，一条都没有就直接收工。
-
-        收工判定就是“重进后这一眼是空的”，不搞连续多次确认，也不为了再确认去
-        反复退出重进（那会变成永远退不完的循环）。只有“没看全”（SCAN_UNKNOWN）
-        才在原地重试几次，仍然看不清才带着明确日志停下。另外保留一个轮数保险，
-        防止某个任务永远“可执行却推不动”导致空转。
-        """
+        """Run and rescan with one shared task budget and bounded rounds."""
         if not self.rescan_option('rescan_enabled', True):
             # 总开关：出问题时可退回“一轮就收工”的旧行为，不用改代码。
             return super().run(auto_open)
@@ -486,13 +403,15 @@ class RescanPolicy:
         self._rescan_retried = set()
         self._records_snapshot = None
         limit = max(2, int(self.rescan_option('rescan_rounds', None)
-                           or self.rescan_option('round_limit', None) or 20))
-        retries = max(1, int(self.rescan_option('rescan_retries', 3)))
+                           or self.rescan_option('round_limit', None) or 3))
+        retries = max(1, int(self.rescan_option('rescan_retries', 2)))
         try:
             # 默认一批没东西就收工（empty_batch_stop=1），会把后面几批连同刚刷新
             # 出来的任务一起跳过；补扫期间多容忍几个空批，把整张列表翻完。
             self.config['empty_batch_stop'] = max(
                 int(self.config.get('empty_batch_stop') or 1), 3)
+        except (Stopped, NeedsAttention, InstanceMismatch):
+            raise
         except Exception:
             logger.warning('无法调整 empty_batch_stop，按框架默认值继续', exc_info=True)
         stats, stalled, index = None, 0, 0
@@ -503,7 +422,7 @@ class RescanPolicy:
         closing = '本轮任务已处理完毕'
         while index < limit:
             if index > 0:
-                logger.info('补扫：第 %d 轮结束，重进客户端确认是否还有任务', index)
+                logger.info('补扫：第 %d 轮结束，重新读取列表确认是否还有任务', index)
                 verdict = self.confirm_scan(retries, restart=True)
                 if verdict == self.SCAN_FOUND:
                     logger.info('补扫：重进后仍找到可执行任务，继续下一轮')
@@ -515,6 +434,9 @@ class RescanPolicy:
                     logger.warning('补扫：多次扫描都没能确认列表状态，停止；列表里可能还有任务')
                     closing = '补扫没能确认列表状态已停止；列表里可能还有任务，可稍后重新开始'
                     break
+            if self.stats.attempts >= self.config['max_tasks']:
+                closing = '本轮尝试次数已达上限，可稍后继续'
+                break
             before = self.progress_mark()
             # 补扫轮从“刚才发现任务的那一屏”接着做：ensure_list 默认会把列表拉回
             # 顶部，而可执行的行往往在下面几屏，回到顶部等于让它重新扫一遍并再次
