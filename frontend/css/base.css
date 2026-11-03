@@ -326,6 +326,7 @@ main{margin:0 0 0 204px;width:calc(100% - 204px);max-width:none;padding:26px 28p
 @media(max-width:600px){#wifi-pair-panel>.connection-grid{grid-template-columns:minmax(0,1fr)!important}#wifi-pair-panel>.connection-grid>label{max-width:180px}#wifi-manager .wifi-connect-grid{grid-template-columns:minmax(0,1fr)}#wifi-manager .wifi-connect-grid>.button{justify-self:end}#wifi-manager .ipv4-fields{grid-template-columns:repeat(4,minmax(0,1fr) 4px) minmax(55px,1.4fr);gap:1px}}
 /* Captions align with native form labels in both address modes. */
 #wifi-manager .address-field{font-size:13.75px;color:var(--muted)}
+.advanced-network{margin:14px 0 2px;padding:13px 15px;border-radius:7px;background:#f1f5f2;display:grid;grid-template-columns:1fr;gap:7px}.advanced-network .field-label{margin:2px 0 0}.advanced-network select,.advanced-network input{height:36px;padding:0 10px;border:1px solid #dfe6e2;border-radius:6px;background:#fff;color:var(--ink);font-size:13.75px}.advanced-network .field-hint{margin:0 0 8px}
 /* Branch controls remain compact on desktop and wrap inside narrow dialogs. */
 .activity-source-toolbar{flex-wrap:wrap;justify-content:flex-start}
 #activity-source-branch{width:210px;max-width:100%;min-width:130px;flex:0 1 210px}

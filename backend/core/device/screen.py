@@ -9,11 +9,17 @@ import time
 from backend.core.models import TextNode, bounds_of, normalize
 from backend.core.device.geometry import IdentityImageProcessor, DisplayGeometry, ocr_tiles
 from backend.core.context import workspace_scope
-from backend.core.device.ocr import device_ocr_scope, scoped_engine as _scoped_ocr_engine
-
+from backend.core.device.ocr import (OCR_DEVICE_ENV, device_ocr_scope, engine_generation,
+                                     ocr_engine_params as _ocr_engine_params, reset_engines,
+                                     resolve_ocr_backend, scoped_engine as _scoped_ocr_engine)
 
 def local_ocr_engine(scope=None, threads=4):
     return _scoped_ocr_engine(scope if scope is not None else workspace_scope.get() or 'default', threads)
+
+
+def reset_ocr_engines():
+    """Drop cached recognizers so the next frame rebuilds with a new backend."""
+    reset_engines()
 
 
 @dataclass
@@ -47,6 +53,9 @@ class ScreenReader:
         self.ocr_enabled = ocr
         self.on_image = on_image
         self._engine = None
+        # Recognizers follow the device, not the calling thread, so an observer
+        # thread reuses the models already loaded by the task worker.
+        self._engine_generation = engine_generation()
         self._size = None
         self.last_image = None
         self.last_screen = None
@@ -120,8 +129,12 @@ class ScreenReader:
 
     def _ocr_tile(self, image):
         self._check_ocr()
-        if self._engine is None:
+        # A backend switch bumps the generation; rebuild instead of reusing an
+        # engine whose provider no longer matches the saved preference.
+        if self._engine is None or self._engine_generation != engine_generation():
+            generation = engine_generation()
             self._engine = local_ocr_engine(self._ocr_scope, self.ocr_threads)
+            self._engine_generation = generation
         import numpy as np
         prepared = self.image_processor.prepare(image)
         image = prepared.image

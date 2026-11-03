@@ -3,10 +3,17 @@ from collections import OrderedDict
 from contextlib import contextmanager
 from dataclasses import replace
 import hashlib
+import logging
 import os
 import threading
 import time
 import weakref
+
+logger = logging.getLogger(__name__)
+
+# auto：装了带 CUDA 的 onnxruntime-gpu 才启用；cpu/cuda 可显式指定。
+OCR_DEVICE_ENV = 'MIAO_OCR_DEVICE'
+_OCR_BACKENDS = ('auto', 'cpu', 'cuda')
 
 
 class ExactTextCache:
@@ -55,6 +62,24 @@ _CREATION_LOCKS = weakref.WeakValueDictionary()
 _CV_CONFIGURED = False
 _ACTIVE_SCOPES = {}
 _SESSION_ENGINES = {}
+# Bumped when the backend preference changes; cached engines become stale and
+# the next frame builds a fresh one instead of keeping the old provider.
+_GENERATION = 0
+
+
+def engine_generation():
+    """Identify the current engine configuration; readers compare before reuse."""
+    return _GENERATION
+
+
+def reset_engines():
+    """Drop cached engines after an OCR backend switch and invalidate readers."""
+    global _GENERATION
+    with _ENGINE_LOCK:
+        _GENERATION += 1
+        _ENGINES.clear()
+        _CREATION_LOCKS.clear()
+        _SESSION_ENGINES.clear()
 
 
 def device_ocr_scope(device):
@@ -64,6 +89,95 @@ def device_ocr_scope(device):
         if isinstance(value, str) and value.strip():
             return ('device', value.strip())
     return ('device', id(device)) if device is not None else None
+
+
+def resolve_ocr_backend(preference, providers):
+    """Map the MIAO_OCR_DEVICE preference and available EPs to a backend.
+
+    Returns ``(backend, note)`` where backend is ``'cpu'`` or ``'cuda'`` and
+    note is ``None`` or ``'cuda-unavailable'`` when a forced CUDA request has
+    to fall back because CUDAExecutionProvider is missing.
+    """
+    requested = (preference or 'auto').strip().lower()
+    if requested not in _OCR_BACKENDS:
+        logger.warning('环境变量 %s=%r 无法识别，可选 %s，按 auto 处理',
+                       OCR_DEVICE_ENV, preference, '/'.join(_OCR_BACKENDS))
+        requested = 'auto'
+    cuda_ready = 'CUDAExecutionProvider' in (providers or ())
+    if requested == 'cpu':
+        return 'cpu', None
+    if cuda_ready:
+        return 'cuda', None
+    if requested == 'cuda':
+        return 'cpu', 'cuda-unavailable'
+    return 'cpu', None
+
+
+def _preload_cuda_dlls(onnxruntime_module):
+    """Load CUDA/cuDNN DLLs installed by ``onnxruntime-gpu[cuda,cudnn]``.
+
+    Returns True when the runtime exposes and accepts the preload call. Older
+    onnxruntime releases and system-wide CUDA installs stay on the normal DLL
+    search path, so a missing hook or a failed load is not fatal.
+    """
+    preload = getattr(onnxruntime_module, 'preload_dlls', None)
+    if preload is None:
+        return False
+    try:
+        preload()
+        return True
+    except Exception:
+        logger.warning('预加载 onnxruntime-gpu 附带的 CUDA/cuDNN 运行库失败，'
+                       '继续按系统 PATH 查找', exc_info=True)
+        return False
+
+
+def preferred_ocr_device():
+    """Env var wins; otherwise the console-wide saved preference."""
+    explicit = os.environ.get(OCR_DEVICE_ENV)
+    if explicit is not None:
+        return explicit
+    try:
+        from backend.core.preferences import load_preferences
+        return load_preferences().get('ocr_device', 'auto')
+    except Exception:
+        return 'auto'
+
+
+def ocr_engine_params(backend, threads=4):
+    """RapidOCR parameters for an already resolved backend."""
+    params = {
+        'EngineConfig.onnxruntime.intra_op_num_threads': threads,
+        'EngineConfig.onnxruntime.inter_op_num_threads': 1,
+        'Global.log_level': 'warning',
+    }
+    if backend == 'cuda':
+        params['EngineConfig.onnxruntime.use_cuda'] = True
+        # Dynamic-width PP-OCR recognition batches can fail inside cuDNN
+        # ReduceMean on Windows. Single-crop GPU inference avoids that path;
+        # retain the existing batch size for CPU and the exact-crop cache.
+        params['Rec.rec_batch_num'] = 1
+    return params
+
+
+def engine_params(threads):
+    """Build RapidOCR parameters, enabling CUDA only when it is usable."""
+    providers = ()
+    try:
+        import onnxruntime
+        providers = onnxruntime.get_available_providers()
+    except ImportError:
+        pass
+    backend, note = resolve_ocr_backend(preferred_ocr_device(), providers)
+    if note == 'cuda-unavailable':
+        logger.warning('已请求 GPU 识别（cuda），但当前 onnxruntime 不含 CUDAExecutionProvider；'
+                       '需安装与本机 CUDA/cuDNN 版本匹配的 onnxruntime-gpu，已回退 CPU')
+    if backend == 'cuda':
+        # pip 安装的 nvidia-* 运行库不在 Windows DLL 搜索路径中，先显式加载。
+        _preload_cuda_dlls(onnxruntime)
+    logger.info('本地 OCR 推理后端：%s（onnxruntime 可用执行器：%s）',
+                backend, ','.join(providers) or 'CPUExecutionProvider')
+    return ocr_engine_params(backend, threads)
 
 
 @contextmanager
@@ -96,12 +210,16 @@ def _sleeping_session(model):
     options.add_session_config_entry('session.intra_op.allow_spinning', '0')
     options.add_session_config_entry('session.inter_op.allow_spinning', '0')
     options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+    providers = session.get_providers()
+    provider_options = session.get_provider_options()
     model.session.session = ort.InferenceSession(session._model_path, sess_options=options,
-                                                providers=session.get_providers())
+                                                providers=providers,
+                                                provider_options=[provider_options.get(name, {})
+                                                                  for name in providers])
 
 
 
-def _create_engine(threads):
+def _create_engine(threads, backend=None):
     global _CV_CONFIGURED
     from rapidocr import RapidOCR
     import cv2
@@ -109,25 +227,51 @@ def _create_engine(threads):
         if not _CV_CONFIGURED:
             cv2.setNumThreads(1)
             _CV_CONFIGURED = True
-    engine = RapidOCR(params={
-        'EngineConfig.onnxruntime.intra_op_num_threads': threads,
-        'EngineConfig.onnxruntime.inter_op_num_threads': 1,
-        'Global.log_level': 'warning'})
-    if callable(getattr(type(engine), '_load_det_model', None)):
-        _sleeping_session(engine._load_det_model())
-        rec = engine._load_rec_model()
-        _sleeping_session(rec)
-        engine.text_rec = ExactTextCache(rec)
-    return engine
+    params = engine_params(threads) if backend is None else ocr_engine_params(backend, threads)
+
+    def build(parameters):
+        engine = RapidOCR(params=parameters)
+        if callable(getattr(type(engine), '_load_det_model', None)):
+            det = engine._load_det_model()
+            _sleeping_session(det)
+            rec = engine._load_rec_model()
+            _sleeping_session(rec)
+            engine.miao_providers = {'det': det.session.session.get_providers(),
+                                     'rec': rec.session.session.get_providers()}
+            engine.miao_backend = ('cuda' if any('CUDAExecutionProvider' in providers
+                                   for providers in engine.miao_providers.values()) else 'cpu')
+            engine.text_rec = ExactTextCache(rec)
+            logger.info('OCR实际模型执行器：%s', engine.miao_providers)
+        return engine
+
+    try:
+        return build(params)
+    except Exception:
+        if not params.get('EngineConfig.onnxruntime.use_cuda'):
+            raise
+        logger.warning('CUDA模型初始化失败，改用CPU重试一次', exc_info=True)
+        return build(ocr_engine_params('cpu', threads))
 
 
 class ManagedEngine:
-    def __init__(self, engine):
+    def __init__(self, engine, threads=4):
+        self.threads = threads
         self.engine = engine
         self.lock = threading.Lock()
 
     def __call__(self, *args, **kwargs):
         with self.lock:
+            return self._run(*args, **kwargs)
+
+    def _run(self, *args, **kwargs):
+        try:
+            return self.engine(*args, **kwargs)
+        except Exception:
+            if getattr(self.engine, 'miao_backend', None) != 'cuda':
+                raise
+            logger.warning('CUDA推理失败，释放该引擎并回退CPU重试本帧一次', exc_info=True)
+            self.engine = None
+            self.engine = _create_engine(self.threads, backend='cpu')
             return self.engine(*args, **kwargs)
 
     def infer(self, image, check):
@@ -135,14 +279,16 @@ class ManagedEngine:
             check()
         try:
             check()
-            return self.engine(image, use_cls=False)
+            return self._run(image, use_cls=False)
         finally:
             self.lock.release()
 
 
 def scoped_engine(scope, threads=4):
     threads = min(threads, max(1, available_cpus() // 2))
-    key = (scope, threads)
+    # The generation keeps keys unique, so a switched backend never reuses an
+    # engine that was built for the previous one.
+    key = (scope, threads, _GENERATION)
     with _ENGINE_LOCK:
         lock = _CREATION_LOCKS.get(key)
         if lock is None:
@@ -152,7 +298,7 @@ def scoped_engine(scope, threads=4):
         with _ENGINE_LOCK:
             engine = _ENGINES.get(key)
         if engine is None:
-            engine = ManagedEngine(_create_engine(threads))
+            engine = ManagedEngine(_create_engine(threads), threads)
             with _ENGINE_LOCK:
                 _ENGINES[key] = engine
         with _ENGINE_LOCK:

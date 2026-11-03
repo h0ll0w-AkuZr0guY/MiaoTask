@@ -6,10 +6,11 @@ import re
 import sys
 import time
 from urllib.parse import quote, unquote, urlparse
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, Request
 from urllib.error import HTTPError, URLError
 import zipfile
 
+from backend.core.plugins.networking import fetch_with_retry, official_opener
 from backend.core.plugins.contracts import (ALLOWED_SUFFIXES, FRAMEWORK_API,
     LEGACY_COMPATIBLE_MANIFESTS, MAX_ARCHIVE_BYTES, MAX_CATALOG_BYTES, MAX_EXPANDED_BYTES,
     MAX_FILES, MAX_SOURCE_FILE_BYTES, MAX_TREE_BYTES, OFFICIAL_REPOSITORY,
@@ -72,15 +73,21 @@ class _NoRedirect(HTTPRedirectHandler):
 
 
 def download_source(url, maximum):
-    global _API_RETRY_AT
     source_url(url)
     if urlparse(url).hostname == 'api.github.com' and time.time() < _API_RETRY_AT:
         raise SourceRateLimited('GitHub API 暂时限流，已暂停 API 重试')
+    # One refresh reads dozens of small objects; a dropped proxy handshake
+    # must not abort the whole catalog update.
+    return fetch_with_retry(lambda: _download_source_once(url, maximum))
+
+
+def _download_source_once(url, maximum):
+    global _API_RETRY_AT
     request = Request(url, headers={'User-Agent': 'MiaoTask-GitHub-Activities',
                       'Accept': 'application/vnd.github+json' if urlparse(url).hostname == 'api.github.com' else 'application/octet-stream',
                       'X-GitHub-Api-Version': '2022-11-28'})
     try:
-        response = build_opener(_NoRedirect()).open(request, timeout=15)
+        response = official_opener(_NoRedirect()).open(request, timeout=15)
     except HTTPError as exc:
         if urlparse(url).hostname == 'api.github.com' and exc.code in (403, 429):
             try:

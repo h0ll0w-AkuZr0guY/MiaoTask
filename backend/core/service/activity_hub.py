@@ -102,6 +102,33 @@ class ActivityCatalogHub:
                                                   name='miao-activity-installer', daemon=False)
             self.plugin_thread.start()
 
+    def get_preferences(self):
+        """Console-wide network/OCR preferences plus OCR capabilities."""
+        from backend.core.preferences import load_preferences
+        preferences = load_preferences()
+        providers = []
+        try:
+            import onnxruntime
+            providers = onnxruntime.get_available_providers()
+        except Exception:
+            pass
+        return dict(preferences, ocr_providers=providers,
+                    cuda_available='CUDAExecutionProvider' in providers)
+
+    def update_preferences(self, payload):
+        from backend.core.preferences import save_preferences
+        updates = {key: payload[key] for key in ('download_proxy', 'ocr_device') if key in payload}
+        before = self.get_preferences()['ocr_device']
+        with self.catalog_gate, self.lock:
+            if updates.get('ocr_device', before) != before and any(
+                    c.thread and c.thread.is_alive() for c in getattr(self,'controllers',{}).values()):
+                raise ValueError('请先停止设备任务，再切换OCR后端')
+            saved = save_preferences(updates)
+            if saved['ocr_device'] != before:
+                from backend.core.device.screen import reset_ocr_engines
+                reset_ocr_engines()
+        return self.get_preferences()
+
     def open_activity_folder(self, origin):
         import os
         # Never accept a path from the browser; only open the resolved installation.

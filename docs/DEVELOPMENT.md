@@ -163,3 +163,14 @@ HTTP 仅绑定本机，写操作校验 Host、Origin 与会话令牌。每台设
 接口和配置以当前代码为准。公共能力变更时同步[接口手册](REUSABLE_INTERFACES.md)的签名、输入输出、限制和示例；所有权或依赖方向变化时再更新架构。结构调整应独立提出迁移方案，避免让活动逻辑依赖网页布局或具体驱动细节。参与修改见[贡献规范](CONTRIBUTING.md)，验证、构建和发布见[测试与打包](BUILDING.md)。
 
 任务文案的排除词只放在公共默认词表，交由`keyword_skip_reason`统一匹配，活动分类器不要再把同类词硬编码为manual。新增任务能力仍需实现动作与核验；页面安全认证、真实交易边界不属于可编辑任务词表。
+
+
+### CPU/CUDA环境对齐
+
+CPU环境继续使用requirements-windows.lock。CUDA环境须单独创建，不在现有环境中叠装onnxruntime和onnxruntime-gpu（两者提供同名Python模块）。保持Python小版本、RapidOCR、NumPy、OpenCV及其他基础锁定包一致，仅用同版本onnxruntime-gpu替换CPU分发包，按其声明安装匹配的CUDA/cuDNN运行库；无需为了ONNX推理安装Torch。
+
+首次安装GPU运行库体积较大。先检查编译执行器，再用真实模型核验det/rec实际provider，不能仅看到CUDAExecutionProvider列表就断言GPU可用。必须验证强制CUDA但CPU包、初始化失败、推理失败的CPU回退，以及共享偏好不覆盖任务设置。验证与构建沿用BUILDING文档，暂不改变CPU发布环境或自动发布GPU包。
+
+未来运行时插件应声明操作系统、架构、Python ABI、ORT版本、CUDA/cuDNN及框架API兼容范围，先在独立进程验证后再启用。现有PyInstaller的_internal是冻结运行时，不等同于可直接pip安装和重新打包的完整开发环境；不可仅替换几个DLL就承诺任意框架源码升级。启动器应分别管理版本化源码、CPU/GPU运行时和可回滚构建产物。
+
+本地CUDA验证使用`configs/environments/requirements-cuda.lock`，与CPU锁定文件的共有依赖版本保持一致，仅替换ORT分发包并追加NVIDIA库。单独创建环境后使用该完整锁定文件安装，不再叠加requirements.txt；CPU与GPU的ORT包不混装。当前正式构建器仍按CPU锁定环境发布，GPU便携包/运行时插件另行设计和验收。
