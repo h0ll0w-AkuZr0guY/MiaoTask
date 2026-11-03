@@ -40,13 +40,6 @@ ACTION_RE = re.compile(r'^(?:去完成|去浏览|去逛逛|去看看|去看一�
 ACTIONABLE_DETAIL_RE = re.compile(
     r'点击|浏览\s*\d+\s*[秒sS个]|观看\s*\d+\s*[秒sS]|停留\s*\d+\s*[秒sS]|'
     r'逛一逛|逛逛|去逛|看一看|搜一搜|搜索|滑动|下滑|查看')
-# 付款、拉人、装包、授权这类动作即使小字写着“点击去逛”也不能代做。
-HARD_RISK_RE = re.compile(r'下单|购买|支付|充值|开通|订阅|邀|拉人|助力|授权|实名|'
-                          r'下载|安装|施肥|浇水|兑换|提现|拍照|拍摄|答题|考试')
-# 夺宝、抽奖、小游戏、关注收藏这类词只是入口的名字；小字明确写着
-# “点击去逛 / 浏览N秒”时，实际动作仍然只是打开看一眼，可以做。
-SOFT_RISK_RE = re.compile(r'抽赏|抽奖|夺宝|游戏|关注|收藏|加购|拍立淘|'
-                          r'浏览\s*\d+\s*个|逛\s*\d+\s*个|\d+\s*件商品')
 # 应用图标里印着应用名，OCR 会把图标读成一行短文本；它永远不是任务标题，
 # 真正的标题在同一行的右边。
 APP_ICON_LABELS = ({name for name, _ in EXTERNAL_APPS}
@@ -116,87 +109,26 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
         if re.fullmatch(r'[0-9]{1,2}点可领', action):
             return (0, 'done', '今日已完成', '', ()) if current >= total else (
                 0, 'manual', '尚未到领取时段', '', ())
-        # 淘金币里的轻互动小游戏和站内直播只要求“进去待一会儿”，既不下载安装
-        # 也不涉及支付。风险词表里的 游戏/提现 是为拦截装包、拉人、资金操作而设，
-        # 对这类任务整条丢弃会永久漏掉它们，因此单独放行成跨应用浏览。
+        # Inline destinations still retain their own visit-time contract.
         play = self.page.get('inline_play_markers')
         watch = self.page.get('inline_watch_markers')
         passive_play = ((play and re.search(play, title))
                         or (watch and re.search(watch, title)))
-        if (passive_play and action not in DONE_ACTIONS
-                and not re.search(r'下载|安装|支付|购买|充值|下单', normalize(detail))):
+        if passive_play and action not in DONE_ACTIONS:
             target, packages = next(((name, pkgs) for name, pkgs in self.external_apps
                                      if name in title), ('', ()))
             if packages and not self.installed_app(packages):
                 return 0, 'manual', f'未安装{target}，已跳过；安装后重新识别即可恢复', '', ()
             return self.config['visit_seconds'], 'visit', '', target, packages
-        # This offer explicitly rewards browsing first; ordering is an optional
-        # extra. Keep all real ordering requirements excluded, including any
-        # additional requirement outside this exact, observed clause.
-        optional_order = '先浏览赚肥料,下单再得肥料'
-        safe_detail, safe_texts = detail, texts
-        if title == '浏览全场1元淘工厂' and optional_order in normalize(detail):
-            safe_detail = normalize(detail).replace(optional_order,'浏览赚肥料')
-            safe_texts = [title, safe_detail]
-        # Captions such as "浏览10秒 +20下单最高 +10000" advertise an optional
-        # ordering bonus on top of a browse task. Strip only that trailing clause
-        # so the base browse is not reclassified as a payment/manual task.
-        if re.search(r'浏览[0-9]+[秒sS]', safe_detail):
-            bonus = re.search(r'下单(?:最高|再得|可得)[^+]{0,8}', safe_detail)
-            if bonus:
-                safe_detail = safe_detail[:bonus.start()].strip()
-                safe_texts = [title, safe_detail]
-        classification_title = title
-        if (title in ('你关注的商品都可抵','看看你关注的新品动态')
-                and re.search(r'浏览[0-9]+[秒sS]',safe_detail)
-                and not re.search(r'关注|订阅|收藏',safe_detail)):
-            classification_title = title.replace('关注','浏览')
-            safe_texts = [classification_title,safe_detail]
-        scope = (classification_title+' '+safe_detail).replace('支付宝','蚂蚁平台')
-        # 标题只说明入口叫什么，小字才说明要做什么。小字明确是“点一下/看几秒”
-        # 时，标题里的夺宝、抽奖、小游戏不再构成拦截理由；付款、拉人、装包这类
-        # 动作即使小字写着“点击去逛”也仍然不能代做。
-        small_print = normalize(safe_detail)
-        hard = HARD_RISK_RE.search(scope)
-        soft = SOFT_RISK_RE.search(scope)
-        clickable = (bool(ACTIONABLE_DETAIL_RE.search(small_print))
-                     and not HARD_RISK_RE.search(small_print))
-        # 已完成的行不能再进：下面的轻互动分支会绕过 classify 的完成判定。
-        # 进度满不等于领过：签到/成就这类行显示 1/1 时按钮仍是「领取奖励」，
-        # 见「领取奖励」就不能算完成，否则会白丢一次可领的金币。
-        if action in DONE_ACTIONS or (total and current >= total
-                                      and action not in CLAIM_ACTIONS):
+        # Text-based exclusions belong only to the editable shared word list.
+        # This parser identifies actions; it must not silently reintroduce removed words.
+        if action in DONE_ACTIONS or (total and current >= total and action not in DAILY_CLAIMS):
             return 0, 'done', '今日已完成', '', ()
-        # 摇钱树施肥 / 浇水是「点一下就完事」的轻互动：小字写的是“点击去逛”，
-        # 进去点一次施肥按钮即可，不是需要人工反复照料的种植任务。硬风险表
-        # 里的 施肥/浇水 是为拦多轮农活设的，对这类任务等于永久漏掉。
-        if (clickable and re.search(r'摇钱树|施肥|浇水', scope)
-                and not re.search(r'施肥\s*\d+\s*次|浇水\s*\d+\s*次|下单|购买|支付|充值',
-                                  small_print)):
-            return max(int(self.config.get('visit_seconds') or 0), 8), 'visit', '', '', ()
-        # 趣味课堂这类答题：每题选 A 就能过，不需要人工判断，交给 answer_quiz。
-        if (re.search(r'答题|趣味课堂|问答', scope)
-                and not re.search(r'下单|购买|支付|充值|邀请|助力|下载|安装|授权|实名|拍照',
-                                  small_print)):
-            return max(int(self.config.get('visit_seconds') or 0), 10), 'visit', '', '', ()
-        if action not in DONE_ACTIONS:
-            if hard:
-                return 0, 'manual', '需要手动操作：'+hard.group(), '', ()
-            if soft and not clickable:
-                return 0, 'manual', '需要手动操作：'+soft.group(), '', ()
-        # 点击N个商品：进去逐个点开再返回即可，不需要人工判断。
-        if re.search(r'(?:点击|浏览|逛)\s*\d{1,2}\s*个(?:商品|宝贝)', scope):
-            return max(int(self.config.get('visit_seconds') or 0), 6), 'browse', '', '', ()
-        # 标题里的「抽1000元红包」只是入口名，小字写的是点击或浏览几秒时，
-        # 真实动作是打开看一眼就回来。共用的 classify 把这类行留给人工
-        # （双11 的 v009 契约要求如此），金币面板这里改写入口名后按浏览处理，
-        # 关键字仍留在 safe_detail 里参与付款、拉人的判断。
-        if clickable:
-            scrubbed = re.sub(r'抽\d+元红包|抽奖|夺宝', '领红包', classification_title)
-            if scrubbed != classification_title:
-                classification_title = scrubbed
-                safe_texts = [classification_title, safe_detail]
-        seconds, kind, reason, target, packages = classify(classification_title, safe_detail, safe_texts, action, current, total)
+        seconds, kind, reason, target, packages = classify(title, detail, texts, action, current, total)
+        if re.search(r'(?:点击|浏览|逛)\s*\d{1,2}\s*个(?:商品|宝贝)', title+' '+detail):
+            seconds, kind = max(int(self.config.get('visit_seconds') or 0), 6), 'browse'
+        if re.search(r'答题|趣味课堂|问答', title+' '+detail):
+            seconds, kind = max(int(self.config.get('visit_seconds') or 0), 10), 'visit'
         # 跨应用任务停留多久由目标应用自己的页面说了算。通用的 8 秒对首次冷
         # 启动、带开屏广告的应用偏短，允许在配置里按应用名抬到更高的下限。
         floors = self.page.get('app_visit_seconds')
@@ -211,10 +143,6 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
         # 要求登录的 H5，会把整轮拖成人工介入。
         if packages and kind in ('visit', 'browse', 'search') and not self.installed_app(packages):
             return 0, 'manual', f'未安装{target}，已跳过；安装后重新识别即可恢复', '', ()
-        # Keep payment, invitations, games and permission changes excluded even
-        # when a risky task labels its right-hand action as a reward button.
-        if kind == 'manual' and reason != '任务类型暂不支持':
-            return seconds, kind, reason, target, packages
         if action in DONE_ACTIONS | {'已签到', '今日已签到'}:
             kind, reason = 'done', '今日已完成'
         elif action in DAILY_CLAIMS or action == '去签到' and '签到' in title:
@@ -718,6 +646,8 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
             text = normalize(node.text)
             if not POPUP_CLOSE_RE.match(text):
                 continue
+            if self.is_search_input_node(screen, node):
+                continue
             # 太高的位置是系统状态栏，太扁的是一行小字，都不像关闭按钮。
             if not 0 < node.bounds[3]-node.bounds[1] < screen.height*.12:
                 continue
@@ -905,6 +835,7 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
         if (screen.source == 'ui' and self.config['ocr'] and not self.page.get('inline_only')
                 and self.is_task_list(screen.nodes)):
             screen = super().read(force_ocr=True)
+        screen = self.refine_task_rows(screen)
         if (task and task.kind in ('browse','search') and self._phase in ('opening','browsing')
                 and (self.page.get('browse_counter') or self.page.get('browse_counter_context'))
                 and screen.source.startswith('ocr') and self.browse_countdown(screen) is None):
@@ -1109,6 +1040,22 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
         self.pause(.15)
         self.control.check()
         ascii_input = getattr(self.device,'input_ascii',None)
+        if (self.config.get('task_search_keywords') and not re.fullmatch(r'[0-9]{1,32}',query)
+                and edit.get('source') != 'ocr'
+                and normalize(query) != normalize(self.config['search_keyword'])):
+            try:
+                self.device(className='android.widget.EditText', focused=True).set_text(query, timeout=.25)
+                return
+            except Exception as exc:
+                if not isinstance(exc, TimeoutError) and type(exc).__name__ != 'RPCStackOverflowError':
+                    raise
+                self.control.check()
+                current = self.read_page(visual=True)
+                self.check_search_context(current, live=True)
+                if not (current.find(r'^历史搜索$|^搜索发现$|^搜索有福利$|^猜你想搜$')
+                        and self._submit_buttons(current)):
+                    raise NeedsAttention('自定义词输入失败后搜索页已变化，停止备用输入')
+                logger.info('搜索框暂未接受自定义词，改用数字备用输入')
         if callable(ascii_input) and normalize(query) != normalize(self.config['search_keyword']):
             # Letter key events can remain in the user's IME composition buffer;
             # tapping Search then discards them and submits an empty field.
@@ -1140,14 +1087,10 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
             # Submitting can still use the freshly painted right-hand button.
             return None
 
-    @staticmethod
-    def browse_observation_interval(scrolling):
-        # Keep scrolling between expensive observations. Every gesture still
-        # checks pause/stop and the device's selected application instance.
-        return 3 if scrolling else 1
-
     def dismiss_overlay(self, screen):
-        close = screen.find(r'^(?:关闭|关闭按钮|取消|以后再说|暂不|下次再说|我知道了|×|✕|✖|X)$')
+        close = next((n for n in screen.nodes if re.fullmatch(
+            r'关闭|关闭按钮|取消|以后再说|暂不|下次再说|我知道了|×|✕|✖|[Xx]', normalize(n.text))
+            and not self.is_search_input_node(screen, n)), None)
         # Never accept a generic confirm/open/withdrawal action. Authentication
         # was checked by guard before looking for a dismiss control.
         if (close and normalize(close.text) in ('X','×','✕','✖')

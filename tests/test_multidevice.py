@@ -248,7 +248,9 @@ class GeometryTests(unittest.TestCase):
 
     def test_existing_followed_goods_browse_does_not_authorize_following(self):
         self.assertEqual(classify('你关注的商品都可抵','浏览15秒 +400',['你关注的商品都可抵','浏览15秒 +400'],'去完成',0,1)[1],'browse')
-        self.assertEqual(classify('去关注店铺','浏览15秒',['去关注店铺','浏览15秒'],'去完成',0,1)[1],'manual')
+        from backend.core.execution.task_policy import keyword_skip_reason
+        from backend.core.config.loader import load_config
+        self.assertTrue(keyword_skip_reason({'title':'去关注店铺','detail':'浏览15秒'}, load_config()['skip_task_keywords']))
 
 
 if __name__=='__main__':unittest.main()

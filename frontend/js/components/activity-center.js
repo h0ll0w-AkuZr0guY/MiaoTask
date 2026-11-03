@@ -44,9 +44,9 @@
   }
   async function load(refresh=false){
     if(loading)return;loading=true;if(refresh)message('正在更新活动目录…');render();
-    try{catalog=await MiaoAPI.request('/api/plugins'+(refresh?'?refresh=1':''),{timeout:65000});message(catalog.error||operationText(catalog.operation)||(catalog.warnings?.length?'部分活动无法列出：'+catalog.warnings.slice(0,3).join('；'):catalog?.transport==='github-archive'?'GitHub API 不可用，已通过官方源码归档读取目录；仅安装所选活动。':catalog?.transport==='pages'?'正在使用静态资源镜像；下载包按固定提交和摘要校验。':'目录已检查；按需下载活动，预装或已下载的活动可离线恢复。'));}
+    try{catalog=await MiaoAPI.request('/api/plugins'+(refresh?'?refresh=1':''),{timeout:65000});message(catalog.refreshing?'已显示本地目录，后台检查更新中…':catalog.error||operationText(catalog.operation)||(catalog.warnings?.length?'部分活动无法列出：'+catalog.warnings.slice(0,3).join('；'):catalog?.transport==='github-archive'?'GitHub API 不可用，已通过官方源码归档读取目录；仅安装所选活动。':catalog?.transport==='pages'?'正在使用静态资源镜像；下载包按固定提交和摘要校验。':'目录已检查；按需下载活动，预装或已下载的活动可离线恢复。'));}
     catch(error){message(error.message);}
-    finally{loading=false;render();clearTimeout(polling);if(dialog.open&&(catalog?.busy||operation))polling=setTimeout(()=>load(),700);}
+    finally{loading=false;render();clearTimeout(polling);if(dialog.open&&(catalog?.busy||catalog?.refreshing||operation))polling=setTimeout(()=>load(),700);}
   }
   async function operate(action,app,activity,sourceCommit){
     if(operation||!snapshot)return;operation=true;message(action==='restore'?'正在从本机恢复活动源码，无需联网…':action==='install'?'正在下载所选活动源码并检查兼容性，请稍候…':'正在卸载活动，日记录与恢复包会保留…');render();
@@ -54,7 +54,7 @@
     catch(error){message(error.message);}
     finally{operation=false;render();}
   }
-  function open(){if(!dialog.open)dialog.showModal();load(true);if(!branchesLoaded)$('activity-branches-refresh').dispatchEvent(new Event('click'));}
+  function open(){if(!dialog.open)dialog.showModal();load().then(()=>load(true));}
   $('activity-center-open').addEventListener('click',open);$('activity-center-close').addEventListener('click',()=>dialog.close());$('activity-center-refresh').addEventListener('click',()=>load(true));
   $('activity-branches-refresh').addEventListener('click',async()=>{
     try{const result=await MiaoAPI.request('/api/plugins/branches',{timeout:35000});const select=$('activity-source-branch');select.replaceChildren();branchesLoaded=true;for(const ref of result.branches){const option=node('option','',ref);option.value=ref;select.append(option);}render();}

@@ -12,7 +12,42 @@ let pollRequest=null, pollTimer, previewTimer, previewRequest=null, previewReady
 const clockText=seconds=>{seconds=Math.max(0,Math.floor(seconds||0));return `${String(Math.floor(seconds/60)).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}`;};
 function el(tag, cls, text) {const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;}
 function toast(text){$('toast').textContent=text;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,6000);}
-function config(){const swipes={};for(const name of ['distance','duration','interval','burst'])for(const bound of ['min','max'])swipes['swipe_'+name+'_'+bound]=Number($('swipe-'+name+'-'+bound).value)/(name==='distance'?100:1);return {...swipes,reset_after_activity:$('reset-after-activity').checked,keep_screen_on:$('keep-screen-on').checked,clear_clipboard:$('clear-clipboard').checked,minimum_volume:$('minimum-volume').checked,minimum_brightness:$('minimum-brightness').checked,default_browse_seconds:Number($('browse-seconds').value),browse_extra_seconds:Number($('browse-extra').value),max_attempts:Number($('max-attempts').value),max_tasks:Number($('max-tasks').value),enabled_task_kinds:['browse','search','visit','claim'].filter(k=>$('kind-'+k).checked),allow_cross_app:$('cross-app').checked,ocr:$('ocr').checked,scroll_browse:$('scroll').checked,claim_rewards:$('claim').checked};}
+const numericSettings = {
+  default_browse_seconds:'browse-seconds', browse_recheck_rounds:'browse-recheck-rounds',
+  screenshot_quality:'screenshot-quality',
+  screen_timeout_minutes:'screen-timeout-minutes', max_attempts:'max-attempts', max_tasks:'max-tasks'
+};
+const toggleSettings = {
+  reset_after_activity:'reset-after-activity', keep_screen_on:'keep-screen-on',
+  compressed_screenshots:'compressed-screenshots', clear_clipboard:'clear-clipboard',
+  minimum_volume:'minimum-volume', minimum_brightness:'minimum-brightness',
+  allow_cross_app:'cross-app', ocr:'ocr', scroll_browse:'scroll'
+};
+const keywordSettings={task_search_keywords:'task-search-keywords',skip_task_keywords:'skip-task-keywords'};
+function config(){
+  const values={};
+  for(const [key,id] of Object.entries(numericSettings))values[key]=Number($(id).value);
+  for(const [key,id] of Object.entries(toggleSettings))values[key]=$(id).checked;
+  for(const name of ['distance','duration','interval','burst']){
+    for(const bound of ['min','max'])values['swipe_'+name+'_'+bound]=Number($('swipe-'+name+'-'+bound).value)/(name==='distance'?100:1);
+  }
+  values.enabled_task_kinds=['browse','search','visit','claim'].filter(kind=>$('kind-'+kind).checked);
+  values.claim_rewards=$('kind-claim').checked;
+  for(const [key,id] of Object.entries(keywordSettings))values[key]=[...new Set(String($(id).value||'').split(/[;；\s]+/u).filter(Boolean))];
+  return values;
+}
+function applyConfig(values){
+  for(const [key,id] of Object.entries(keywordSettings))$(id).value=Array.isArray(values[key])?values[key].join('；'):'';
+  for(const [key,id] of Object.entries(numericSettings))if(values[key]!==undefined)$(id).value=values[key];
+  for(const [key,id] of Object.entries(toggleSettings))$(id).checked=Boolean(values[key]);
+  for(const name of ['distance','duration','interval','burst']){
+    for(const bound of ['min','max']){
+      const value=Number(values['swipe_'+name+'_'+bound]);
+      if(Number.isFinite(value))$('swipe-'+name+'-'+bound).value=Number((value*(name==='distance'?100:1)).toFixed(3));
+    }
+  }
+  for(const kind of ['browse','search','visit','claim'])$('kind-'+kind).checked=(values.enabled_task_kinds||[]).includes(kind)&&(kind!=='claim'||values.claim_rewards!==false);
+}
 function defaultInstanceId(){const instances=state?.app_instances||[];return (instances.find(i=>i.user_id===0&&i.package===state?.catalog?.find(app=>app.id===state.app)?.package)||instances.find(i=>i.user_id===0)||instances[0])?.id||'';}
 function instanceProblem(){
   if(!state?.connected||!state.catalog?.some(app=>app.activities?.length))return '';
@@ -28,9 +63,8 @@ function showSettings(name){
   $('settings-save').hidden=!name;
 }
 function updateSettingsSummary(){
-  const base=$('browse-seconds').value,extra=$('browse-extra').value,limit=$('max-tasks').value;
-  $('settings-summary').textContent=base&&extra&&limit?`浏览${base}秒 + 额外${extra}秒 · 本轮最多${limit}次`:'请完善执行设置';
-  $('entry-mode-note').hidden=document.querySelector('input[name=mode]:checked').value==='auto';
+  const base=$('browse-seconds').value,rounds=$('browse-recheck-rounds').value,limit=$('max-tasks').value;
+  $('settings-summary').textContent=base&&limit?`首轮浏览${base}秒 · 补滑复查${rounds}次 · 本轮最多${limit}次`:'请完善执行设置';
 }
 function validateSettingsForm(){
   for(const name of ['distance','duration','interval','burst']){const low=$('swipe-'+name+'-min'),high=$('swipe-'+name+'-max');high.setCustomValidity(low.value&&high.value&&Number(low.value)>Number(high.value)?'最大值不能小于最小值':'');}
@@ -47,7 +81,7 @@ async function action(name, extra={}){
   requesting=true;
   try{let connection;
     if(name==='connect'){connection={device_type:$('device-type').value,serial:$('serial').value.trim()};const target=await MiaoDevices.prepare();if(!state||state.workspace_id!==target||MiaoAPI.device!==target)throw new Error('设备已切换，请重新连接');$('serial').value=connection.serial;$('device-type').value=connection.device_type;}
-    const payload={app:state?.app,activity:state?.activity,...extra,auto_open:document.querySelector('input[name=mode]:checked').value==='auto'};
+    const payload={app:state?.app,activity:state?.activity,...extra,auto_open:true};
     if(['run','connect','configure'].includes(name))payload.config=config();
     if(name==='run'){payload.all_instances=clonesEnabled;payload.activities=MiaoActivities.plan;if(!payload.activities.length)throw new Error('请先勾选至少一个活动');const queued=clonesEnabled&&$('sequence-instances').checked;if(payload.activities.length===1){payload.instance_ids=queued?queueOrder:[state.selected_instance];if(!payload.instance_ids.length||payload.instance_ids.some(id=>!id||!state.app_instances.some(item=>item.id===id)))throw new Error('所选应用实例已失效，请重新选择');}if(queued)payload.auto_open=true;}
     if(name==='connect')Object.assign(payload,connection);
@@ -95,7 +129,8 @@ function renderTasks(force=false){
     row.append(info,progress,buttons,el('span','task-status '+t.status,taskLabels[t.status]||t.status));table.append(row);}
 }
 function renderLogs(){const logs=state.logs||[];const hash=logs.length?String(logs[logs.length-1].id):'';if(hash===logsHash)return;logsHash=hash;const list=$('log-list');const atBottom=list.scrollTop+list.clientHeight>=list.scrollHeight-30;list.replaceChildren();for(const log of logs){const line=el('div','log-line '+log.level);line.append(el('time','',log.time.slice(11,19)),el('span','log-level',log.level),el('span','log-text',log.message));list.append(line);}if(atBottom)list.scrollTop=list.scrollHeight;}
-function render(){for(const a of document.querySelectorAll('a[href^="/api/report"],a[href^="/api/diagnostics"]'))a.href=MiaoAPI.url(a.pathname);
+function render(){
+  for(const a of document.querySelectorAll('a[href^="/api/report"],a[href^="/api/diagnostics"]'))a.href=MiaoAPI.url(a.pathname);
   window.dispatchEvent(new CustomEvent('miaotask:state',{detail:state}));
   const hasActivities=Boolean(state.catalog?.some(app=>app.activities.length)), hasPlan=Boolean(MiaoActivities.plan.length);
   $('app-version').textContent=state.version||'';
@@ -104,10 +139,8 @@ function render(){for(const a of document.querySelectorAll('a[href^="/api/report
     const pref=deviceUIPreferences.get(MiaoAPI.device);
     clonesEnabled=Boolean(state.all_instances);
     queueOrder=pref?.queueOrder?.slice()||[];$('sequence-instances').checked=clonesEnabled;
-    document.querySelector('input[name=mode][value="'+(pref?.mode||'auto')+'"]').checked=true;
   }
   const busy=busyStates.has(state.status)||state.busy||state.plugins_busy;renderInstances(busy);const running=state.status==='running',paused=state.status==='paused';
-  const currentEntry=document.querySelector('input[name=mode][value=current]');currentEntry.disabled=busy||MiaoActivities.plan.length>1;if(MiaoActivities.plan.length>1)document.querySelector('input[name=mode][value=auto]').checked=true;
   $('connection-label').className='status-pill'+(state.connected?' connected':'');$('connection-label').replaceChildren(el('span'),document.createTextNode(statusLabels[state.status]||state.status));
   $('connect').disabled=busy||!hasActivities||!hasPlan;$('connect').textContent=state.connected?'重新连接 ↗':'连接设备 ↗';
   for(const id of ['run','capture'])$(id).disabled=!state.connected||busy;
@@ -136,7 +169,7 @@ function render(){for(const a of document.querySelectorAll('a[href^="/api/report
   const failureTitle=typeof failureTask==='string'?failureTask:failureTask?.title;
   $('last-failure').textContent=state.last_failure?`最近记录：${state.last_failure.reason||'执行未通过'}${failureTitle?' · '+failureTitle:''}`:'遇到验证、恢复失败或核验失败时记录现场，原始截图仅保存在本机。';
   $('package-name').textContent=state.package||'设备未连接';$('preview-source').textContent=state.source==='ocr'?'本地 OCR 识别':state.source==='ui'?'页面控件识别':'手机截图预览';
-  if(!initialized){const c={...config(),...(state.config||{})};for(const name of ['distance','duration','interval','burst'])for(const bound of ['min','max']){const value=Number(c['swipe_'+name+'_'+bound]);if(Number.isFinite(value))$('swipe-'+name+'-'+bound).value=Number((value*(name==='distance'?100:1)).toFixed(3));}$('browse-seconds').value=c.default_browse_seconds;$('browse-extra').value=c.browse_extra_seconds;$('max-attempts').value=c.max_attempts;$('max-tasks').value=c.max_tasks;$('cross-app').checked=c.allow_cross_app;$('ocr').checked=c.ocr;$('scroll').checked=c.scroll_browse;$('claim').checked=c.claim_rewards;$('reset-after-activity').checked=Boolean(c.reset_after_activity);$('keep-screen-on').checked=Boolean(c.keep_screen_on);$('clear-clipboard').checked=c.clear_clipboard!==false;$('minimum-volume').checked=Boolean(c.minimum_volume);$('minimum-brightness').checked=Boolean(c.minimum_brightness);for(const k of ['browse','search','visit','claim'])$('kind-'+k).checked=(c.enabled_task_kinds||['browse','search','visit','claim']).includes(k);initialized=true;}
+  if(!initialized){applyConfig({...config(),...(state.config||{})});initialized=true;}
   updateSettingsSummary();renderTasks();renderLogs();preview();MiaoDevices.refresh();
 }
 async function poll(){
@@ -173,7 +206,6 @@ $('common-settings-close').addEventListener('click',()=>$('common-settings').clo
 for(const button of document.querySelectorAll('[data-settings-toggle]'))button.addEventListener('click',()=>showSettings(button.dataset.settingsToggle));
 $('toggle-instances').addEventListener('click',()=>{clonesEnabled=!clonesEnabled;if(!clonesEnabled){$('sequence-instances').checked=false;$('instance-options').hidden=true;queueOrder=state?.selected_instance&&defaultInstanceId()?[defaultInstanceId()]:[];renderInstanceOptions();const busy=state&&(busyStates.has(state.status)||state.busy);if(state?.connected&&!busy&&state.selected_instance&&state.selected_instance!==defaultInstanceId())action('select_instance',{instance_id:defaultInstanceId()});}if(state)render();else $('instance-panel').hidden=false;});
 $('settings-form').addEventListener('input',()=>{for(const name of ['distance','duration','interval','burst'])$('swipe-'+name+'-max').setCustomValidity('');updateSettingsSummary();});
-for(const input of document.querySelectorAll('input[name=mode]'))input.addEventListener('change',updateSettingsSummary);
 $('app-instance').addEventListener('change',()=>{if(!$('sequence-instances').checked){queueOrder=[$('app-instance').value];renderInstanceOptions();}action('select_instance',{instance_id:$('app-instance').value});});
 $('refresh-instances').addEventListener('click',()=>action('refresh_instances'));
 $('refresh-instances-visible').addEventListener('click',()=>action('refresh_instances'));
@@ -191,14 +223,14 @@ window.addEventListener('miaotask:workspaces-changed',()=>poll());
 window.addEventListener('miaotask:error',event=>toast(event.detail));
 window.addEventListener('miaotask:device-selected',()=>{
   if($('common-settings').open)$('common-settings').close();$('common-settings-open').disabled=true;
-  if(state?.workspace_id)deviceUIPreferences.set(state.workspace_id,{clonesEnabled,queueOrder:queueOrder.slice(),sequence:$('sequence-instances').checked,mode:document.querySelector('input[name=mode]:checked').value});
+  if(state?.workspace_id)deviceUIPreferences.set(state.workspace_id,{clonesEnabled,queueOrder:queueOrder.slice(),sequence:$('sequence-instances').checked});
   initialized=false;taskHash=logsHash=instanceHash='';clonesEnabled=false;queueOrder=[];
   previewReady=false;lastPreviewSequence=null;$('phone-image').parentElement.style.aspectRatio='9/20';$('phone-image').closest('.phone').classList.remove('wide-screen');$('preview-time').textContent='—';$('phone-image').src='';$('phone-image').hidden=true;$('phone-placeholder').hidden=false;
   state=null;for(const id of ['run','connect','capture','pause','stop','refresh-instances-visible','choose-instance-visible'])$(id).disabled=true;$('instance-attention').hidden=true;$('serial').value='';$('device-hint').textContent='请连接当前工作区的设备';poll().then(poll);
 });
 window.addEventListener('miaotask:batch',async event=>{
   if(event.detail.action==='run'&&!validateSettingsForm())return;
-  try{if(event.detail.action==='run'&&!MiaoActivities.plan.length)throw new Error('请先勾选至少一个活动');const result=await MiaoAPI.request('/api/workspaces/batch',{method:'POST',token,payload:{...event.detail,config:config(),auto_open:document.querySelector('input[name=mode]:checked').value==='auto',activities:MiaoActivities.plan}});
+  try{if(event.detail.action==='run'&&!MiaoActivities.plan.length)throw new Error('请先勾选至少一个活动');const result=await MiaoAPI.request('/api/workspaces/batch',{method:'POST',token,payload:{...event.detail,config:config(),auto_open:true,activities:MiaoActivities.plan}});
     const failed=result.results.filter(row=>!row.ok);toast(failed.length?failed.map(row=>row.error).join('；'):'所选设备已收到操作，各自独立执行');await poll();
   }catch(error){toast(error.message);}
 });

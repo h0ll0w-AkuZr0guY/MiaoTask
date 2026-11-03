@@ -96,7 +96,7 @@ class ActivityDistributionTests(unittest.TestCase):
         self.assertEqual(config['entry_labels'], ['活动'])
         self.assertEqual(config['search_keyword'], '')
         self.assertFalse(registry.has_activities)
-        self.assertEqual(load_framework_config()['default_browse_seconds'], 15)
+        self.assertEqual(load_framework_config()['default_browse_seconds'], 17)
         with self.assertRaises(ValueError):
             load_config(app='missing', registry=registry)
 

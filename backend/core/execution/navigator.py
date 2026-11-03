@@ -125,6 +125,9 @@ class Navigator:
                 screen = self.read(force_ocr=bool(self.config['ocr']))
                 continue
             if home_visible:
+                refine = getattr(self, 'homepage_visual_fallback', None)
+                if not self.activity_entry(screen, homepage=True) and callable(refine):
+                    screen = refine(screen)
                 native = self.read()
                 self.guard(native)
                 if native.package == package:

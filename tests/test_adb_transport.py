@@ -1,11 +1,16 @@
 import os
+import socket
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from backend.core.device import discovery as transport
+from backend.core.device.adapter import DeviceAdapter
+from backend.core.device.rpc_limits import install_rpc_limits
 
 
 class AdbTransportTests(unittest.TestCase):
@@ -191,14 +196,6 @@ class PanelDiscoveryTests(unittest.TestCase):
 
 # rpc_limits
 """Socket deadlines and text input stay per driver, display and instance."""
-from types import SimpleNamespace
-from unittest.mock import Mock
-import socket
-import time
-import unittest
-
-from backend.core.device.adapter import DeviceAdapter
-from backend.core.device.rpc_limits import install_rpc_limits
 
 
 class RpcLimitTests(unittest.TestCase):
@@ -250,8 +247,86 @@ class RpcLimitTests(unittest.TestCase):
         adapter._device.shell.assert_not_called()
 
 
-
 class SwipeFallbackTests(unittest.TestCase):
+    def test_continuous_swipe_checks_identity_and_uses_bounded_system_input(self):
+        import threading
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        adapter = DeviceAdapter.__new__(DeviceAdapter)
+        adapter.io_lock = threading.RLock()
+        adapter.device_type = 'uiautomator2'
+        adapter.serial = 'synthetic'
+        adapter._display_id = 0
+        adapter._instance_guard_active = True
+        adapter.current_app = Mock(return_value={'package':'org.example.shop','user_id':0})
+        adapter.check_instance = Mock()
+        with patch('backend.core.device.discovery.resolve_adb_binary', return_value='adb.exe'), \
+                patch('backend.core.device.discovery._run_adb', return_value=SimpleNamespace(returncode=0, stdout='', stderr='')) as run:
+            adapter.continuous_swipe(100,700,100,300,.5)
+            adapter.check_instance.assert_called_once_with(adapter.current_app.return_value)
+            self.assertEqual(run.call_args.args[1], ['-s','synthetic','shell','input','swipe','100','700','100','300','500'])
+            self.assertEqual(run.call_args.args[-1], 3)
+            run.reset_mock()
+            from backend.core.device.instances import InstanceMismatch
+            adapter.check_instance.side_effect = InstanceMismatch('synthetic wrong account')
+            with self.assertRaises(InstanceMismatch):
+                adapter.continuous_swipe(100,700,100,300,.5)
+            run.assert_not_called()
+
+    def test_compressed_capture_uses_private_socket_with_read_timeout(self):
+        import base64, json
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        adapter = DeviceAdapter.__new__(DeviceAdapter)
+        adapter.serial = 'synthetic'
+        adapter._device = SimpleNamespace(_device_server_port=9008)
+        connection = Mock()
+        response = connection.getresponse.return_value
+        response.status = 200
+        encoded = base64.b64encode(b'image').decode()
+        response.read.return_value = json.dumps({'result': encoded+'\n'}).encode()
+        with patch('uiautomator2.core.AdbHTTPConnection') as channel, patch('adbutils.AdbClient') as client:
+            channel.return_value.__enter__.return_value = connection
+            self.assertEqual(adapter._capture_jpeg(45), b'image')
+            client.assert_called_once_with(socket_timeout=3)
+            connection.sock.settimeout.assert_called_once_with(5)
+            payload = json.loads(connection.request.call_args.args[2])
+            self.assertEqual((payload['method'],payload['params']),('takeScreenshot',[1,45]))
+
+    def test_background_capture_uses_separate_read_only_command_and_rejects_other_display(self):
+        from PIL import Image
+        import io
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from backend.core.device.instances import InstanceMismatch
+        device = DeviceAdapter.__new__(DeviceAdapter)
+        device.device_type = 'uiautomator2'
+        device.serial = 'synthetic-device'
+        device._display_id = 0
+        output = io.BytesIO()
+        Image.new('RGB', (100, 200), 'white').save(output, format='PNG')
+        device._capture_jpeg = Mock(return_value=output.getvalue())
+        with patch('backend.core.device.read_shell.AdbReadShell') as read, \
+                patch('backend.core.device.displays.focused_display', return_value=0) as display, \
+                patch('backend.core.device.discovery.resolve_adb_binary', return_value='adb.exe'), \
+                patch('subprocess.run', return_value=SimpleNamespace(returncode=0, stdout=output.getvalue())) as run:
+            read.return_value.return_value = SimpleNamespace(exit_code=0, output='mCurrentFocus=Window{abc u999 org.example.shop/.Main}')
+            foreground, image = device.capture_observation(compressed=True)
+            self.assertEqual(foreground['user_id'], 999)
+            self.assertEqual(image.size, (100, 200))
+            device._capture_jpeg.assert_called_once_with(70)
+            run.assert_not_called()
+            device.capture_observation()
+            self.assertEqual(run.call_args.kwargs['timeout'], 8)
+            self.assertEqual(run.call_args.args[0][-3:], ['exec-out','screencap','-p'])
+            display.return_value = 2
+            run.reset_mock()
+            with self.assertRaises(InstanceMismatch):
+                device.capture_observation()
+            run.assert_not_called()
+        device._display_id = 2
+        self.assertIsNone(device.capture_observation())
+
     def test_clipboard_clear_never_reads_contents_or_changes_ime(self):
         adapter = DeviceAdapter.__new__(DeviceAdapter)
         adapter.device_type = 'uiautomator2'
@@ -277,3 +352,68 @@ class SwipeFallbackTests(unittest.TestCase):
         device._checked_shell = Mock()
         device.swipe(100,600,100,300,.4)
         device._checked_shell.assert_called_once_with(['input','swipe','100','600','100','300','400'],timeout=8)
+
+
+class DirectAdbReadTests(unittest.TestCase):
+    def test_stopping_read_maps_closed_socket_error_to_stopped(self):
+        from backend.core.device.read_shell import AdbReadShell, DeviceIO
+        from backend.core.errors import Stopped
+        io = DeviceIO()
+        channel = Mock()
+        channel.__enter__ = Mock(return_value=channel)
+        channel.__exit__ = Mock(return_value=False)
+        replies = iter((b'OKAY', b'OKAY'))
+        def receive(size):
+            reply = next(replies, None)
+            if reply is not None:
+                return reply
+            io.cancel()
+            raise OSError('socket closed by stop')
+        channel.recv.side_effect = receive
+        with patch('backend.core.device.read_shell.socket.create_connection', return_value=channel):
+            with self.assertRaises(Stopped):
+                AdbReadShell('synthetic', prefer_socket=True, transport=io)(['dumpsys', 'window', 'displays'])
+        channel.close.assert_called_once()
+        self.assertFalse(io.callbacks)
+
+    def test_transport_failure_without_stop_keeps_its_error(self):
+        from backend.core.device.read_shell import DeviceIO
+        io = DeviceIO()
+        cancel = Mock()
+        with self.assertRaisesRegex(TimeoutError, 'network timeout'):
+            with io.own(cancel):
+                raise TimeoutError('network timeout')
+        cancel.assert_not_called()
+        self.assertFalse(io.callbacks)
+
+    def test_socket_exec_handles_fragmented_status_and_payload_without_cli(self):
+        from backend.core.device.read_shell import AdbReadShell
+        from unittest.mock import Mock,patch
+        data=bytearray(b'OKAYOKAYfocused window metadata')
+        channel=Mock();channel.__enter__=Mock(return_value=channel);channel.__exit__=Mock()
+        def recv(size):
+            count=min(size,3,len(data));part=bytes(data[:count]);del data[:count];return part
+        channel.recv.side_effect=recv
+        with patch('backend.core.device.read_shell.socket.create_connection',return_value=channel),patch('backend.core.device.read_shell._run_adb') as cli:
+            result=AdbReadShell('synthetic',prefer_socket=True)(['dumpsys','window','displays'])
+            self.assertEqual(result.output,'focused window metadata');cli.assert_not_called()
+            wire=b''.join(call.args[0] for call in channel.sendall.call_args_list)
+            self.assertIn(b'host:transport:synthetic',wire)
+            self.assertIn(b'exec:dumpsys window displays',wire)
+
+    def test_direct_queries_retain_read_only_allowlist(self):
+        from backend.core.device.read_shell import AdbReadShell
+        from unittest.mock import patch
+        with patch('backend.core.device.read_shell.socket.create_connection') as connection:
+            with self.assertRaises(ValueError):AdbReadShell('synthetic',prefer_socket=True)(['input','tap','1','2'])
+            connection.assert_not_called()
+
+    def test_production_metadata_failure_does_not_enter_sdk_shell_retry(self):
+        from backend.core.device.adapter import DeviceAdapter
+        from backend.core.device.read_shell import ReadResult
+        from unittest.mock import Mock,patch
+        phone=DeviceAdapter.__new__(DeviceAdapter);phone.serial='synthetic';phone._bounded_capture=True
+        phone._device=Mock()
+        with patch('backend.core.device.read_shell.AdbReadShell',return_value=Mock(return_value=ReadResult('',1))):
+            result=phone._read_metadata(['dumpsys','window','windows'])
+        self.assertEqual(result.exit_code,1);phone._device.shell.assert_not_called()

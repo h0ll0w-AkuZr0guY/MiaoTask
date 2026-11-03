@@ -1,15 +1,16 @@
-import importlib.util
-import os
-import time
-import unittest
 import threading
+import unittest
 from unittest.mock import Mock, patch
 
+import numpy as np
 from PIL import Image
+from rapidocr.ch_ppocr_rec import TextRecInput, TextRecOutput
 
-from backend.core.device import screen as screen_module
-from backend.core.device.screen import ScreenReader, local_ocr_engine, ocr_engine_lock
+from backend.app.taobao.activities.double11.activity import CampaignRunner, NeedsAttention
 from backend.app.taobao.activities.double11.tasks import TextNode
+from backend.core.device.adapter import DeviceAdapter
+from backend.core.device.ocr import ExactTextCache
+from backend.core.device.screen import Screen, ScreenReader
 
 
 def readable_tree():
@@ -29,50 +30,7 @@ def device():
 
 
 class ScreenReaderObservationTests(unittest.TestCase):
-    def test_visual_ocr_does_not_hold_device_or_capture_on_worker_thread(self):
-        phone = device()
-        owner = threading.get_ident()
-        phone.screenshot.side_effect = lambda **kw: (
-            self.assertEqual(threading.get_ident(), owner) or Image.new('RGB', (500, 1000), 'white'))
-        reader = ScreenReader(phone)
-        entered, release = threading.Event(), threading.Event()
-        observer = reader.visual_observer()
-        def slow_ocr(image):
-            entered.set()
-            self.assertTrue(release.wait(2))
-            return [TextNode('浏览完成', (1, 1, 100, 50), 'ocr')]
-        observer.reader._ocr = slow_ocr
-        try:
-            with observer:
-                self.assertTrue(observer.request())
-                self.assertTrue(entered.wait(1))
-                self.assertIsNone(observer.poll())
-                self.assertFalse(observer.request())  # one frame in flight
-                phone.swipe(250, 700, 250, 300)
-                phone.swipe.assert_called_once()
-                phone.dump_hierarchy.assert_not_called()
-        finally:
-            release.set()
-            observer.thread.join(2)
-        self.assertIsNone(reader.last_screen)  # result after close is discarded
-        self.assertIsNone(observer.poll())
 
-    def test_visual_observation_returns_captured_geometry_and_errors(self):
-        phone = device()
-        reader = ScreenReader(phone)
-        observer = reader.visual_observer()
-        observer.reader._ocr = Mock(side_effect=ValueError('synthetic recognition failure'))
-        with observer:
-            observer.request()
-            # Wait deterministically for the recognizer, without device calls.
-            import time
-            deadline = time.monotonic() + 2
-            while observer.results.empty() and time.monotonic() < deadline:
-                time.sleep(.005)
-            with self.assertRaisesRegex(ValueError, 'synthetic'):
-                observer.poll()
-        self.assertEqual((observer.captured.width, observer.captured.height), (500, 1000))
-        phone.dump_hierarchy.assert_not_called()
 
     def test_force_ocr_skips_hierarchy_rpc_and_keeps_latest_image(self):
         phone = device()
@@ -183,17 +141,28 @@ class ScreenReaderObservationTests(unittest.TestCase):
         phone.screenshot.assert_called_once()
 
 # region_ocr
-import unittest
-from unittest.mock import Mock
-
-from PIL import Image
-
-from backend.app.taobao.activities.double11.activity import CampaignRunner, NeedsAttention
-from backend.core.device.screen import Screen, ScreenReader
-from backend.app.taobao.activities.double11.tasks import TextNode
 
 
 class RegionOCRTests(unittest.TestCase):
+    def test_ui_read_without_new_image_cannot_crop_an_old_frame(self):
+        phone = device();phone.preview_managed=True
+        reader=ScreenReader(phone)
+        reader._ocr=Mock(return_value=[TextNode('旧页面',(10,10,100,50))])
+        reader.read(force_ocr=True)
+        current=reader.read()
+        reader._ocr.reset_mock()
+        self.assertIs(reader.enrich_regions(current,[(0,0,500,200)]),current)
+        reader._ocr.assert_not_called()
+
+    def test_explicitly_hidden_native_nodes_never_enter_recognition(self):
+        phone=device()
+        phone.dump_hierarchy.return_value['hierarchy']['children'].append(
+            {'text':'验证码登录','bounds':(10,800,400,850),'visible-to-user':'false'})
+        reader=ScreenReader(phone)
+        current=reader.read()
+        self.assertNotIn('验证码登录',current.text)
+        self.assertEqual(current.source,'ui')
+
     def test_crop_maps_coordinates_and_keeps_full_frame_security_context(self):
         reader = ScreenReader(Mock())
         screen = Screen([TextNode('请完成安全验证', (10, 10, 300, 70))],
@@ -230,16 +199,6 @@ class RegionOCRTests(unittest.TestCase):
         self.assertEqual(sizes, [(1440, 3200)])
 
 # performance_paths
-import threading
-import unittest
-from unittest.mock import Mock, patch
-
-import numpy as np
-from PIL import Image
-from rapidocr.ch_ppocr_rec import TextRecInput, TextRecOutput
-
-from backend.core.device.adapter import DeviceAdapter
-from backend.core.device.ocr import ExactTextCache
 
 
 class ExactTextCacheTests(unittest.TestCase):
@@ -335,99 +294,131 @@ class FreshFrameTests(unittest.TestCase):
         self.assertEqual(phone._device.screenshot.call_count, 2)
 
 
-def recognized(texts):
-    class Result:
-        boxes = [((0, 0), (10, 0), (10, 5), (0, 5)) for _ in texts]
-        txts = list(texts)
-        scores = [.99 for _ in texts]
-    return Result()
+class SerialObservationTests(unittest.TestCase):
+    def test_session_starts_no_capture_or_recognition_thread(self):
+        from backend.core.execution.run_control import RunControl
+        phone=device();reader=ScreenReader(phone)
+        with patch('threading.Thread',side_effect=AssertionError('No background observation thread')):
+            with reader.observation_session({'compressed_screenshots':True,'screenshot_quality':45},RunControl()):
+                self.assertTrue(reader.compressed_screenshots)
+                self.assertEqual(reader.screenshot_quality,45)
+                self.assertEqual(reader.read().source,'ui')
+        self.assertIsNone(reader._engine)
 
+    def test_primary_capture_is_synchronous_and_uses_user_quality(self):
+        from backend.core.execution.run_control import RunControl
+        class Phone:
+            device_type='uiautomator2';_display_id=0
+            def capture_observation(self,**kwargs):
+                self.kwargs=kwargs;self.thread=threading.get_ident()
+                return {'package':'org.example.sample','user_id':7},Image.new('RGB',(500,1000),'white')
+        phone=Phone();reader=ScreenReader(phone)
+        with patch.object(reader,'_image_nodes',return_value=[TextNode('任务',(10,10,100,40))]):
+            with reader.observation_session({'compressed_screenshots':True,'screenshot_quality':45},RunControl()):
+                frame=reader.read(force_ocr=True)
+        self.assertEqual(phone.thread,threading.get_ident())
+        self.assertEqual(phone.kwargs['quality'],45)
+        self.assertTrue(phone.kwargs['compressed'])
+        self.assertEqual((frame.package,frame.user_id),('org.example.sample',7))
 
-class RecognizerScopeTests(unittest.TestCase):
-    """One OCR model per physical device, shared by worker and observer threads."""
+    def test_idle_engine_is_weakly_held(self):
+        import gc,weakref
+        from backend.core.device.ocr import scoped_engine
+        with patch('backend.core.device.ocr._create_engine',return_value=Mock()):
+            engine=scoped_engine(('synthetic-serial',0));ref=weakref.ref(engine)
+            self.assertIs(engine,scoped_engine(('synthetic-serial',0)))
+            del engine;gc.collect();self.assertIsNone(ref())
 
-    def test_scope_follows_the_device_and_survives_a_thread_change(self):
-        phone = Mock(serial='usb-1')
-        reader = ScreenReader(phone)
-        self.assertEqual(reader.engine_scope, ('device', 'usb-1'))
-        self.assertEqual(ScreenReader(Mock(serial='usb-1')).engine_scope, reader.engine_scope)
-        self.assertNotEqual(ScreenReader(Mock(serial='usb-2')).engine_scope, reader.engine_scope)
-        seen = []
-        worker = threading.Thread(target=lambda: seen.append(reader.engine_scope))
-        worker.start()
-        worker.join()
-        self.assertEqual(seen, [reader.engine_scope])
-
-    def test_usb_and_wifi_aliases_share_the_physical_device_scope(self):
-        usb = Mock(serial='usb-1', identity_serial='R58M123456')
-        wifi = Mock(serial='192.168.1.7:5555', identity_serial='R58M123456')
-        self.assertEqual(ScreenReader(usb).engine_scope, ScreenReader(wifi).engine_scope)
-
-    def test_browse_observer_recognizes_with_the_owner_device_scope(self):
-        phone = Mock(serial='usb-1')
-        reader = ScreenReader(phone)
-        scopes = []
-
-        def build(scope=None):
-            scopes.append(scope)
-            return Mock(side_effect=lambda *args, **kwargs: recognized(['浏览 15 秒']))
-
-        image = Image.new('RGB', (500, 1000), 'white')
-        with patch.object(screen_module, 'local_ocr_engine', build):
-            reader._ocr_tile(image)
-            observer = reader.visual_observer()
-            self.assertEqual(observer.reader.engine_scope, reader.engine_scope)
-            observer.reader._ocr_tile(image)
-        self.assertEqual(scopes, [reader.engine_scope, reader.engine_scope])
-
-    def test_same_device_inference_is_serialized_and_other_devices_run_parallel(self):
-        peak, active, guard = 0, 0, threading.Lock()
-
-        def hold(scope):
-            nonlocal peak, active
-            with ocr_engine_lock(scope):
-                with guard:
-                    active += 1
-                    peak = max(peak, active)
-                time.sleep(.02)
-                with guard:
-                    active -= 1
-
-        shared = [threading.Thread(target=hold, args=(('device', 'usb-1'),)) for _ in range(4)]
-        for thread in shared:
-            thread.start()
-        for thread in shared:
-            thread.join()
-        self.assertEqual(peak, 1)
-
-        barrier = threading.Barrier(2, timeout=1)
-
-        def meet(scope):
-            with ocr_engine_lock(scope):
-                barrier.wait()
-
-        first = threading.Thread(target=meet, args=(('device', 'usb-1'),))
-        second = threading.Thread(target=meet, args=(('device', 'usb-2'),))
-        first.start(), second.start()
-        first.join(), second.join()
-        self.assertFalse(barrier.broken)
-
-    @unittest.skipUnless(importlib.util.find_spec('rapidocr'), '未安装本地 OCR')
-    def test_concurrent_callers_share_one_engine_per_scope(self):
-        screen_module._scoped_ocr_engine.cache_clear()
-        self.addCleanup(screen_module._scoped_ocr_engine.cache_clear)
-        built = []
-        start = threading.Barrier(4)
-
+    def test_private_transport_is_cancellable_without_killing_shared_adb(self):
+        import sys,time
+        from backend.core.device.read_shell import DeviceIO
+        from backend.core.errors import Stopped
+        io=DeviceIO();done=threading.Event();errors=[]
         def run():
-            start.wait()
-            built.append(id(local_ocr_engine(('device', 'usb-concurrent'))))
+            try:io.run([sys.executable,'-c','import time;time.sleep(30)'],30)
+            except Stopped:errors.append('stopped')
+            finally:done.set()
+        thread=threading.Thread(target=run);thread.start();deadline=time.monotonic()+2
+        while not io.callbacks:
+            self.assertLess(time.monotonic(),deadline);time.sleep(.005)
+        io.cancel();self.assertTrue(done.wait(1));thread.join(1)
+        self.assertEqual(errors,['stopped'])
 
-        threads = [threading.Thread(target=run) for _ in range(4)]
-        with patch.dict(os.environ, {'MIAO_OCR_DEVICE': 'cpu'}):
-            for thread in threads:
-                thread.start()
-            for thread in threads:
-                thread.join()
-        self.assertEqual(len(set(built)), 1)
-        self.assertEqual(screen_module._scoped_ocr_engine.cache_info().misses, 1)
+
+class PhysicalModelSessionTests(unittest.TestCase):
+    def test_transport_aliases_and_new_readers_keep_physical_scope(self):
+        first = ScreenReader(Mock(serial='usb-sample', identity_serial='physical-sample'))
+        other = ScreenReader(Mock(serial='192.0.2.10:5555', identity_serial='physical-sample'))
+        self.assertEqual(first.engine_scope, other.engine_scope)
+        self.assertEqual(first.engine_scope, ('device', 'physical-sample'))
+        self.assertNotEqual(first.engine_scope, ScreenReader(Mock(serial='another')).engine_scope)
+        self.assertEqual(ScreenReader(None, engine_scope='explicit').engine_scope, 'explicit')
+
+    def test_run_lease_reuses_models_across_readers_then_releases_them(self):
+        import gc, weakref
+        from backend.core.device.ocr import engine_session, scoped_engine
+        scope = ('device', 'synthetic-pipeline')
+        with patch('backend.core.device.ocr._create_engine', return_value=Mock()) as build:
+            with engine_session(scope):
+                self.assertEqual(build.call_count, 0)
+                engine = scoped_engine(scope)
+                ref = weakref.ref(engine)
+                del engine
+                gc.collect()
+                self.assertIsNotNone(ref())
+                with engine_session(scope):
+                    self.assertIs(scoped_engine(scope), ref())
+                self.assertEqual(build.call_count, 1)
+            gc.collect()
+            self.assertIsNone(ref())
+
+    def test_concurrent_model_requests_build_one_model_for_one_device(self):
+        from backend.core.device.ocr import scoped_engine
+        start = threading.Barrier(4, timeout=2)
+        engines, errors = [], []
+        def request():
+            try:
+                start.wait()
+                engines.append(scoped_engine(('device', 'synthetic-concurrent')))
+            except Exception as exc:
+                errors.append(exc)
+        with patch('backend.core.device.ocr._create_engine', return_value=Mock()) as build:
+            workers = [threading.Thread(target=request) for _ in range(4)]
+            for worker in workers: worker.start()
+            for worker in workers: worker.join(3)
+        self.assertEqual(errors, [])
+        self.assertTrue(all(not worker.is_alive() for worker in workers))
+        self.assertEqual(build.call_count, 1)
+        self.assertEqual(len({id(engine) for engine in engines}), 1)
+
+    def test_same_device_inference_is_serial_and_different_devices_can_progress(self):
+        from backend.core.device.ocr import ManagedEngine
+        engine = ManagedEngine(Mock())
+        entered, release, done = threading.Event(), threading.Event(), threading.Event()
+        def hold(*args, **kwargs):
+            entered.set()
+            if not release.wait(2): raise AssertionError('test inference was not released')
+        engine.engine.side_effect = hold
+        worker = threading.Thread(target=lambda: engine.infer(None, lambda: None))
+        worker.start()
+        try:
+            self.assertTrue(entered.wait(1))
+            self.assertFalse(engine.lock.acquire(blocking=False))
+            second = ManagedEngine(Mock(return_value='other'))
+            self.assertEqual(second.infer(None, lambda:None), 'other')
+        finally:
+            release.set();worker.join(3)
+        self.assertFalse(worker.is_alive())
+
+    def test_exception_ends_lease_and_releases_models(self):
+        import gc,weakref
+        from backend.core.device.ocr import engine_session,scoped_engine
+        scope=('device','synthetic-aborted')
+        with patch('backend.core.device.ocr._create_engine',return_value=Mock()):
+            with self.assertRaisesRegex(RuntimeError,'aborted'):
+                with engine_session(scope):
+                    engine=scoped_engine(scope);ref=weakref.ref(engine)
+                    del engine
+                    raise RuntimeError('aborted')
+            gc.collect()
+            self.assertIsNone(ref())

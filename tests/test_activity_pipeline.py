@@ -146,6 +146,36 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual([row['status'] for row in state['activity_pipeline']], ['finished', 'finished'])
         self.assertEqual([row['stats']['completed'] for row in state['activity_pipeline']], [1, 1])
 
+    def test_public_config_survives_plan_change_dispatch_and_cross_app_loading(self):
+        controller = self.controller()
+        self.select(controller, ('alpha', 'first'), ('beta', 'first'))
+        overrides = dict(default_browse_seconds=23, browse_extra_seconds=4, settle_seconds=0,
+                         browse_check_interval=.5, compressed_screenshots=True, screenshot_quality=45,
+                         max_attempts=3, max_tasks=7, scroll_browse=False, allow_cross_app=False,
+                         ocr=False, claim_rewards=False, minimum_volume=True, minimum_brightness=True,
+                         keep_screen_on=True, clear_clipboard=False, reset_after_activity=False,
+                         enabled_task_kinds=['browse'], swipe_distance_min=.2, swipe_distance_max=.4,
+                         swipe_duration_min=.3, swipe_duration_max=.8, swipe_interval_min=.2,
+                         swipe_interval_max=.4, swipe_burst_min=2, swipe_burst_max=4)
+        seen = []
+        with patch('backend.core.service.panel.CampaignRunner', self.runner_factory(
+                [], rendezvous=lambda runner: seen.append(dict(runner.config)))):
+            self.run_controller(controller, {'config': overrides})
+        self.assertEqual(len(seen), 2)
+        for config in seen:
+            self.assertEqual({key: config[key] for key in overrides}, overrides)
+
+    def test_switching_activity_keeps_shared_config_without_leaking_activity_rules(self):
+        controller = self.controller()
+        controller.state['config'].update(default_browse_seconds=31, screenshot_quality=45,
+                                          compressed_screenshots=True, search_keyword='first-only')
+        self.select(controller, ('beta', 'first'))
+        config = controller.state['config']
+        self.assertEqual(config['default_browse_seconds'], 31)
+        self.assertEqual(config['screenshot_quality'], 45)
+        self.assertTrue(config['compressed_screenshots'])
+        self.assertNotEqual(config['search_keyword'], 'first-only')
+
     def test_clipboard_setting_applies_before_run_and_can_be_disabled(self):
         for enabled in (True, False):
             with self.subTest(enabled=enabled):

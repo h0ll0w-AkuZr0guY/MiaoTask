@@ -313,8 +313,17 @@ class PluginManager:
                 raise ValueError('活动目录缺少兼容声明')
         return value
 
-    def catalog(self, refresh=False):
+    def catalog(self, refresh=False, cache_only=False):
         """Read cache by default; explicit refresh resolves official main once."""
+        if cache_only:
+            try:
+                value = self._validate_catalog(json.loads(self.cache_path.read_text(encoding='utf-8')),
+                                               local_origin=self.local_origin, source_only=self.source_provider is not None)
+                if self.source_provider and value.get('source_ref') != self.source_provider.source_ref:
+                    raise ValueError('缓存属于其他分支')
+                return value, True
+            except (OSError, ValueError):
+                return {'schema': 1, 'repository': OFFICIAL_REPOSITORY, 'packages': []}, True
         with _LOCK:
             cached = None
             if self.cache_path.is_file():
@@ -340,9 +349,11 @@ class PluginManager:
                         return {'schema': 1, 'repository': OFFICIAL_REPOSITORY, 'packages': []}, False
             return cached, True
 
-    def snapshot(self, registry=None, refresh=False):
-        catalog, cached = self.catalog(refresh)
-        installed = self.installed()
+    def snapshot(self, registry=None, refresh=False, cache_only=False):
+        catalog, cached = self.catalog(refresh, cache_only=cache_only)
+        # The index is atomically replaced. A display-only read must not wait
+        # behind the network refresh's installation/source lock.
+        installed = [dict(item) for item in self._state()['packages']] if cache_only else self.installed()
         by_id = {(p['app'], p['activity']): p for p in installed}
         applications, packages = {}, []
         recoverable = {(row['app'],row['activity']): row for row in self.bundled_recovery.entries()}

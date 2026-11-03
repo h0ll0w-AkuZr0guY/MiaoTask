@@ -1,10 +1,8 @@
 """Per-device activity plans; a running step always owns one application identity."""
-import copy
 
-from backend.core.config.loader import load_config, read_config
+from backend.core.config.loader import load_config, framework_overrides
 from backend.core.device.instances import InstanceMismatch
 from backend.core.execution.stats import RunStats
-from backend.core.runtime import assets_dir
 from backend.core.registry import checked_id
 from dataclasses import asdict
 
@@ -79,7 +77,8 @@ class ActivityPipeline:
             first = activities[0]
             registration = self.registry.get(first['app'], first['activity'])
             if self.registration is None or (self.state['app'], self.state['activity']) != (first['app'], first['activity']):
-                self._activate_registration(registration, load_config(registry=self.registry, **first))
+                self._activate_registration(registration, load_config(
+                    registry=self.registry, overrides=framework_overrides(self.state['config']), **first))
         self.update(activity_plan=activities, activity_pipeline=[],
                     status='ready' if self.device else 'disconnected', phase='ready',
                     message='已保存活动流水线，点击开始后按顺序执行' if activities else '未选择活动；请勾选需要执行的活动')
@@ -96,8 +95,7 @@ class ActivityPipeline:
             rows.append(dict(item, label=registration.activity.label, app_label=registration.app.label,
                              status='pending', stats={}))
         self.update(activity_plan=plan, activity_pipeline=rows)
-        shared_keys = set(read_config(assets_dir() / 'backend/core/config/defaults.json'))
-        shared_overrides = {key: copy.deepcopy(value) for key, value in config.items() if key in shared_keys}
+        shared_overrides = framework_overrides(config)
         first_identity = (self.state['app'], self.state['activity'])
         for index, item in enumerate(plan):
             self.control.check()
@@ -156,8 +154,7 @@ class ActivityPipeline:
         plan = [item for item in old_plan if (item['app'], item['activity']) in available]
         if previous in available:
             self.registration = registry.get(*previous)
-            shared_keys = set(read_config(assets_dir() / 'backend/core/config/defaults.json'))
-            overrides = {key: copy.deepcopy(value) for key, value in self.state['config'].items() if key in shared_keys}
+            overrides = framework_overrides(self.state['config'])
             config = load_config(registry=registry, app=previous[0], activity=previous[1], overrides=overrides)
             with self._daily_lock:
                 self.daily = None

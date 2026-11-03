@@ -14,7 +14,7 @@ import sys
 import zipfile
 
 ROOT = Path(__file__).resolve().parent.parent
-PORTABLE_DOCS = ('USAGE.md', 'SAFETY.md', 'RELEASES.md', 'LICENSING.md')
+PORTABLE_DOCS = ('USAGE.md', 'CONFIGURATION.md', 'SAFETY.md', 'RELEASES.md', 'LICENSING.md')
 PROJECT_LICENSES = ('LICENSE', 'NOTICE')
 LICENSE_TEXT_SUFFIXES = {'', '.txt', '.md', '.rst', '.html', '.apache', '.bsd',
                          '.mit', '.gpl', '.gpl2', '.gpl3', '.gplv2', '.gplv3',

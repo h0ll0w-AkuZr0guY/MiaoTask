@@ -82,8 +82,9 @@ class Activity(SessionLoop, Navigator, TaskTracking, Session, ABC):
         pass
 
     def run(self, auto_open=False):
-        try:
-            self.setup()
-            return super().run(auto_open)
-        finally:
-            self.teardown()
+        with self.reader.observation_session(self.config, self.control):
+            try:
+                self.setup()
+                return super().run(auto_open)
+            finally:
+                self.teardown()

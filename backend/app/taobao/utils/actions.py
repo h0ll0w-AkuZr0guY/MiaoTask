@@ -1,12 +1,52 @@
 """Taobao browse/search actions; activities provide list and return policies."""
 import logging
 import re
-from contextlib import nullcontext
+import time
 from backend.core.models import normalize
 from backend.core.errors import TaskUnavailable
 logger = logging.getLogger('backend.execution')
 
 class TaskActions:
+    def refine_task_rows(self, screen):
+        """Re-read at most two unclear title rows from the exact current image."""
+        if (not self.config['ocr'] or screen.source != 'ocr'
+                or self.reader.last_screen is not screen or not self.is_task_list(screen.nodes)):
+            return screen
+        progress = re.compile(r'[([]\s*\d+\s*/\s*\d+\s*[)\]]')
+        def caption(text):
+            return progress.sub('', normalize(text)).strip()
+        def incomplete(text):
+            return len(text) <= 2 or bool(re.fullmatch(r'点击去逛|点击查看|跳转得(?:奖励)?', text))
+        suspect = [task for task in self.parse_tasks(screen.nodes, screen.width, screen.height)
+                   if incomplete(task.title) and task.kind != 'claim'][:2]
+        if not suspect:
+            return screen
+        regions = [(round(screen.width*.04), max(0, round(task.bounds[1]-screen.height*.065)),
+                    max(1, round(task.bounds[0]-screen.width*.01)),
+                    min(screen.height, round(task.bounds[3]+screen.height*.025))) for task in suspect]
+        enriched = self.reader.enrich_regions(screen, regions)
+        additions = enriched.nodes[len(screen.nodes):]
+        # Only replace a known incomplete caption when a longer label is painted
+        # on that same line. Keep full-frame authentication and safety evidence.
+        replaced = []
+        for node in screen.nodes:
+            if not any(caption(node.text) == normalize(task.title) for task in suspect):
+                continue
+            if any(not incomplete(caption(fresh.text)) and re.search(r'[\u4e00-\u9fff]', fresh.text)
+                   and not re.match(r'浏览|点击|跳转|奖励|\+\d', caption(fresh.text))
+                   and abs(fresh.center[1]-node.center[1]) < max(
+                       node.bounds[3]-node.bounds[1], fresh.bounds[3]-fresh.bounds[1])*.6
+                   and fresh.bounds[0] <= node.bounds[2] and node.bounds[0] <= fresh.bounds[2]
+                   for fresh in additions):
+                replaced.append(node)
+        if not replaced:
+            self.reader.last_screen = screen
+            return screen
+        from dataclasses import replace
+        result = replace(enriched, nodes=[n for n in enriched.nodes if n not in replaced])
+        self.reader.last_screen = result
+        return result
+
     def pause(self, seconds):
         self.control.wait(max(0.0, float(seconds)))
 
@@ -438,101 +478,71 @@ class TaskActions:
         # 施肥 / 浇水这类任务只认页面上那一下点击，停在页面上不会计数。
         if screen.package == self.origin and self.tap_once(screen) is not None:
             screen = self.read()
-        seconds = task.seconds or (self.config['visit_seconds'] if task.kind == 'visit'
-                                    else self.config['default_browse_seconds'])
-        if task.kind in ('browse', 'search'):
-            seconds += self.config['browse_extra_seconds']
-        seconds += self.config['settle_seconds']
+        seconds = (task.seconds or self.config['visit_seconds']) if task.kind == 'visit' else max(
+            task.seconds, self.config['default_browse_seconds'])
         explicit_success, cross = self.wait_for_browse(task, screen, cross, seconds)
+        self.update('returning', message='浏览结束，返回任务列表核验', remaining=0)
         self._attempt_browsed = True
         return self.recover(), explicit_success, cross
 
+    def browse_completed(self, screen):
+        counter = getattr(self, 'browse_countdown', None)
+        visible = counter(screen) if callable(counter) else None
+        countdown = re.search(r'(?:还需|再逛|再浏览|剩余|再看)[^\d]{0,3}(\d{1,2})\s*秒', screen.text)
+        visible = visible if visible is not None else int(countdown[1]) if countdown else None
+        earned = any(n.center[1] < screen.height*.2 and re.fullmatch(
+            r'完成[!！。\s]*\d+能量已到账', normalize(n.text)) for n in screen.nodes)
+        return not visible and bool(earned or screen.find(
+            r'^(?:任务已完成|浏览已完成|浏览完成|完成浏览|奖励已到账|恭喜完成|任务完成啦)[!！。\s]*$'))
+
     def wait_for_browse(self, task, screen, cross, seconds):
+        """First pass returns for task-list verification; failed passes recheck sparingly."""
         started = self.control.now()
         hard_deadline = started + self.config['max_task_seconds']
-        browse_deadline = started + min(seconds, self.config['max_task_seconds'])
         scrolling = self.config['scroll_browse'] and not cross and task.kind in ('browse', 'search')
-        # The page countdown follows elapsed time, including recognition and gaps.
-        deadline_checked = False
-        next_observation, last_observation = started + 1, started
-        counted_screen, visible = None, None
-        observer_factory = getattr(self.reader, 'visual_observer', None)
-        observer_context = (observer_factory() if scrolling and self.config['ocr'] and callable(observer_factory)
-                            else nullcontext(None))
-        with observer_context as observer:
-            while self.control.now() < hard_deadline:
+        self.guard(screen)
+        self.check_destination(screen)
+        if self.browse_completed(screen):
+            return True, cross
+        retry_needed = getattr(self.task_policy, 'retry_needed', self.task_policy.failures)
+        retry = task.kind in ('browse', 'search') and bool(retry_needed(task))
+
+        def browse_for(duration):
+            deadline = min(self.control.now() + duration, hard_deadline)
+            while self.control.now() < deadline:
                 self.control.check()
-                if observer and not deadline_checked:
-                    fresh = observer.poll()
-                    if fresh is not None:
-                        screen = fresh
-                        last_observation = self.control.now() - self.reader.last_observation_seconds
-                        self.assert_instance(screen)
-                        self.update(package=screen.package, source=screen.source,
-                                    observation_ms=round(self.reader.last_observation_seconds * 1000))
-                    if observer.pending and self.control.now() - last_observation > self.config['page_timeout']:
-                        raise TimeoutError('浏览画面识别超时，已停止滑动，返回后重新核验')
-                self.check_destination(screen)
-                self.guard(screen)
-                if screen.package == self.origin and self.is_task_list(screen.nodes):
-                    break
-                if screen.package != self.origin:
-                    if not cross:
-                        self.stats.cross_app += 1
-                        cross = True
-                    if not self.config['allow_cross_app']:
-                        break
-                    scrolling = False
-                # Consume each observed countdown once, never extend the timer
-                # on every gesture using the same stale frame.
-                if screen is not counted_screen:
-                    counted_screen = screen
-                    countdown = re.search(r'(?:还需|再逛|再浏览|剩余|再看)[^\d]{0,3}(\d{1,2})\s*秒', screen.text)
-                    counter = getattr(self, 'browse_countdown', None)
-                    visible = counter(screen) if callable(counter) else None
-                    visible = visible if visible is not None else int(countdown[1]) if countdown else None
-                    if visible is not None:
-                        if visible > 0:
-                            browse_deadline = max(browse_deadline, min(self.control.now() + visible + 1, hard_deadline))
-                if (visible is None or visible <= 0) and screen.find(
-                        r'^(?:任务已完成|浏览已完成|浏览完成|完成浏览|奖励已到账|恭喜完成|任务完成啦)[!！。\s]*$'):
-                    logger.info('检测到任务完成提示')
-                    return True, cross
-                remaining = min(browse_deadline - self.control.now(), hard_deadline - self.control.now())
-                if remaining <= 0:
-                    if deadline_checked:
-                        break
-                    # One fresh frame can reveal a countdown missed earlier.
-                    screen = self.read()
-                    deadline_checked = True
-                    continue
-                deadline_checked = False
-                self.update('browsing', message='跨应用浏览中' if cross else '持续滑动浏览中' if scrolling else '浏览中',
-                            remaining=max(0, int(remaining + .9)))
-                if self.control.now() >= next_observation:
-                    if observer:
-                        if not observer.pending:
-                            observer.request()
-                            captured = observer.captured
-                            self.assert_instance(captured)
-                            cadence = getattr(self, 'browse_observation_interval', None)
-                            next_observation = self.control.now() + (cadence(scrolling) if callable(cadence) else 1)
-                    else:
-                        screen = self.read()
-                        last_observation = self.control.now()
-                        next_observation = last_observation + 1
-                        continue  # Guard the fresh page before any more input.
-                if observer and observer.pending and (
-                        observer.captured.package != self.origin or
-                        (observer.captured.width, observer.captured.height) != (screen.width, screen.height)):
-                    # A foreground/rotation change needs its own checked frame;
-                    # do not reuse the preceding page's swipe geometry.
-                    self.control.wait(.05)
-                    continue
+                self.update('browsing', message='连续滑动浏览中' if scrolling else '停留浏览中',
+                            remaining=max(0, int(deadline-self.control.now()+.9)))
                 if scrolling:
+                    # The adapter still checks package/user/display before input.
                     self.browse_swipe(screen)
-                interval = self.gestures.interval() if scrolling else 1
-                interval = max(0, min(interval, hard_deadline - self.control.now()))
+                    interval = self.gestures.interval()
+                else:
+                    interval = min(.2, deadline-self.control.now())
                 if interval > 0:
-                    self.control.wait(interval)
+                    self.control.wait(min(interval,max(0,deadline-self.control.now())))
+            self.control.check()
+
+        browse_for(seconds)
+        if not retry or self.control.now() >= hard_deadline:
+            return False, cross
+        # Only a task whose previous list verification failed pays for OCR here.
+        self.control.wait(min(1,max(0,hard_deadline-self.control.now())))
+        for round_no in range(self.config.get('browse_recheck_rounds', 3) + 1):
+            if self.control.now() >= hard_deadline:
+                break
+            screen = self.read(force_ocr=bool(self.config['ocr']))
+            self.guard(screen)
+            self.check_destination(screen)
+            if self.is_task_list(screen.nodes):
+                break
+            if screen.package != self.origin:
+                # A changed destination must be handled by the normal return path.
+                break
+            if self.browse_completed(screen):
+                return True, cross
+            if round_no == self.config.get('browse_recheck_rounds', 3):
+                break
+            self.update('browsing',message=f'补滑复查 {round_no+1}/{self.config.get("browse_recheck_rounds",3)}',remaining=1)
+            browse_for(1)
         return False, cross

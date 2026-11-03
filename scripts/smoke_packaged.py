@@ -95,7 +95,7 @@ def smoke(executable, output=None, *, activity_packages=()):
             base = json.loads(port_file.read_text(encoding='utf-8'))['url']
             with urlopen(base + '/api/health', timeout=5) as response:
                 result['health'] = json.load(response)
-            for name, expected in [('/', 'MiaoTask'), ('/app.js', 'browse_extra_seconds'), ('/style.css', '.topbar')]:
+            for name, expected in [('/', 'MiaoTask'), ('/app.js', 'browse_recheck_rounds'), ('/style.css', '.topbar')]:
                 with urlopen(base + name, timeout=5) as response:
                     if expected not in response.read().decode('utf-8'):
                         raise RuntimeError(f'Unexpected packaged response: {name}')

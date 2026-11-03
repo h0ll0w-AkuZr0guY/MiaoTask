@@ -5,6 +5,16 @@ import threading
 from backend.core.models import normalize
 
 
+def keyword_skip_reason(task, words):
+    def get(name, default=''):
+        return task.get(name, default) if isinstance(task, dict) else getattr(task, name, default)
+    if get('kind') == 'done':
+        return ''
+    text = normalize(get('title') + ' ' + (get('detail') or '')).casefold()
+    word = next((word for word in words if normalize(word).casefold() in text), None)
+    return f'已跳过：命中常驻关键词“{word}”；请在公共词表中修改' if word else ''
+
+
 def task_identity(task):
     def get(name, default=''):
         return task.get(name, default) if isinstance(task, dict) else getattr(task, name, default)
@@ -64,6 +74,11 @@ class TaskPolicy:
             deferred[category] = used + 1
             self._save()
             return True
+
+    def retry_needed(self, task):
+        with self.lock:
+            item = self.entries.get(task_identity(task), {})
+            return bool(item.get('failures') or item.get('deferred'))
 
     def fail(self, task, limit):
         with self.lock:
@@ -138,5 +153,9 @@ class TaskPolicy:
             if skip:
                 self.entries.setdefault(identity, {})['skip'] = True
             else:
-                self.entries.pop(identity, None)
+                self.entries[identity] = {'skip': False}
             self._save()
+
+    def explicitly_enabled(self, task):
+        with self.lock:
+            return self.entries.get(task_identity(task), {}).get('skip') is False

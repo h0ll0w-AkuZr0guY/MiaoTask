@@ -25,10 +25,16 @@ def serialized(method):
     @wraps(method)
     def call(self, *args, **kwargs):
         with getattr(self, 'io_lock', None) or nullcontext():
+            control = getattr(self, '_run_control', None)
+            if control is not None:
+                control.check()
             mutating = method.__name__ not in {'screenshot', 'current_app', 'dump_hierarchy', 'installed_packages', 'refresh_app_instances'}
             if getattr(self, '_instance_guard_active', False) and method.__name__ in {
-                    'click', 'swipe', 'swipe_ext', 'go_back', 'input_text', 'input_ascii', 'clear_text', 'press'}:
+                    'click', 'swipe', 'continuous_swipe', 'swipe_ext', 'go_back', 'input_text', 'input_ascii', 'clear_text', 'press'}:
+                observed_display = getattr(self, '_display_id', None)
                 self.check_instance(self.current_app())
+                if observed_display is not None and observed_display != getattr(self, '_display_id', 0):
+                    raise InstanceMismatch('执行显示屏已变化，已停止输入；请重新连接并确认当前窗口')
             if mutating:
                 self._screenshot_cache = None
             try:
@@ -55,6 +61,7 @@ class DeviceAdapter:
         self.device_type = device_type
         self.serial = serial
         self.io_lock = threading.RLock()
+        self._bounded_capture = True
         self.on_status = on_status or logger.info
         self._device = None
         self._last_xml = None  # 缓存uiautomator2的原始XML，避免json2xml重复调用
@@ -212,7 +219,10 @@ class DeviceAdapter:
     @serialized
     def click(self, x, y):
         """点击坐标"""
-        if getattr(self, '_display_id', 0):
+        if getattr(self, '_operation_io', None) and self.device_type == 'uiautomator2':
+            display = getattr(self, '_display_id', 0)
+            self._checked_shell(['input', '-d', str(display), 'tap', str(round(x)), str(round(y))])
+        elif getattr(self, '_display_id', 0):
             self._checked_shell(['input', '-d', str(self._display_id), 'tap', str(round(x)), str(round(y))])
         else:
             self._device.click(x, y)
@@ -243,6 +253,21 @@ class DeviceAdapter:
         if self.device_type != 'uiautomator2':
             raise NotImplementedError('当前设备驱动不支持清空剪贴板')
         self._device.set_clipboard('')
+
+    @serialized
+    def continuous_swipe(self, x1, y1, x2, y2, duration=.5):
+        """System gesture without UiAutomator's post-gesture idle wait."""
+        if self.device_type != 'uiautomator2' or getattr(self, '_display_id', 0):
+            return self.swipe(x1, y1, x2, y2, duration)
+        import os
+        from backend.core.device.discovery import _run_adb, resolve_adb_binary
+        args = ['-s', self.serial, 'shell', 'input', 'swipe',
+                *[str(round(v)) for v in (x1, y1, x2, y2)], str(max(1, round(duration * 1000)))]
+        transport = getattr(self, '_operation_io', None)
+        result = (transport.run([resolve_adb_binary(), *args], max(3, duration + 2), text=True)
+                  if transport else _run_adb(resolve_adb_binary(), args, os.environ.copy(), max(3, duration + 2)))
+        if result.returncode or re.search(r'Error:|Exception|Permission Denial', result.stdout + result.stderr):
+            raise RuntimeError('系统连续滑动失败')
 
     @serialized
     def swipe_ext(self, direction, box=None):
@@ -348,7 +373,7 @@ class DeviceAdapter:
             def reliable_read(args):
                 from backend.core.device.read_shell import AdbReadShell
                 if fallback[0] is None:
-                    fallback[0] = AdbReadShell(self.serial, budget=8)
+                    fallback[0] = AdbReadShell(self.serial, prefer_socket=getattr(self, '_bounded_capture', False), budget=8, transport=getattr(self, '_operation_io', None))
                 return fallback[0](args)
             # adbutils drops the user field. Read it from the SAME focused
             # window record instead; a background instance is never evidence.
@@ -374,6 +399,8 @@ class DeviceAdapter:
                 result = self._read_metadata(['dumpsys', 'activity', 'activities'], fallback=reliable_read)
                 info = parse_foreground(result.output) if result.exit_code == 0 else None
             if info is None:
+                if getattr(self, '_bounded_capture', False):
+                    raise InstanceMismatch('前台信息查询未取得可核定的应用身份，请检查调试连接后重试；未执行输入操作')
                 try:
                     info = dict(self._device.app_current(), user_id=None)
                 except Exception as exc:
@@ -392,6 +419,33 @@ class DeviceAdapter:
         def usable(result):
             return (result.exit_code == 0 and isinstance(result.output, str) and result.output.strip()
                     and not re.search(r'SecurityException|Permission Denial|(?:^|\n)\s*(?:Error:|Exception)', result.output))
+        if args == ['dumpsys', 'window', 'windows'] and getattr(self, 'serial', None):
+            try:
+                # Display summaries contain focused identity without the large
+                # per-window diagnostic tree on current Android versions.
+                query = ['dumpsys', 'window', 'displays'] if not getattr(self, '_display_id', 0) else args
+                result = (fallback or AdbReadShell(self.serial, prefer_socket=getattr(self, '_bounded_capture', False), budget=8))(query)
+                if usable(result) and parse_foreground(result.output):
+                    return result
+                if query != args and getattr(self, '_bounded_capture', False):
+                    result = (fallback or AdbReadShell(self.serial, prefer_socket=getattr(self, '_bounded_capture', False), budget=8))(args)
+                    if usable(result):
+                        return result
+            except Exception:
+                if getattr(self, '_run_control', None):
+                    self._run_control.check()
+                pass
+            if getattr(self, '_bounded_capture', False):
+                return ReadResult('', 1)
+        elif getattr(self, '_bounded_capture', False) and getattr(self, 'serial', None):
+            try:
+                result = (fallback or AdbReadShell(self.serial, prefer_socket=getattr(self, '_bounded_capture', False), budget=8,
+                                                 transport=getattr(self, '_operation_io', None)))(args)
+                return result if usable(result) else ReadResult('', 1)
+            except Exception:
+                if getattr(self, '_run_control', None):
+                    self._run_control.check()
+                return ReadResult('', 1)
         try:
             result = self._device.shell(args)
             if usable(result):
@@ -399,12 +453,105 @@ class DeviceAdapter:
         except Exception:
             pass
         try:
-            result = (fallback or AdbReadShell(self.serial, budget=8))(args)
+            result = (fallback or AdbReadShell(self.serial, prefer_socket=getattr(self, '_bounded_capture', False), budget=8))(args)
             if usable(result):
                 return result
         except Exception:
             pass
         return ReadResult('', 1)
+
+    @contextmanager
+    def operation_session(self, control):
+        """Bind cancellation for this run, releasing it before comfort restoration."""
+        from backend.core.device.read_shell import DeviceIO
+        if getattr(self, '_operation_io', None) is not None:
+            yield
+            return
+        transport = DeviceIO()
+        self._operation_io, self._run_control = transport, control
+        remove = control.on_stop(transport.cancel)
+        try:
+            control.check()
+            yield
+        finally:
+            remove()
+            transport.cancel()
+            self._operation_io = self._run_control = None
+
+    def capture_observation(self, *, compressed=False, quality=70, transport=None):
+        """Independent, bounded read-only ADB channel for primary-screen capture.
+
+        No SDK HTTP connection, adapter lock or mutable display cache is shared
+        with gestures. Non-primary/HDC routes keep the normal serialized path.
+        """
+        if self.device_type != 'uiautomator2' or getattr(self, '_display_id', 0):
+            return None
+        from backend.core.device.read_shell import AdbReadShell
+        from backend.core.device.displays import focused_display
+        from PIL import Image
+        metadata = AdbReadShell(self.serial, prefer_socket=getattr(self, '_bounded_capture', False), timeout=5, budget=5, transport=transport)(['dumpsys', 'window', 'displays'])
+        info = parse_foreground(metadata.output) if metadata.exit_code == 0 else None
+        if not info or focused_display(metadata.output) != 0:
+            raise InstanceMismatch('截图采集未能核定主显示屏及前台身份，已停止操作')
+        if compressed:
+            raw = self._capture_jpeg(quality, transport=transport) if transport else self._capture_jpeg(quality)
+        else:
+            from backend.core.device.discovery import resolve_adb_binary
+            import subprocess
+            command = [resolve_adb_binary(), '-s', self.serial, 'exec-out', 'screencap', '-p']
+            result = (transport.run(command, 8) if transport else subprocess.run(command,
+                                    capture_output=True, timeout=8,
+                                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)))
+            if result.returncode:
+                raise RuntimeError('设备截图失败')
+            raw = result.stdout
+        image = Image.open(io.BytesIO(raw)).convert('RGB')
+        info['window_dump'] = metadata.output
+        return info, image
+
+    def _capture_jpeg(self, quality=70, transport=None):
+        """Read-only screenshot RPC on its own socket; never restart the server."""
+        import base64
+        if isinstance(quality, bool) or not isinstance(quality, int) or not 30 <= quality <= 95:
+            raise ValueError('截图质量必须为30～95的整数')
+        encoded = self._readonly_rpc('takeScreenshot', [1, quality], transport)
+        if not isinstance(encoded, str) or not encoded:
+            raise RuntimeError('后台压缩截图不可用')
+        return base64.b64decode(''.join(encoded.split()), validate=True)
+
+    def _readonly_rpc(self, method, params, transport=None):
+        import json
+        import socket
+        import adbutils
+        from uiautomator2.core import AdbHTTPConnection
+        if method not in ('takeScreenshot', 'dumpWindowHierarchy'):
+            raise ValueError('独立通道仅允许截图和控件读取')
+        remote = adbutils.AdbClient(socket_timeout=3).device(self.serial)
+        port = getattr(self._device, '_device_server_port', 9008)
+        with AdbHTTPConnection(remote, port=port) as connection:
+            connection.connect()
+            connection.sock.settimeout(5)
+            active_socket = connection.sock
+            def abort():
+                try:
+                    active_socket.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                active_socket.close()
+            with transport.own(abort) if transport else nullcontext():
+                body = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': params})
+                connection.request('POST', '/jsonrpc/0', body, {'Content-Type': 'application/json'})
+                response = connection.getresponse()
+                if response.status != 200:
+                    raise RuntimeError('后台只读服务未响应')
+                payload = json.loads(response.read())
+            if payload.get('error'):
+                raise RuntimeError('后台只读服务返回错误')
+            return payload.get('result')
+
+    def capture_hierarchy(self, transport):
+        """UI hierarchy on a private connection, without the input lock."""
+        return self._xml_to_json(self._readonly_rpc('dumpWindowHierarchy', [True, 50], transport))
 
     @serialized
     def installed_packages(self):
@@ -416,7 +563,7 @@ class DeviceAdapter:
             return None
         from backend.core.device.read_shell import AdbReadShell, parse_package_list
         try:
-            read = AdbReadShell(self.serial, budget=12)
+            read = AdbReadShell(self.serial, prefer_socket=getattr(self, '_bounded_capture', False), budget=12)
         except ValueError:
             return None
         for prefix in (['pm', 'list', 'packages'], ['cmd', 'package', 'list', 'packages']):
@@ -451,7 +598,14 @@ class DeviceAdapter:
                 self._device.app_start(package_name, activity=component.split('/', 1)[1], stop=False)
 
     def _checked_shell(self, args, *, timeout=None):
-        result = self._device.shell(args) if timeout is None else self._device.shell(args, timeout=timeout)
+        transport = getattr(self, '_operation_io', None)
+        if transport and self.device_type == 'uiautomator2':
+            from backend.core.device.discovery import resolve_adb_binary
+            from backend.core.device.read_shell import ReadResult
+            completed = transport.run([resolve_adb_binary(), '-s', self.serial, 'shell', *args], timeout or 8, text=True)
+            result = ReadResult(completed.stdout + completed.stderr, completed.returncode)
+        else:
+            result = self._device.shell(args) if timeout is None else self._device.shell(args, timeout=timeout)
         if result.exit_code != 0 or re.search(r'Error:|Exception|Permission Denial', result.output):
             raise RuntimeError('指定应用实例操作失败：' + result.output.strip()[:300])
         return result.output
@@ -501,7 +655,7 @@ class DeviceAdapter:
             raise ValueError('执行期间不能刷新或切换应用实例')
         if self.device_type == 'uiautomator2':
             from backend.core.device.read_shell import AdbReadShell
-            instances, warnings = discover_android_instances(AdbReadShell(self.serial), self.application)
+            instances, warnings = discover_android_instances(AdbReadShell(self.serial, prefer_socket=getattr(self, '_bounded_capture', False)), self.application)
         else:
             instances = [AppInstance(self.application.package_for('hmdriver2'), None, self.application.label + ' · HarmonyOS 原生应用')]
             warnings = []
@@ -570,7 +724,13 @@ class DeviceAdapter:
                     raw = adbutils.adb.device(self.serial).shell(['screencap','-p','-d',self._capture_id], encoding=None)
                     image = Image.open(io.BytesIO(raw)).convert('RGB')
                 else:
-                    image = self._device.screenshot()
+                    if getattr(self, '_bounded_capture', False):
+                        # UI preview/initial connection must not enter SDK
+                        # screenshot fallbacks with unbounded shell retries.
+                        _, image = self.capture_observation(compressed=True, quality=80,
+                                                           transport=getattr(self, '_operation_io', None))
+                    else:
+                        image = self._device.screenshot()
             except OSError:
                 if getattr(self, '_display_id', 0):
                     self._capture_id = None
@@ -579,7 +739,11 @@ class DeviceAdapter:
                 # Explicit primary display uses u2's public direct-ADB capture,
                 # returning a fresh frame without another app/server restart.
                 logger.debug('截图服务暂时不可用，改用 ADB 截图', exc_info=True)
-                image = self._device.screenshot(display_id=0)
+                if getattr(self, '_bounded_capture', False):
+                    _, image = self.capture_observation(compressed=False,
+                                                       transport=getattr(self, '_operation_io', None))
+                else:
+                    image = self._device.screenshot(display_id=0)
         else:
             from PIL import Image
             with tempfile.TemporaryDirectory(prefix='miao-screen-') as folder:
@@ -691,11 +855,11 @@ class DeviceAdapter:
             else:
                 self._device.press_key(key)
         else:
-            if getattr(self, '_display_id', 0):
-                mapping = {'back':'4','home':'3','enter':'66','search':'84'}
+            if getattr(self, '_display_id', 0) or getattr(self, '_operation_io', None):
+                mapping = {'back':'4','home':'3','enter':'66','search':'84', 'wakeup':'224', 'volume_down':'25', 'volume_up':'24', 'power':'26'}
                 if key not in mapping:
                     raise ValueError('当前多屏设备不支持该按键')
-                self._checked_shell(['input','-d',str(self._display_id),'keyevent',mapping[key]])
+                self._checked_shell(['input','-d',str(getattr(self, '_display_id', 0)),'keyevent',mapping[key]])
             else:
                 self._device.press(key)
 

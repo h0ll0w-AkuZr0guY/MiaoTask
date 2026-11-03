@@ -1,9 +1,12 @@
-"""Bounded recognition cache; text detection still runs on every fresh frame."""
+"""Sparse synchronous OCR with exact text caching and non-spinning sessions."""
 from collections import OrderedDict
+from contextlib import contextmanager
 from dataclasses import replace
 import hashlib
+import os
 import threading
 import time
+import weakref
 
 
 class ExactTextCache:
@@ -43,3 +46,116 @@ class ExactTextCache:
                                  scores=tuple(row[1] for row in rows),
                                  word_results=tuple(None for _ in rows),
                                  elapse=time.perf_counter() - started)
+
+
+# Engines are weakly cached; an active device run may lease them across activities.
+_ENGINES = weakref.WeakValueDictionary()
+_ENGINE_LOCK = threading.RLock()
+_CREATION_LOCKS = weakref.WeakValueDictionary()
+_CV_CONFIGURED = False
+_ACTIVE_SCOPES = {}
+_SESSION_ENGINES = {}
+
+
+def device_ocr_scope(device):
+    """Follow physical identity across transport aliases and worker threads (#32)."""
+    for attr in ('identity_serial', 'serial'):
+        value = getattr(device, attr, None)
+        if isinstance(value, str) and value.strip():
+            return ('device', value.strip())
+    return ('device', id(device)) if device is not None else None
+
+
+@contextmanager
+def engine_session(scope):
+    """Lazily retain models for one run/pipeline, release strong ownership on exit."""
+    with _ENGINE_LOCK:
+        _ACTIVE_SCOPES[scope] = _ACTIVE_SCOPES.get(scope, 0) + 1
+    try:
+        yield
+    finally:
+        with _ENGINE_LOCK:
+            remaining = _ACTIVE_SCOPES[scope] - 1
+            if remaining:
+                _ACTIVE_SCOPES[scope] = remaining
+            else:
+                _ACTIVE_SCOPES.pop(scope)
+                for key in [key for key in _SESSION_ENGINES if key[0] == scope]:
+                    _SESSION_ENGINES.pop(key)
+
+
+def available_cpus():
+    return max(1, getattr(os, 'process_cpu_count', os.cpu_count)() or 1)
+
+
+def _sleeping_session(model):
+    """Configure the locked RapidOCR ONNX runtime, without global monkeypatches."""
+    import onnxruntime as ort
+    session = model.session.session
+    options = session.get_session_options()
+    options.add_session_config_entry('session.intra_op.allow_spinning', '0')
+    options.add_session_config_entry('session.inter_op.allow_spinning', '0')
+    options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+    model.session.session = ort.InferenceSession(session._model_path, sess_options=options,
+                                                providers=session.get_providers())
+
+
+
+def _create_engine(threads):
+    global _CV_CONFIGURED
+    from rapidocr import RapidOCR
+    import cv2
+    with _ENGINE_LOCK:
+        if not _CV_CONFIGURED:
+            cv2.setNumThreads(1)
+            _CV_CONFIGURED = True
+    engine = RapidOCR(params={
+        'EngineConfig.onnxruntime.intra_op_num_threads': threads,
+        'EngineConfig.onnxruntime.inter_op_num_threads': 1,
+        'Global.log_level': 'warning'})
+    if callable(getattr(type(engine), '_load_det_model', None)):
+        _sleeping_session(engine._load_det_model())
+        rec = engine._load_rec_model()
+        _sleeping_session(rec)
+        engine.text_rec = ExactTextCache(rec)
+    return engine
+
+
+class ManagedEngine:
+    def __init__(self, engine):
+        self.engine = engine
+        self.lock = threading.Lock()
+
+    def __call__(self, *args, **kwargs):
+        with self.lock:
+            return self.engine(*args, **kwargs)
+
+    def infer(self, image, check):
+        while not self.lock.acquire(timeout=.05):
+            check()
+        try:
+            check()
+            return self.engine(image, use_cls=False)
+        finally:
+            self.lock.release()
+
+
+def scoped_engine(scope, threads=4):
+    threads = min(threads, max(1, available_cpus() // 2))
+    key = (scope, threads)
+    with _ENGINE_LOCK:
+        lock = _CREATION_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _CREATION_LOCKS[key] = lock
+    with lock:
+        with _ENGINE_LOCK:
+            engine = _ENGINES.get(key)
+        if engine is None:
+            engine = ManagedEngine(_create_engine(threads))
+            with _ENGINE_LOCK:
+                _ENGINES[key] = engine
+        with _ENGINE_LOCK:
+            if scope in _ACTIVE_SCOPES:
+                _SESSION_ENGINES[key] = engine
+        return engine

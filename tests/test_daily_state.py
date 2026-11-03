@@ -485,11 +485,24 @@ from backend.core.storage.preferences import read_preferences, save_preferences
 
 
 class FrameworkPreferencesTests(unittest.TestCase):
+    def test_keyword_configuration_is_normalized_saved_and_loaded_for_a_new_controller(self):
+        from backend.core.config.loader import load_config, framework_overrides
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, MIAO_DATA_DIR=folder):
+            save_preferences(activity_branch='development')
+            controller=Controller(persist_preferences=True)
+            controller.dispatch('configure',{'config':{'task_search_keywords':'雨伞；2026 ',
+                                                       'skip_task_keywords':'头条;A+B'}})
+            saved=read_preferences()
+            self.assertEqual(saved['activity_branch'],'development')
+            new=Controller(config=load_config(overrides=framework_overrides(saved['config'])))
+            self.assertEqual(new.state['config']['task_search_keywords'],['雨伞','2026'])
+            self.assertEqual(new.state['config']['skip_task_keywords'],['头条','A+B'])
+
     def test_preferences_merge_and_survive_new_reader(self):
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, MIAO_DATA_DIR=folder):
             save_preferences(config={'minimum_volume': True})
             save_preferences(activity_branch='development')
-            self.assertEqual(read_preferences(), {'config': {'minimum_volume': True}, 'activity_branch': 'development'})
+            self.assertEqual(read_preferences(), {'config': {'minimum_volume': True}, 'activity_branch': 'development', 'task_wordlists_schema':1})
             self.assertTrue((Path(folder) / 'preferences.json').is_file())
 
     def test_bad_preferences_are_preserved(self):
@@ -622,6 +635,14 @@ class KeepAwakeTests(unittest.TestCase):
         args = [c.args[0] for c in d._checked_shell.call_args_list]
         self.assertEqual(args[-1],['settings','put','system','screen_off_timeout','600000'])
         self.assertFalse(any(c[0]=='input' for c in args))
+
+    def test_custom_device_screen_timeout_is_applied_then_restored(self):
+        from unittest.mock import Mock
+        d=Mock(device_type='uiautomator2',io_lock=None)
+        d._checked_shell.return_value='600000'
+        with device_comfort(d,{'keep_screen_on':True,'screen_timeout_minutes':7}):
+            d._checked_shell.assert_any_call(['settings','put','system','screen_off_timeout','420000'],timeout=5)
+        self.assertEqual(d._checked_shell.call_args.args[0],['settings','put','system','screen_off_timeout','600000'])
 
 
 class MediaVolumeTests(unittest.TestCase):
@@ -789,3 +810,38 @@ class WakePreferenceTests(unittest.TestCase):
         d.dump_hierarchy()
         d.dump_hierarchy()
         d.wake_and_unlock.assert_called_once_with()
+
+
+class AudioServiceFallbackTests(unittest.TestCase):
+    def test_ignored_media_session_uses_audio_service_and_restores_original(self):
+        d=Mock(device_type='uiautomator2',io_lock=None)
+        state={'volume':34}
+        def shell(command,**kwargs):
+            if command[:2]==['cmd','audio']:
+                op=command[2]
+                if op=='set-volume':state['volume']=int(command[4]);return ''
+                labels={'get-stream-volume':('getStreamVolume',state['volume']),
+                        'get-min-volume':('getStreamMinVolume',0),'get-max-volume':('getStreamMaxVolume',150)}
+                label,value=labels[op]
+                return f'AudioManager.{label}(3) -> {value}\n'
+            if '--get' in command:return f'[V] volume is {state["volume"]} in range [0..150]'
+            return ''  # legacy command reports success but does not change device
+        d._checked_shell.side_effect=shell
+        with device_comfort(d,{'minimum_volume':True}):
+            self.assertEqual(state['volume'],0)
+        self.assertEqual(state['volume'],34)
+        commands=[call.args[0] for call in d._checked_shell.call_args_list]
+        self.assertIn(['cmd','audio','set-volume','3','0'],commands)
+        self.assertIn(['cmd','audio','set-volume','3','34'],commands)
+        self.assertFalse(any(command[0] in ('input','settings') for command in commands))
+
+    def test_audio_service_ignored_write_does_not_claim_success(self):
+        from backend.core.device.comfort import _MediaVolume
+        def execute(command):
+            if command[:2]==['cmd','audio']:
+                values={'get-stream-volume':('getStreamVolume',10),'get-min-volume':('getStreamMinVolume',0),'get-max-volume':('getStreamMaxVolume',15)}
+                if command[2]=='set-volume':return ''
+                label,value=values[command[2]];return f'AudioManager.{label}(3) -> {value}'
+            return ''
+        notify=Mock();volume=_MediaVolume(execute,notify);volume.lower()
+        self.assertFalse(any('已降至' in call.args[1] for call in notify.call_args_list))

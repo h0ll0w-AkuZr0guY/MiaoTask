@@ -11,6 +11,7 @@ class ActivityCatalogHub:
         self.plugin_operation = {}
         self.plugin_manager = None
         self._plugin_snapshot = {}
+        self.catalog_refresh_thread = None
 
     def _manager(self, origin):
         with self.catalog_gate:
@@ -30,11 +31,28 @@ class ActivityCatalogHub:
             busy = self.plugin_busy
             cached = copy.deepcopy(self._plugin_snapshot)
             operation = copy.deepcopy(self.plugin_operation)
+        manager = self._manager(origin)
         if not busy:
-            cached = self._manager(origin).snapshot(refresh=refresh)
+            cached = manager.snapshot(refresh=refresh, cache_only=manager.source_provider is not None)
             with self.catalog_gate:
                 self._plugin_snapshot = copy.deepcopy(cached)
-        return dict(cached, busy=busy, operation=operation)
+        with self.catalog_gate:
+            if refresh and not busy and manager.source_provider is not None and not (
+                    self.catalog_refresh_thread and self.catalog_refresh_thread.is_alive()):
+                self.catalog_refresh_thread = threading.Thread(target=self._refresh_catalog, args=(manager,),
+                                                               name='miao-catalog-refresh', daemon=True)
+                self.catalog_refresh_thread.start()
+            refreshing = bool(self.catalog_refresh_thread and self.catalog_refresh_thread.is_alive())
+        return dict(cached, busy=busy, operation=operation, refreshing=refreshing)
+
+    def _refresh_catalog(self, manager):
+        try:
+            result = manager.snapshot(refresh=True)
+            with self.catalog_gate:
+                self._plugin_snapshot = copy.deepcopy(result)
+        except Exception:
+            # Manager retains validated cache and its diagnostic on fetch error.
+            pass
 
     def activity_branches(self, origin):
         from backend.core.plugins.repository import GitHubSourceProvider
@@ -45,6 +63,8 @@ class ActivityCatalogHub:
         from backend.core.storage.preferences import save_preferences
         ref = branch_name(payload.get('source_ref'))
         with self.catalog_gate, self.lock:
+            if self.catalog_refresh_thread and self.catalog_refresh_thread.is_alive():
+                raise ValueError('目录正在后台刷新，请稍候再切换分支')
             if self.closing or self.plugin_busy or any(c.thread and c.thread.is_alive() for c in self.controllers.values()):
                 raise ValueError('请先停止设备与活动安装，再切换源码分支')
             manager = self._manager(origin)

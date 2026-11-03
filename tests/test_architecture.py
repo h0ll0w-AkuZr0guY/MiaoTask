@@ -76,19 +76,39 @@ class MigrationContracts(unittest.TestCase):
     def test_original_config_and_synthetic_parser_results_are_identical(self):
         fixture = json.loads((ROOT / 'tests/fixtures/v009_contract.json').read_text(encoding='utf-8'))
         configured = load_config()
-        for key in ('minimum_volume', 'minimum_brightness', 'keep_screen_on', 'reset_after_activity'):
+        for key in ('minimum_volume', 'minimum_brightness', 'keep_screen_on', 'reset_after_activity', 'compressed_screenshots'):
             self.assertIs(configured.pop(key), False)
         self.assertTrue(configured.pop('bundle_by_default'))
         self.assertTrue(configured.pop('clear_clipboard'))
+        self.assertEqual(configured.pop('browse_check_interval'), 1)
+        self.assertEqual(configured.pop('browse_recheck_rounds'), 3)
+        self.assertEqual(configured.pop('task_search_keywords'), ['123','2026','100'])
+        self.assertIn('头条', configured.pop('skip_task_keywords'))
+        self.assertEqual(configured.pop('screenshot_quality'), 70)
+        self.assertEqual(configured.pop('screen_timeout_minutes'), 10)
         rescan = configured.pop('rescan')
         self.assertFalse(rescan['rescan_restart_app'])
         self.assertEqual(rescan['rescan_rounds'], 3)
-        self.assertEqual(configured, fixture['config'])
+        expected_config = dict(fixture['config'], browse_extra_seconds=0, default_browse_seconds=17, max_attempts=3)
+        self.assertEqual(configured, expected_config)
         for case in fixture['cases']:
             nodes = [TextNode(n['text'], tuple(n['bounds'])) for n in case['nodes']]
             # JSON normalizes tuples to arrays on both sides.
             actual = json.loads(json.dumps([t.to_dict() for t in parse_tasks(nodes)]))
-            self.assertEqual(actual, case['tasks'])
+            # Vocabulary exclusions now belong to editable scheduling policy.
+            # Keep every original geometry/progress assertion; explicitly migrate only
+            # the five legacy task labels whose kind used to encode a skip decision.
+            expected = json.loads(json.dumps(case['tasks']))
+            kinds = {'领闪购红包下单直接省':'browse','去支付宝抽1000元红包':'visit',
+                     '淘金币等级考试':'browse','每拉1人最高2000能量':'browse',
+                     '去玩趣味小游戏':'browse','收藏宝贝':'browse'}
+            from backend.core.execution.task_policy import keyword_skip_reason
+            for task in expected:
+                if task['kind'] == 'manual':
+                    self.assertIn(task['title'], kinds)
+                    self.assertTrue(keyword_skip_reason(task, load_config()['skip_task_keywords']))
+                    task.update(kind=('visit' if task['detail'] == '点击去逛+600' else kinds[task['title']]), skip_reason='')
+            self.assertEqual(actual, expected)
             self.assertEqual(is_task_list(nodes), case['is_task_list'])
 
     def test_core_does_not_import_platform_code_or_embed_platform_names(self):

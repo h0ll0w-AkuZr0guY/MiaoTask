@@ -10,7 +10,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from urllib.error import HTTPError, URLError
 import zipfile
 
-from backend.core.plugins.contracts import (ALLOWED_SUFFIXES, CATALOG_URL, FRAMEWORK_API,
+from backend.core.plugins.contracts import (ALLOWED_SUFFIXES, FRAMEWORK_API,
     LEGACY_COMPATIBLE_MANIFESTS, MAX_ARCHIVE_BYTES, MAX_CATALOG_BYTES, MAX_EXPANDED_BYTES,
     MAX_FILES, MAX_SOURCE_FILE_BYTES, MAX_TREE_BYTES, OFFICIAL_REPOSITORY,
     PACKAGE_SCHEMA, SOURCE_REF, module_id, package_version, branch_name)
@@ -256,22 +256,25 @@ class GitHubSourceProvider:
         from backend.core.registry import checked_id
         self.deadline = self.clock() + 60
         self._mirror = None
+        # Pages contains only the small, reviewed catalog. API tree/manifests
+        # and repository archives are fallback paths, not the opening screen.
+        from backend.core.plugins.resource_mirror import RESOURCE_MIRRORS, ResourceMirror
+        for base in RESOURCE_MIRRORS:
+            try:
+                mirror = ResourceMirror(base, fetch=None if self.fetch is download_source else self.fetch,
+                                        source_ref=self.source_ref)
+                value = mirror.catalog(commit)
+                self._mirror, self.commit, self.transport = mirror, value['source_commit'], 'pages'
+                self.entries = {(item['app'],item['activity']): item for item in value['packages']}
+                return value
+            except (OSError, ValueError):
+                continue
         try:
             self._resolve(commit)
             self.transport = 'github-api'
         except (HTTPError, URLError, SourceRateLimited) as exc:
             if isinstance(exc, HTTPError) and exc.code not in (403,429):
                 raise
-            from backend.core.plugins.resource_mirror import RESOURCE_MIRRORS, ResourceMirror
-            for base in RESOURCE_MIRRORS:
-                try:
-                    mirror = ResourceMirror(base, fetch=None if self.fetch is download_source else self.fetch, source_ref=self.source_ref)
-                    value = mirror.catalog(commit)
-                    self._mirror, self.commit, self.transport = mirror, value['source_commit'], 'pages'
-                    self.entries = {(item['app'],item['activity']):item for item in value['packages']}
-                    return value
-                except (OSError, ValueError):
-                    continue
             self._resolve_archive(commit)
         packages, warnings, ids, owners = [], [], set(), {}
         app_paths = sorted(path for path in self.blobs if re.fullmatch(r'backend/app/[a-z][a-z0-9_]*/manifest\.py', path))

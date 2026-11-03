@@ -2,9 +2,10 @@ import json
 from http.server import ThreadingHTTPServer
 import threading
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+import random
 
 from backend.app.taobao.activities.double11.activity import CampaignRunner, NeedsAttention, RunControl, Stopped, TaskUnavailable, load_config, validate_config
 from backend.core.service.panel import Controller, LocalHTTPServer, make_handler, serve
@@ -12,6 +13,9 @@ from backend.core.device.adapter import DeviceAdapter
 from backend.core.device.instances import AppInstance, InstanceMismatch
 from backend.core.device.screen import Screen, ScreenReader
 from backend.app.taobao.activities.double11.tasks import TextNode, is_task_list, normalize, parse_tasks
+from backend.core.execution.gestures import BrowseGestures
+from backend.core.service.tray import WindowsTray
+from backend.core.service import notify as notifications
 
 
 def node(text, x, y, width=400, height=65):
@@ -62,7 +66,7 @@ class RecognitionTests(unittest.TestCase):
         self.assertEqual(task.kind, 'visit')
         self.assertFalse(task.target_app)
         screen.nodes[4].text = '完成下单后领奖'
-        self.assertEqual(parse_tasks(screen.nodes)[0].kind, 'manual')
+        self.assertIn('常驻关键词', CampaignRunner(Mock()).availability_reason(parse_tasks(screen.nodes)[0]))
 
     def test_games_invitations_and_exams_are_explicitly_excluded(self):
         for title in ('去玩趣味小游戏(0/3)玩1款游戏得+600', '每拉1人最高2000能量(0/10)',
@@ -70,8 +74,8 @@ class RecognitionTests(unittest.TestCase):
             screen = task_screen()
             screen.nodes[3].text = title
             task = parse_tasks(screen.nodes)[0]
-            self.assertEqual(task.kind, 'manual')
-            self.assertTrue(task.skip_reason.startswith('已跳过'))
+            self.assertNotEqual(task.kind, 'manual')
+            self.assertIn('常驻关键词', CampaignRunner(Mock()).availability_reason(task))
 
     def test_alipay_draw_promotion_with_jump_contract_is_only_a_visit(self):
         screen = task_screen()
@@ -82,7 +86,7 @@ class RecognitionTests(unittest.TestCase):
         self.assertEqual(task.target_app, '支付宝')
         screen.nodes[3].text = '去支付宝抽1000元红包(0/1)'
         screen.nodes[4].text = '完成抽奖一次'
-        self.assertEqual(parse_tasks(screen.nodes)[0].kind, 'manual')
+        self.assertIn('常驻关键词', CampaignRunner(Mock()).availability_reason(parse_tasks(screen.nodes)[0]))
 
     def test_app_metadata_does_not_presume_whether_it_is_installed(self):
         screen = task_screen()
@@ -173,7 +177,7 @@ class RecognitionTests(unittest.TestCase):
         for title in ['下单购买', '充值话费', '关注店铺', '邀请好友', '答题考试', '下载应用', '收藏商品', '开通会员']:
             screen = task_screen()
             screen.nodes[3].text = title + '(0/1)'
-            self.assertEqual(parse_tasks(screen.nodes)[0].kind, 'manual', title)
+            self.assertIn('常驻关键词', CampaignRunner(Mock()).availability_reason(parse_tasks(screen.nodes)[0]), title)
 
     def test_two_rows_do_not_borrow_each_others_descriptions(self):
         screen = task_screen()
@@ -850,6 +854,7 @@ class RunnerTests(unittest.TestCase):
 
     def clock_runner(self):
         r = self.runner()
+        r.config['task_search_keywords'] = []  # fixed-query transport fixture
         # 节奏抖动和落点散布在假时钟下会让时间预算与坐标断言不可复现；
         # 这两个随机行为由 tests/test_taobao_daily.py 的专门用例覆盖。
         r.PACE_JITTER = 0
@@ -1246,6 +1251,7 @@ class RunnerTests(unittest.TestCase):
 
     def test_new_offer_is_executed_in_the_same_run(self):
         r = self.runner()
+        r.config['skip_task_keywords'] = []  # exercise dynamic offers, independent of text policy
         # 同上：只验证单轮内换批，不让补扫把同一屏再跑一遍。
         r.config.setdefault('rescan', {})['rescan_enabled'] = False
         first = self.offer_screen('领闪购红包下单直接省', 0, 49)
@@ -1332,6 +1338,50 @@ class RunnerTests(unittest.TestCase):
             r.execute(parse_tasks(task_screen().nodes)[0], task_screen())
         r.device.click.assert_not_called()
 
+    def test_clearing_for_recheck_does_not_reset_per_run_attempt_limit(self):
+        r = self.runner()
+        screen = task_screen()
+        r.config.update(max_attempts=3, max_tasks=2, max_scroll_pages=1)
+        r.read = Mock(return_value=screen)
+        r.ensure_list = Mock(return_value=screen)
+        r.execute = Mock(return_value=(screen, False, False))
+        r.run()
+        self.assertEqual(r.execute.call_count, 2)
+        r.reset_task_marks()
+        r.run()
+        self.assertEqual(r.execute.call_count, 2)
+        self.assertEqual(r.stats.attempts, 2)
+
+    def test_ten_repetitions_count_as_ten_confirmed_units_not_one_title(self):
+        r = self.runner()
+        r.config.update(max_tasks=10)
+        r.ensure_list = Mock(return_value=task_screen(0))
+        advances = iter(range(1, 11))
+        r.execute = Mock(side_effect=lambda *args: (task_screen(next(advances)), False, False))
+        result = r.run()
+        self.assertEqual(result['completed'], 10)
+        self.assertEqual(result['attempts'], 10)
+        self.assertEqual(r.execute.call_count, 10)
+
+    def test_completion_units_use_actual_delta_without_assuming_entire_batch(self):
+        from backend.core.execution.stats import completed_units
+        from backend.core.models import Task
+        before = Task('same', 'browse', '', '', (1,2,3,4), current=3, total=10)
+        after = Task('same', 'browse', '', '', (1,2,3,4), current=6, total=10)
+        self.assertEqual(completed_units(before, after), 3)
+        after.current = 3
+        self.assertEqual(completed_units(before, after), 1)
+        self.assertEqual(completed_units(before, None), 1)
+
+    def test_screenshot_quality_is_validated_and_kept_on_reader(self):
+        for value in (29, 96, True, 70.5, '70'):
+            config = load_config()
+            config['screenshot_quality'] = value
+            with self.assertRaises(ValueError):
+                validate_config(config)
+        r = self.runner()
+        self.assertEqual(r.reader.screenshot_quality, 70)
+
     def scrolling_runner(self):
         r = self.runner()
         clock = [0.0]
@@ -1347,27 +1397,23 @@ class RunnerTests(unittest.TestCase):
         r, clock, _ = self.scrolling_runner()
         before = task_screen()
         r.execute(r.tasks(before)[0], before)
-        self.assertGreaterEqual(clock[0], 27)
+        self.assertGreaterEqual(clock[0], 15)
         self.assertGreater(r.device.swipe.call_count, 20)
         gestures = [call.args for call in r.device.swipe.call_args_list]
         self.assertTrue(any(g[1] > g[3] for g in gestures))
         self.assertTrue(any(g[1] < g[3] for g in gestures))
 
-    def test_completion_hint_ends_extended_browse_early(self):
-        r, clock, destination = self.scrolling_runner()
-        completed = Screen([node('任务已完成', 800, 200), node('商品列表', 50, 500)], 1440, 3200, r.origin)
-        r.read.side_effect = lambda **kwargs: completed if clock[0] >= 8 else destination
-        before = task_screen()
-        _, explicit, _ = r.execute(r.tasks(before)[0], before)
-        self.assertTrue(explicit)
-        self.assertLess(clock[0], 27)
 
-    def test_zero_gap_counts_elapsed_time_and_checks_final_frame(self):
+    def test_zero_gap_uses_elapsed_browse_without_waiting_for_ocr(self):
         r, clock, destination = self.scrolling_runner()
         r.config.update(swipe_duration_min=.5, swipe_duration_max=.5)
         observer = ScriptedObservation(r, destination, delay=4)
         r.reader.visual_observer = lambda: observer
         r.read.reset_mock()
+        def final_read(**kwargs):
+            self.assertGreaterEqual(clock[0], 15)  # Never block an in-progress swipe loop.
+            return destination
+        r.read.side_effect = final_read
         sent = []
         def swipe(*args, **kwargs):
             sent.append(kwargs['duration'])
@@ -1376,13 +1422,14 @@ class RunnerTests(unittest.TestCase):
         task = r.tasks(task_screen())[0]
         explicit, cross = r.wait_for_browse(task, destination, False, 15)
         self.assertFalse(explicit or cross)
-        self.assertLess(sum(sent), 15)
         self.assertGreaterEqual(clock[0], 15)
+        self.assertLess(clock[0], 16)
+        self.assertGreater(len(sent), 20)
         r.control.wait.assert_not_called()
-        r.read.assert_called()  # final frame is checked before leaving
-        self.assertTrue(observer.closed)
+        r.read.assert_not_called()  # First pass returns straight to list verification.
+        self.assertFalse(observer.closed)
 
-    def test_completion_banner_ends_browse_before_deadline(self):
+    def test_confirmed_completion_does_not_wait_for_fallback_duration(self):
         r, clock, destination = self.scrolling_runner()
         completed = Screen([node('任务已完成', 800, 200)], 1440, 3200, r.origin)
         r.config.update(swipe_duration_min=.5, swipe_duration_max=.5)
@@ -1390,60 +1437,19 @@ class RunnerTests(unittest.TestCase):
         r.reader.visual_observer = lambda: ScriptedObservation(r, completed)
         explicit, _ = r.wait_for_browse(r.tasks(task_screen())[0], completed, False, 27)
         self.assertTrue(explicit)
-        self.assertLess(clock[0], 15)
-        self.assertLess(clock[0], 27)
+        self.assertLess(clock[0], 2)
 
-    def test_background_security_result_stops_next_gesture(self):
-        r, clock, destination = self.scrolling_runner()
-        risk = Screen([node('请完成安全验证', 100, 200)], 1440, 3200, r.origin)
-        observer = ScriptedObservation(r, risk)
-        r.reader.visual_observer = lambda: observer
-        with self.assertRaises(NeedsAttention):
-            r.wait_for_browse(r.tasks(task_screen())[0], destination, False, 27)
-        self.assertLess(r.device.swipe.call_count, 6)
-        self.assertTrue(observer.closed)
-        r.recover.assert_not_called()
 
-    def test_stuck_recognizer_has_bounded_stale_screen_budget(self):
+    def test_newly_delivered_result_does_not_double_charge_previous_inference_age(self):
+        import time
         r, clock, destination = self.scrolling_runner()
         r.config['page_timeout'] = 3
-        observer = ScriptedObservation(r, destination, delay=100)
-        r.reader.visual_observer = lambda: observer
-        with self.assertRaises(TimeoutError):
-            r.wait_for_browse(r.tasks(task_screen())[0], destination, False, 27)
-        self.assertLess(clock[0], 4)
-        self.assertTrue(observer.closed)
-
-    def test_nonzero_gaps_count_towards_elapsed_time(self):
-        r, clock, destination = self.scrolling_runner()
-        r.config.update(swipe_interval_min=.5, swipe_interval_max=.5,
-                        swipe_duration_min=.5, swipe_duration_max=.5)
-        r.device.swipe.side_effect = lambda *a, **kw: clock.__setitem__(0, clock[0] + kw['duration'])
-        r.reader.visual_observer = lambda: ScriptedObservation(r, destination)
+        destination.captured_at = time.monotonic()-10
+        r.reader.visual_observer = lambda: ScriptedObservation(r, destination, delay=1)
         r.wait_for_browse(r.tasks(task_screen())[0], destination, False, 5)
-        self.assertLess(r.device.swipe.call_count * .5, 5)
-        self.assertGreaterEqual(clock[0], 5)
-        self.assertLess(clock[0], 7)
+        self.assertGreaterEqual(clock[0],5)
+        self.assertLess(clock[0],10)
 
-    def test_final_frame_extends_deadline_when_countdown_appears(self):
-        r, clock, destination = self.scrolling_runner()
-        countdown = Screen([node('还需3秒', 800, 200)], 1440, 3200, r.origin)
-        r.reader.visual_observer = lambda: ScriptedObservation(r, destination, delay=100)
-        r.config['page_timeout'] = 60
-        r.read.side_effect = [countdown, destination]
-        r.wait_for_browse(r.tasks(task_screen())[0], destination, False, 5)
-        self.assertGreaterEqual(clock[0], 9)
-        self.assertGreaterEqual(r.read.call_count, 2)
-
-    def test_positive_countdown_takes_precedence_over_completion_hint(self):
-        r, clock, destination = self.scrolling_runner()
-        mixed = Screen([node('任务已完成', 800, 200), node('还需3秒', 800, 300)], 1440, 3200, r.origin)
-        r.reader.visual_observer = lambda: ScriptedObservation(r, destination, delay=100)
-        r.config.update(page_timeout=60, max_task_seconds=6)
-        r.read.side_effect = lambda: Screen([node('任务已完成', 800, 200), node('还需3秒', 800, 300)], 1440, 3200, r.origin)
-        explicit, _ = r.wait_for_browse(r.tasks(task_screen())[0], mixed, False, 5)
-        self.assertFalse(explicit)
-        self.assertGreaterEqual(clock[0], 6)
 
     def test_stale_countdown_is_not_extended_on_every_swipe(self):
         r, clock, destination = self.scrolling_runner()
@@ -1457,8 +1463,38 @@ class RunnerTests(unittest.TestCase):
         r, clock, destination = self.scrolling_runner()
         r.reader.visual_observer = None
         r.wait_for_browse(r.tasks(task_screen())[0], destination, False, 5)
-        self.assertGreater(r.device.swipe.call_count, 0)
-        r.read.assert_called()
+        self.assertGreater(r.device.swipe.call_count, 10)
+        r.read.assert_not_called()
+
+    def test_configured_duration_affects_explicit_tasks_but_cannot_undercut_server(self):
+        for configured, expected in ((5, 15), (22, 22)):
+            with self.subTest(configured=configured):
+                r, _, destination = self.scrolling_runner()
+                r.config.update(default_browse_seconds=configured, browse_extra_seconds=0, settle_seconds=0)
+                r.wait_for_browse = Mock(return_value=(False, False))
+                r.browse_destination(r.tasks(task_screen())[0], destination)
+                self.assertEqual(r.wait_for_browse.call_args.args[-1], expected)
+
+
+    def test_slow_capture_does_not_multiply_fifteen_second_target(self):
+        r, clock, destination = self.scrolling_runner()
+        observer = ScriptedObservation(r, destination)
+        request = observer.request
+        def capture():
+            clock[0] += 4
+            request()
+        observer.request = capture
+        r.reader.visual_observer = lambda: observer
+        r.wait_for_browse(r.tasks(task_screen())[0], destination, False, 15)
+        self.assertGreaterEqual(clock[0], 15)
+        self.assertLess(clock[0], 20)
+
+    def test_check_interval_rejects_invalid_configuration(self):
+        for value in (0, True, 11, '1'):
+            config = load_config()
+            config['browse_check_interval'] = value
+            with self.assertRaises(ValueError):
+                validate_config(config)
 
     def test_risk_page_requires_human(self):
         r = self.runner()
@@ -1638,14 +1674,6 @@ class LocalServerTests(unittest.TestCase):
         self.assertIsNone(controller.thread)
 
 # browse_gestures
-import random
-import threading
-import unittest
-from unittest.mock import Mock
-
-from backend.core.execution.gestures import BrowseGestures
-from backend.app.taobao.activities.double11.activity import load_config, validate_config
-from backend.core.service.tray import WindowsTray
 
 
 class GestureTests(unittest.TestCase):
@@ -1698,11 +1726,6 @@ class GestureTests(unittest.TestCase):
         callback.assert_called_once_with()
 
 # notifications
-import threading
-import unittest
-from unittest.mock import Mock, patch
-
-from backend.core.service import notify as notifications
 
 
 class NotificationTests(unittest.TestCase):
@@ -2036,5 +2059,153 @@ class EmptySessionMessageTests(unittest.TestCase):
         self.assertFalse(runner.daily_exhausted)
 
 
+class RotatingCaptionVerificationTests(unittest.TestCase):
+    def frame(self, swapped=False, progress=4, shift=0):
+        nodes=[node('做任务赚能量',500,600),node('累计任务奖励',60,730),node('当前进度40/50',60,800)]
+        rows=[('去微博看看热搜(0/1)','跳转得奖励',920),
+              (('搜一搜你心仪的宝贝' if swapped else '好物随心逛')+f'({progress}/10)','浏览15秒+400',1200),
+              (('好物随心逛' if swapped else '搜一搜你心仪的宝贝')+'(9/10)','浏览15秒+400',1500),
+              ('每拉1人最高2000能量(0/10)','邀请好友成功',1800)]
+        for title,detail,y in rows:
+            nodes.extend([node(title,260,y+shift,700),node(detail,260,y+65+shift),node('去完成',1150,y+25+shift,220)])
+        return Screen(nodes,1440,3200,'com.taobao.taobao','ocr')
+
+    def test_two_repeat_rows_swapping_captions_do_not_swap_progress_or_inflate_statistics(self):
+        from backend.core.execution.stats import completed_units
+        r=CampaignRunner(Mock(),load_config());before=self.frame()
+        old=next(t for t in r.tasks(before) if t.title=='好物随心逛')
+        after=self.frame(swapped=True,progress=5)
+        fresh=next(t for t in r.tasks(after) if t.key==old.key)
+        self.assertEqual((fresh.title,fresh.current),('好物随心逛',5))
+        self.assertTrue(r.verify(old,before,after))
+        self.assertEqual(completed_units(old,fresh),1)
+
+    def test_caption_change_without_credit_is_not_a_success(self):
+        r=CampaignRunner(Mock(),load_config());before=self.frame()
+        old=next(t for t in r.tasks(before) if t.title=='好物随心逛')
+        self.assertFalse(r.verify(old,before,self.frame(swapped=True,progress=4)))
+
+    def test_consistent_viewport_shift_is_accounted_for_before_matching_caption_rows(self):
+        r=CampaignRunner(Mock(),load_config());before=self.frame()
+        old=next(t for t in r.tasks(before) if t.title=='好物随心逛')
+        after=self.frame(swapped=True,progress=5,shift=300)
+        fresh=next(t for t in r.tasks(after) if t.key==old.key)
+        self.assertEqual(fresh.current,5)
+
+
+class FinalBatchSettlementTests(unittest.TestCase):
+    def test_capped_aggregate_and_new_batch_require_explicit_destination_credit(self):
+        r=CampaignRunner(Mock(),load_config());before=task_screen(9);after=task_screen(0)
+        for screen in (before,after):screen.nodes[2].text='当前进度50/50'
+        task=r.tasks(before)[0]
+        self.assertFalse(r.verify(task,before,after))
+        self.assertTrue(r.verify(task,before,after,explicit=True))
+        self.assertEqual(r.tasks(after)[0].current,0)
+        partial=task_screen(4);old=r.tasks(partial)[0]
+        self.assertFalse(r.verify(old,partial,after,explicit=True))
+
+    def test_deadline_final_frame_can_confirm_real_energy_credit(self):
+        r,clock,destination=RunnerTests().scrolling_runner()
+        r.reader.visual_observer=lambda:ScriptedObservation(r,destination,delay=4)
+        finished=Screen([node('完成！400能量已到账',500,200)],1440,3200,r.origin)
+        r.read.side_effect=lambda **kw:finished
+        task=r.tasks(task_screen())[0]
+        r.task_policy.fail(task,2)
+        explicit,_=r.wait_for_browse(task,destination,False,15)
+        self.assertTrue(explicit)
+        self.assertGreaterEqual(clock[0],15)
+        r.read.assert_called_once_with(force_ocr=True)
+
+
+class PartialTitleCompatibilityTests(unittest.TestCase):
+    def test_longer_progress_caption_beats_fragment_on_the_same_row(self):
+        page = task_screen()
+        page.nodes.insert(2,node('逛(0/10)',720,1110,180))
+        task = next(t for t in parse_tasks(page.nodes,page.width,page.height) if t.kind=='browse')
+        self.assertEqual(task.title,'好物随心逛')
+
+    def test_partial_title_uses_current_row_pixels_and_preserves_security_context(self):
+        from PIL import Image
+        for width,height in ((1080,2400),(1800,2880),(2400,1080)):
+            with self.subTest(size=(width,height)):
+                def box(a,b,c,d):return (round(width*a),round(height*b),round(width*c),round(height*d))
+                title=TextNode('币(0/1)',box(.55,.40,.64,.43),'ocr')
+                button=TextNode('去完成',box(.80,.40,.94,.44),'ocr')
+                page=Screen([TextNode('做任务赚能量',box(.2,.10,.7,.14)),
+                             TextNode('累计任务奖励',box(.1,.20,.4,.24)),title,
+                             TextNode('浏览15秒+400',box(.2,.45,.6,.48)),button,
+                             TextNode('请完成安全验证',box(.1,.8,.6,.84))],width,height,
+                            'com.taobao.taobao','ocr')
+                runner=CampaignRunner(Mock(device_type='uiautomator2',selected_instance=None))
+                runner.reader.last_screen=page;runner.reader.last_image=Image.new('RGB',(width,height),'white')
+                left=round(width*.04);top=max(0,round(button.bounds[1]-height*.065))
+                full=box(.2,.40,.64,.43)
+                runner.reader._ocr=Mock(return_value=[TextNode('好物推荐专区(0/1)',
+                    (full[0]-left,full[1]-top,full[2]-left,full[3]-top),'ocr')])
+                result=runner.refine_task_rows(page)
+                self.assertNotIn(title,result.nodes)
+                self.assertIn('请完成安全验证',result.text)
+                self.assertEqual(runner.parse_tasks(result.nodes,width,height)[0].title,'好物推荐专区')
+                runner.device.screenshot.assert_not_called()
+                with self.assertRaises(NeedsAttention):runner.guard(result)
+
+
+class SerialBrowseProtocolTests(unittest.TestCase):
+    def runner(self):return RunnerTests().scrolling_runner()
+
+    def test_retry_stops_after_completion_and_does_not_recheck_during_initial_window(self):
+        r,clock,destination=self.runner();task=r.tasks(task_screen())[0]
+        r.task_policy.fail(task,2)
+        completed=Screen([node('任务已完成',800,200)],1440,3200,r.origin)
+        calls=[]
+        def read(**kwargs):
+            calls.append(clock[0]);return destination if len(calls)==1 else completed
+        r.read.side_effect=read
+        explicit,_=r.wait_for_browse(task,destination,False,15)
+        self.assertTrue(explicit);self.assertEqual(len(calls),2)
+        self.assertGreaterEqual(calls[0],16)
+        self.assertGreaterEqual(calls[1]-calls[0],1)
+        self.assertLess(clock[0],18.5)
+        r.read.assert_called_with(force_ocr=True)
+
+    def test_retry_supplements_are_bounded_and_progress_resets_to_fast_pass(self):
+        r,clock,destination=self.runner();task=r.tasks(task_screen())[0]
+        r.task_policy.fail(task,2);r.config['browse_recheck_rounds']=2
+        r.wait_for_browse(task,destination,False,15)
+        self.assertEqual(r.read.call_count,3)
+        self.assertLess(clock[0],20)
+        r.task_policy.progress(task);r.read.reset_mock()
+        r.wait_for_browse(task,destination,False,15)
+        r.read.assert_not_called()
+
+    def test_retry_checks_security_before_any_supplemental_gesture(self):
+        r,clock,destination=self.runner();task=r.tasks(task_screen())[0]
+        r.task_policy.fail(task,2)
+        r.read.return_value=Screen([node('请完成安全验证',100,200)],1440,3200,r.origin)
+        with self.assertRaises(NeedsAttention):r.wait_for_browse(task,destination,False,15)
+        self.assertGreaterEqual(clock[0],16);self.assertLess(clock[0],17)
+        r.read.assert_called_once_with(force_ocr=True)
+
+    def test_first_pass_does_not_add_legacy_extra_or_settlement_wait(self):
+        r,clock,destination=self.runner();r.config.update(browse_extra_seconds=60,settle_seconds=10)
+        r.browse_destination(r.tasks(task_screen())[0],destination)
+        self.assertGreaterEqual(clock[0],17);self.assertLess(clock[0],18)
+        r.read.assert_not_called();r.recover.assert_called_once()
+
+    def test_positive_countdown_outranks_completion_caption_on_retry(self):
+        r,clock,destination=self.runner();task=r.tasks(task_screen())[0]
+        r.task_policy.fail(task,2);r.config['browse_recheck_rounds']=0
+        r.read.return_value=Screen([node('任务已完成',800,200),node('再浏览3秒',800,300)],1440,3200,r.origin)
+        explicit,_=r.wait_for_browse(task,destination,False,15)
+        self.assertFalse(explicit)
+
+    def test_stop_breaks_the_first_pass_without_waiting_for_ocr(self):
+        r,clock,destination=self.runner();task=r.tasks(task_screen())[0]
+        def swipe(*args,**kw):
+            clock[0]+=.5
+            if clock[0]>2:r.control.stop()
+        r.device.swipe.side_effect=swipe
+        with self.assertRaises(Stopped):r.wait_for_browse(task,destination,False,15)
+        self.assertLess(clock[0],3);r.read.assert_not_called()
 if __name__ == '__main__':
     unittest.main()

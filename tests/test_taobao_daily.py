@@ -92,7 +92,8 @@ class TaobaoDailyTests(unittest.TestCase):
         runner=self.runner()
         for title in ('支付一笔领金币','下单得奖励','邀请好友领肥料','邀30天没来农场的朋友','抽奖一次','施肥一次'):
             result=runner.classify_daily(title,'',[title],'领取奖励',0,1)
-            self.assertEqual(result[1],'manual')
+            task=Task('policy',title,'','领取奖励',(1,2,3,4),kind=result[1])
+            self.assertIn('常驻关键词',runner.availability_reason(task))
 
     def test_signin_button_may_be_centered_but_withdrawal_is_not_a_task(self):
         runner=self.runner('cash-signin')
@@ -222,8 +223,8 @@ class TaobaoDailyTests(unittest.TestCase):
         runner=self.runner()
         for title in ('你关注的商品都可抵','看看你关注的新品动态'):
             self.assertEqual(runner.classify_daily(title,'浏览5秒 +20',[title,'浏览5秒 +20'],'去完成',0,1)[1],'browse')
-            self.assertEqual(runner.classify_daily(title,'关注后浏览5秒 +20',[title,'关注后浏览5秒 +20'],'去完成',0,1)[1],'manual')
-        self.assertEqual(runner.classify_daily('关注店铺','浏览5秒',['关注店铺','浏览5秒'],'去完成',0,1)[1],'manual')
+            self.assertIn('常驻关键词',runner.availability_reason(Task('policy',title,'关注后浏览5秒 +20','去完成',(1,2,3,4))))
+        self.assertIn('常驻关键词',runner.availability_reason(Task('policy','关注店铺','浏览5秒','去完成',(1,2,3,4))))
 
     def test_destination_waits_for_content_instead_of_status_bar_only(self):
         runner=self.runner();runner.origin='com.taobao.taobao'
@@ -749,6 +750,7 @@ class TaobaoDailyTests(unittest.TestCase):
     def test_ascii_task_search_keeps_unicode_activity_navigation(self):
         from unittest.mock import MagicMock
         runner=self.runner();runner.origin='com.taobao.taobao'
+        runner.config['task_search_keywords'] = []
         device=MagicMock(device_type='uiautomator2');runner.device=device
         runner.read_page=Mock(return_value=Screen([TextNode('历史搜索',(100,600,400,650)),
                                                   TextNode('搜索',(1510,350,1760,500))],1800,2880,runner.origin,'ocr'))
@@ -834,7 +836,8 @@ class TaobaoDailyTests(unittest.TestCase):
                TextNode('下单得肥料最高+90000',(80,540,400,590)),
                TextNode('下单一次(0/1)',(640,720,1050,770)),TextNode('去完成',(1160,740,1300,800))]
         tasks=runner.parse_tasks(nodes,1800,2880)
-        self.assertEqual([t.kind for t in tasks],['browse','manual'])
+        self.assertEqual([t.kind for t in tasks],['browse','browse'])
+        self.assertIn('常驻关键词',runner.availability_reason(tasks[1]))
         self.assertNotIn('下单',tasks[0].detail)
 
     def test_unlabelled_reward_amount_is_not_a_synthetic_task(self):
@@ -850,8 +853,8 @@ class TaobaoDailyTests(unittest.TestCase):
         self.assertEqual(runner.classify_daily(title,detail,[title,detail],'去完成',0,1)[1],'browse')
         self.assertEqual(runner.classify_daily(title,detail,[title,'先浏览赚肥料,','下单再得肥料 +150'],'去完成',0,1)[1],'browse')
         required=detail+'，必须下单'
-        self.assertEqual(runner.classify_daily(title,required,[title,required],'去完成',0,1)[1],'manual')
-        self.assertEqual(runner.classify_daily('下单一次',detail,['下单一次',detail],'去完成',0,1)[1],'manual')
+        self.assertIn('常驻关键词',runner.availability_reason(Task('policy',title,required,'去完成',(1,2,3,4))))
+        self.assertIn('常驻关键词',runner.availability_reason(Task('policy','下单一次',detail,'去完成',(1,2,3,4))))
 
 
 def make_daily_runner(activity='coins'):
@@ -1256,6 +1259,80 @@ class PaintedDismissalTests(unittest.TestCase):
         runner.click.assert_not_called()
 
 
+class KeywordAndSearchPopupTests(unittest.TestCase):
+    def runner(self):
+        return TaobaoDailyTests().runner()
+
+    def test_x_in_native_edit_is_not_a_popup_or_dismissal_target(self):
+        runner = self.runner()
+        edit = {'class':'android.widget.EditText','text':'x','bounds':(100,160,850,240)}
+        field = TextNode('X', (200,170,260,230))
+        page = Screen([field,TextNode('历史搜索',(100,400,350,450))],1000,2000,
+                      'com.taobao.taobao','ui',tree={'children':[edit]})
+        runner.click = Mock()
+        with patch.object(Session,'read') as read:
+            self.assertIsNone(runner.dismiss_popup(page))
+        self.assertFalse(runner.dismiss_overlay(page))
+        runner.click.assert_not_called()
+        read.assert_not_called()
+
+    def test_ocr_query_and_clear_cross_are_not_popup_buttons_even_without_submit(self):
+        runner = self.runner()
+        for value in ('x','X','×'):
+            with self.subTest(value=value):
+                page = Screen([TextNode(value,(780,170,820,220)),
+                               TextNode('历史搜索',(100,400,350,450))],1000,2000,
+                              'com.taobao.taobao','ocr')
+                self.assertIsNone(runner.popup_close_node(page))
+                self.assertIsNone(runner.dismiss_popup(page))
+
+    def test_real_reward_close_below_search_field_still_dismisses(self):
+        runner = self.runner()
+        close = TextNode('X',(470,1500,520,1550),'ocr')
+        page = Screen([TextNode('历史搜索',(100,400,350,450)),
+                       TextNode('恭喜获得奖励',(200,1000,700,1100)),close],1000,2000,
+                      'com.taobao.taobao','ocr')
+        fresh = Screen([],1000,2000,page.package,'ocr')
+        runner.click = Mock();runner.control.wait = Mock()
+        with patch.object(Session,'read',return_value=fresh):
+            self.assertIs(runner.dismiss_popup(page), fresh)
+        runner.click.assert_called_once_with(close)
+
+    def test_configured_unicode_query_uses_focused_field_then_bounded_numeric_fallback(self):
+        from unittest.mock import MagicMock
+        runner=self.runner();runner.origin='com.taobao.taobao'
+        runner.config['task_search_keywords']=['雨伞']
+        device=MagicMock(device_type='uiautomator2');runner.device=device
+        device.current_app.return_value={'package':runner.origin}
+        runner.read_page=Mock(return_value=Screen([TextNode('历史搜索',(100,600,400,650)),
+                                                  TextNode('搜索',(1510,350,1760,500))],1800,2880,runner.origin,'ocr'))
+        runner.click=Mock();runner.control.wait=Mock()
+        edit={'bounds':(140,350,1500,500)}
+        runner.fill_search_field('雨伞',edit)
+        device.return_value.set_text.assert_called_once_with('雨伞',timeout=.25)
+        device.input_ascii.assert_not_called()
+        device.return_value.set_text.side_effect=TimeoutError('synthetic native input timeout')
+        runner.fill_search_field('雨伞',edit)
+        device.input_ascii.assert_called_once_with('123')
+        self.assertEqual(runner.config['task_search_keywords'],['雨伞'])
+
+    def test_failed_custom_input_cannot_fall_back_into_another_application(self):
+        from unittest.mock import MagicMock
+        runner=self.runner();runner.origin='com.taobao.taobao'
+        runner.config['task_search_keywords']=['雨伞']
+        device=MagicMock(device_type='uiautomator2');runner.device=device
+        device.return_value.set_text.side_effect=TimeoutError('slow field')
+        before=Screen([TextNode('历史搜索',(100,600,400,650)),
+                       TextNode('搜索',(1510,350,1760,500))],1800,2880,runner.origin,'ocr')
+        runner.read_page=Mock(side_effect=[before,Screen([],1800,2880,'org.example.other','ocr')])
+        runner.click=Mock();runner.control.wait=Mock()
+        with self.assertRaises(NeedsAttention):
+            runner.fill_search_field('雨伞',{'bounds':(140,350,1500,500)})
+        device.input_ascii.assert_not_called()
+
+
+if __name__=='__main__':
+    unittest.main()
 class LandingCloseTests(unittest.TestCase):
     """落地页自己的 × 不能被当成弹窗关掉。
 

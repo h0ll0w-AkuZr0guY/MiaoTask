@@ -25,6 +25,22 @@ class SearchPolicy:
     def search_tree(self):
         return self.device.dump_hierarchy()
 
+    def is_search_input_node(self, screen, node):
+        """An edit's text/clear control must never become a popup dismissal."""
+        edits, _ = self.search_controls(screen.tree)
+        for edit in edits:
+            left, top, right, bottom = bounds_of(edit.get('bounds', edit.get('rect')))
+            if left <= node.center[0] <= right and top <= node.center[1] <= bottom:
+                return True
+        buttons = self._submit_buttons(screen)
+        return any(node.center[0] < button.bounds[0]
+                   and abs(node.center[1]-button.center[1]) < max(
+                       node.bounds[3]-node.bounds[1], button.bounds[3]-button.bounds[1])
+                   for button in buttons) or bool(
+            screen.find(r'^历史搜索$|^搜索发现$|^搜索有福利$|^猜你想搜$')
+            and screen.height*.03 < node.center[1] < screen.height*.2
+            and screen.width*.1 < node.center[0] < screen.width*.92)
+
     def fill_search_field(self, query, edit):
         try:
             self.device.input_text(query)
@@ -131,7 +147,10 @@ class SearchPolicy:
             logger.warning('没有可确认的输入框，不开始浏览计时')
             self.report_failure('搜索页没有可确认的输入框', phase='searching')
             return False
-        query = query if query is not None else self.config.get('task_search_keyword', '手机壳')
+        choose = getattr(self, 'next_search_keyword', None)
+        query = query if query is not None else (
+            choose() if not activity_search and callable(choose)
+            else self.config.get('task_search_keyword', '手机壳'))
         if normalize(edit.get('text', '')) != normalize(query):
             if self.device.device_type == 'hmdriver2':
                 self.click(TextNode('', bounds_of(edit.get('bounds', edit.get('rect')))))

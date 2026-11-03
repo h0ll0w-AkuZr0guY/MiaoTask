@@ -66,6 +66,27 @@ class ScopedDeviceTests(unittest.TestCase):
         d._device = Mock()
         return d
 
+    def test_input_rejects_display_change_even_without_background_observer(self):
+        d = self.phone()
+        d._instance_guard_active = True
+        d._display_id = 0
+        def foreground():
+            d._display_id = 2
+            return dict(package=CLONE.package, user_id=999)
+        d.current_app = Mock(side_effect=foreground)
+        with self.assertRaises(InstanceMismatch):
+            d.click(20, 30)
+        d._device.click.assert_not_called()
+
+    def test_stable_secondary_display_keeps_scoped_input(self):
+        d = self.phone()
+        d._instance_guard_active = True
+        d._display_id = 2
+        d.current_app = Mock(return_value=dict(package=CLONE.package, user_id=999))
+        d._checked_shell = Mock()
+        d.click(20, 30)
+        d._checked_shell.assert_called_once_with(['input', '-d', '2', 'tap', '20', '30'])
+
     def test_restart_and_resolve_explicitly_scope_clone_without_global_stop(self):
         d = self.phone()
         def shell(args):
@@ -400,7 +421,7 @@ class InstanceQueryTests(unittest.TestCase):
         with patch('backend.core.device.read_shell.AdbReadShell') as channel, \
                 patch('backend.core.device.adapter.discover_android_instances', return_value=([primary], ['space unreadable'])) as discover:
             rows = adapter.refresh_app_instances()
-        channel.assert_called_once_with('synthetic-usb')
+        channel.assert_called_once_with('synthetic-usb', prefer_socket=False)
         discover.assert_called_once_with(channel.return_value, PROFILE)
         adapter._device.shell.assert_not_called()
         self.assertEqual(rows[0]['user_id'], 0)
@@ -465,15 +486,15 @@ class InstanceQueryTests(unittest.TestCase):
             channel.return_value.return_value = query_result('mCurrentFocus=Window{abc u999 org.example.shop/.Main}')
             info = adapter.current_app()
         self.assertEqual((info['package'], info['user_id']), ('org.example.shop', 999))
-        channel.return_value.assert_called_once_with(['dumpsys', 'window', 'windows'])
+        channel.return_value.assert_called_once_with(['dumpsys', 'window', 'displays'])
         adapter._device.app_current.assert_not_called()
 
-    def test_successful_sdk_foreground_read_keeps_fast_path(self):
+    def test_primary_foreground_prefers_bounded_exec_out_and_keeps_sdk_fallback(self):
         adapter = self.adapter()
         adapter._device.shell.return_value = query_result('mCurrentFocus=Window{abc u27 org.example.shop/.Main}')
         with patch('backend.core.device.read_shell.AdbReadShell') as channel:
             self.assertEqual(adapter.current_app()['user_id'], 27)
-        channel.assert_not_called()
+        channel.assert_called_once()
         adapter._device.shell.assert_called_once_with(['dumpsys', 'window', 'windows'])
 
     def test_unreadable_focus_never_recovers_previous_user_from_cache(self):

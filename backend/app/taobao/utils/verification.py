@@ -37,7 +37,7 @@ class VerificationPolicy:
         if task.total == 1 and old is not None and new is not None and new > old:
             return True
         if (task.total > 1 and task.current == task.total-1 and old is not None
-                and new is not None and new > old and after_task is not None
+                and new is not None and (new > old or explicit) and after_task is not None
                 and after_task.current == 0 and after_task.total == task.total):
             # The server can replace a finished batch immediately with a fresh
             # 0/N batch. This proves the last repetition, not the new batch done.

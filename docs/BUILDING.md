@@ -129,7 +129,7 @@ GitHub Windows 发布构建使用 `scripts/package_windows.py --preinstall-all`�
 
 容灾验收应模拟 API 403：备用通道列出新应用和最新提交、仅安装所选活动；卸载后断网恢复、整个活动目录丢失后从随包基线恢复、损坏包拒绝恢复、空闲轮询不反复访问远端。打包预装项会同步写入 `_internal/activity-recovery` 和可写活动恢复缓存。
 
-v0.1.4 发布包使用 `--preinstall-all`，预装本次源码中的全部六项活动及各自恢复包。它与 `--preinstall-activity` 显式选择及 `--include-activities` 内置模式互斥；纯框架默认构建保持不变。
+正式发布包使用 `--preinstall-all`，预装本次源码中的全部六项活动及各自恢复包。它与 `--preinstall-activity` 显式选择及 `--include-activities` 内置模式互斥；纯框架默认构建保持不变。
 
 ## 测试类别与活动预装策略
 

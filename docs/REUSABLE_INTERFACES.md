@@ -114,18 +114,15 @@ DeviceAdapter(device_type, serial=None, on_status=None,
 TextNode(text, bounds, source='ui')
 Screen(nodes, width, height, package, source='ui', tree=None,
        user_id=None, geometry=None, obscured=False)
-ScreenReader(device, ocr=True, on_image=None, image_processor=None, engine_scope=None)
+ScreenReader(device, ocr=True, on_image=None, image_processor=None)
 reader.read(force_ocr=False)                      # Screen
 reader.enrich_regions(screen, regions)           # Screen
 screen.find(pattern, exact=False)                # TextNode 或 None
-device_ocr_scope(device)                         # 识别引擎作用域键或 None
-local_ocr_engine(scope=None)                     # 共享引擎实例
-ocr_engine_lock(scope=None)                      # 该作用域的推理锁
 ```
 
 `bounds` 为 `(left, top, right, bottom)`，`TextNode.center` 为中心。`find` 默认在规范化文案上使用正则，`exact=True` 则比较完整规范化文字。它只返回第一个匹配；需要“最右侧搜索按钮”等规则时，应筛选 `screen.nodes` 后显式排序。
 
-读屏优先前台控件；控件不足或要求 `force_ocr` 时使用本地 OCR，黑屏无法识别时回查可读控件并标记遮挡。OCR 引擎按物理设备（`identity_serial`，缺失时回退 `serial`）隔离，同一设备的 USB、Wi-Fi 别名和分身共用一个实例；`engine_scope` 显式指定时优先，其次工作区上下文，都不存在才用固定默认值，不能再用线程身份，否则每个后台识别线程都会重新加载模型。同一作用域的推理由 `ocr_engine_lock` 串行（一个引擎同时只跑一帧），不同设备的作用域不同、仍并行。`enrich_regions` 只处理当前 `last_screen` 对应原帧中的像素区域，回映裁剪偏移，不另取一帧；返回的是新观察对象，调用者不要假定对象身份不变。切换画面后须重新读取，不能保留坐标等待稍后点击。
+读屏优先前台控件；控件不足或要求 `force_ocr` 时使用本地 OCR，黑屏无法识别时回查可读控件并标记遮挡。OCR 引擎按工作区上下文隔离。`enrich_regions` 只处理当前 `last_screen` 对应原帧中的像素区域，回映裁剪偏移，不另取一帧；返回的是新观察对象，调用者不要假定对象身份不变。切换画面后须重新读取，不能保留坐标等待稍后点击。
 
 ## 4. 屏幕、裁剪与缩放
 
@@ -247,9 +244,7 @@ Session(device, config=None, control=None, emit=None, on_image=None,
 
 `TaskActions` 可选 `destination_ready(screen)` 钩子决定是否已出现目标内容；日常活动不把仅有状态栏文字的白屏当作搜索页。未实现钩子的原活动保持原有等待判定。已确认推广但关闭图标不可读时，可用一次 Back 关闭，再重读；不点击折扣/提现主按钮作为关闭兜底。
 
-`TaskActions.wait_for_browse(task, screen, cross, seconds)` 在单任务硬上限内计时。滚动任务按实际经过时间计时，包含识别、传输和间隔；到期时读取新画面核对倒计时。`browse_countdown(screen)` 返回剩余秒数或 `None`；同一帧只消费一次倒计时，防止陈旧画面反复延长。当前画面没有正数倒计时时，完成提示可提前结束，成功仍由返回页核验。
-
-启用滚动与 OCR 时，`with reader.visual_observer() as observer` 提供一帧在途的异步识别：`request()` 在所有者线程采集截图与前台身份，`poll()` 非阻塞返回识别后的 `Screen` 或 `None`，异常回到调用者。`observer.pending/captured` 用于确认识别状态和采集时的尺寸、身份；工作线程只处理该帧像素，不访问设备、操作页面、调用 Session 回调，帧缓存保持独立，但识别引擎继承所有者读屏器的 `engine_scope`，与任务工作线程共用同一设备的模型实例（同作用域串行推理），不能为每帧或每个观察者重新加载模型。关闭后迟到结果丢弃。`browse_observation_interval(scrolling)` 决定截图请求节奏，未提供时一秒，双十一与日常滚动时三秒；OCR耗时不再阻塞后续手势。每个手势仍检查暂停、停止与实例；检测到新前台或尺寸变化时，先等该帧确认，不沿用旧坐标；识别画面超过 `page_timeout` 未刷新时停止输入并交还恢复逻辑。OCR关闭时沿用同步原生观察，计时包含读屏耗时。活动下载到不具备 `visual_observer` 的旧框架时也回退同步观察，不因新增接口崩溃；后台识别与零间隔连续滑动需要更新框架 ZIP。
+淘宝标准浏览的基础时长取 `max(task.seconds, default_browse_seconds)`，不加旧的额外时长与缓冲。首轮直接返回核验，只有同一任务核验失败才在再次进入后启用补滑复查；完整契约见下方“串行观察、补滑与取消”。暂停沿用 `RunControl.now()`，不使用手势声明时长累计浏览秒数。
 
 `DeviceAdapter.clear_clipboard()` 只写空设备剪贴板，不读取旧内容、不切换输入法。当前支持 uiautomator2，未支持的驱动抛 `NotImplementedError`。控制器仅在开始执行前按公共配置 `clear_clipboard`（默认 True）调用；失败提示后继续，停止和实例异常仍传播。活动不应自行读取或记录剪贴板内容。
 
@@ -453,11 +448,59 @@ controller.dispatch('run', {'auto_open': True})
 
 ### 设备媒体音量与临时显示设置
 
-`core.device.comfort.device_comfort(device, config, notify=None)` 保留现有上下文调用，`notify(level, message)` 可接入控制台运行日志；不提供时写普通日志。`minimum_volume` 默认 False，只针对 Android 媒体流3，在执行开始时读取原值，优先使用 `cmd media_session volume --stream 3 --get/--set`，失败时有界回退旧 `media volume`。读回值必须等于系统报告的最低值才显示成功，通常为0，不假设所有设备最大音量都是15。命令入口依据 [AOSP MediaShellCommand / VolumeCtrl](https://android.googlesource.com/platform/frameworks/base/+/master/services/core/java/com/android/server/media/VolumeCtrl.java)。
+`core.device.comfort.device_comfort(device, config, notify=None)` 保留现有上下文调用，`notify(level, message)` 可接入控制台运行日志；不提供时写普通日志。`minimum_volume` 默认 False，只针对 Android 媒体流3，在执行开始时读取原值，优先使用 `cmd media_session volume --stream 3 --get/--set`，失败时有界回退旧 `media volume` 和 `cmd audio`。后者通过 `get-stream-volume / get-min-volume / get-max-volume 3` 核定范围，以 `set-volume 3 <index>` 设置并读回；兼容部分ROM忽略media_session设置却返回成功的情况。读回值必须等于系统报告的最低值才显示成功，通常为0，不假设所有设备最大音量都是15。命令入口依据 [AOSP MediaShellCommand / VolumeCtrl](https://android.googlesource.com/platform/frameworks/base/+/master/services/core/java/com/android/server/media/VolumeCtrl.java)。
 
 跨命令回退保留第一次读到的原值，避免写入已生效但读回失败时把0误存为原值；无法读取原值则不写入。结束或异常时尝试恢复并读回核验，失败明确提示，不覆盖原任务异常。命令单次超时5秒，不发送音量长按，不调整铃声/闹钟，也不靠改变全局静音模式实现。HDC原生驱动尚无对应支持时显示限制，Android兼容设备按 uiautomator2 路径处理。亮屏和亮度仍沿用原有读取、临时设置、反序恢复流程。
 
 `DeviceAdapter.wake_and_unlock()` 为下次框架新增的可选能力：Android 主屏发送 WAKEUP，并请求系统解除非安全锁屏；仍锁定时返回 false 并提示手动解锁，不发送上滑或密码输入。调用持有设备 I/O 锁并清除截图缓存，shell 超时 5 秒；副屏与其他驱动返回 false。公共 `device_comfort` 仅在 `keep_screen_on` 开启时调用并临时允许空树唤醒重试（最多每 10 秒一次），退出时恢复开关和系统超时。连接与普通预览不启用唤醒。月月赚活动源码不调用此新接口，继续兼容 0.1.5；通用循环无记录时使用不限定任务类型的提示，不推断已完成。
+
+`DeviceAdapter.continuous_swipe(...)` 用于滚动浏览，通过有界ADB系统输入避免UiAutomator手势结束后的空闲等待；由既有serialized守卫逐次核对实例。非主屏和其他驱动回退既有swipe，未知驱动继续使用原接口。Session.browse_swipe仅在驱动显式支持时调用，列表滚动与其他动作不变。系统输入失败直接报错，不同时发送两个手势。
+
+
+### 配置继承、计数与活动目录展示
+
+`core.config.loader.framework_overrides(config)` 筛选defaults.json声明的公共字段并深拷贝；保存、启动恢复、活动切换、流水线与注册表重新绑定复用同一入口，不能复制上一活动的搜索词、入口词表等业务字段。所有已暴露公共参数的消费者与例外集中维护在 [配置核验表](CONFIGURATION.md)。
+
+`RunStats.completed` 表示已核验进度次数，不表示唯一任务标题数。每次成功用 `completed_units(before, after)` 读取同一任务契约的正向进度差；逐次0/10到10/10为10次，直接观察到3/10到6/10为3次，任务消失或批次替换仅确认本次1次。失败重试不加完成数，日累计仍通过session水位增量入账，刷新页面不重复累计。`max_tasks` 约束同一runner第一次执行和复查之和，各活动/分身各自独立。
+
+`PluginManager.snapshot(cache_only=True)` 只读原子缓存、安装索引及恢复目录，不联网、不等待远端查询锁。ActivityCatalogHub的普通GET走本地展示；refresh=1只合并启动一个后台刷新线程，立即返回本地结果与refreshing标志。前端只轮询本地状态直到完成，不重复发远端刷新。切换分支与刷新互斥，安装仍保留原有事务、摘要与固定提交校验。GitHubSourceProvider.catalog优先读取审核过的Pages目录JSON，API和归档保留容灾路径；静态镜像目录不能省略来源、提交和兼容校验。
+
+
+### 串行观察、补滑与取消
+
+实现见 [screen.py](../backend/core/device/screen.py)、[read_shell.py](../backend/core/device/read_shell.py)、[actions.py](../backend/app/taobao/utils/actions.py)。
+
+| 接口 | 契约 |
+| --- | --- |
+| `ScreenReader.observation_session(config, control)` | 仅持有本次可取消设备通道和单个同步读屏器；不启动采集或OCR线程，退出释放模型引用 |
+| `ScreenReader.read(force_ocr=False)` | 控件优先，必要时同步截图并识别；force_ocr时直接取新图；返回前后检查停止，图像尺寸映射保持原坐标 |
+| `ScreenReader.require_after()` | 后续截图不复用旧图缓存；不触发后台任务 |
+| `DeviceAdapter.capture_observation(compressed=False, quality=70, transport=None)` | 一次主屏身份查询及截图，保留有界传输和显示屏核定；由读屏调用者同步执行 |
+| `DeviceAdapter.operation_session(control)` / `read_shell.DeviceIO` | 绑定/取消仅本次所属的socket与ADB子进程，不关闭共享ADB服务 |
+| `TaskActions.wait_for_browse(task, screen, cross, seconds)` | 首轮无中途观察，经过时长后返回；TaskPolicy.retry_needed(task)为真的浏览/搜索任务才启用停1秒检查与补滑1秒检查；补滑次数由browse_recheck_rounds约束 |
+| `TaskActions.browse_completed(screen)` | 只接受明确完成/到账证据；正数倒计时优先，不能替代返回列表的最终进度核验 |
+
+`browse_recheck_rounds` 默认3，范围0～10，表示失败后的第二轮最多额外补滑几次；第二轮基础时长后仍有一次初始检查。`max_task_seconds` 限定当前浏览与补滑窗口，截图/原生传输另有有界超时。失败预算继续按当天设备、活动与实例持久化；TaskPolicy.progress只在真实进度通过核验后清除失败连击，之后恢复首轮快速路径。
+
+`DeviceIO.own(cancel)` 在退出时注销资源；若主动停止导致正在读取的socket关闭并抛出传输异常，则统一抛出 `Stopped`，不进入任务失败与重启恢复。未停止时保留原始网络错误，便于诊断。已移除旧观察链的阶段状态字段；调用者不再发布空的 `observation_status`，耗时与来源仍从 `observation_metrics` 读取。
+
+`scoped_engine(scope, threads=4)` 按物理设备弱引用复用CPU引擎，并可由整轮运行租约保留、同引擎互斥；ONNX线程禁空转，无CPU Job配额或按模型耗时补等待。`capture_interval/ocr_threads/ocr_core_limit/ocr_cpu_percent/ocr_backend` 的试验性页面配置和后台观察图已经移除。`observation_metrics` 只报告当前串行读取耗时和来源，不把它当任务总耗时。
+
+活动可选 `rotating_task_caption(task) -> bool` 标明服务端会轮换标题的重复任务。`TaskTracking.tasks` 只在至少两条稳定相邻任务确认同一视口位移、时长/次数契约一致且进度未倒退时，按同一任务槽位消除标题互换歧义；最终身份仍使用既有任务key，不把坐标写入持久身份。未声明该钩子的活动保持原路径；不能借此给任意替换任务继承成功或失败预算。双11使用该钩子避免两条10次任务互换名称后误接另一行进度。
+
+### 公共词表与搜索/识别兼容
+
+`config.schema.keyword_list(value, name)` 接受JSON字符串列表或以中英文分号、空白分隔的字符串，去重后最多100词、每词1～40字符。`validate_config` 将 `task_search_keywords`、`skip_task_keywords` 规范化为列表；这两个公共字段随框架配置保存与继承，旧配置缺失时继承默认词表。
+
+`Session.next_search_keyword()` 在当前会话随机抽取公共任务词；空列表退回活动的 `task_search_keyword`。应用入口搜索继续显式提供自己的query；不能让公共产品词替换活动名称。淘宝SearchPolicy通过可选能力检查兼容旧框架；原生输入受限时保持有界数字备用路径与实例核对，不更换输入法。
+
+`execution.task_policy.keyword_skip_reason(task, words)` 接受Task或任务字典，按规范化后的标题、说明做字面包含匹配，英文忽略大小写，不执行正则。TaskTracking与控制器任务执行按钮复用同一判断；已完成任务保持完成状态。词表不存入当日TaskPolicy，清空标记与跨日不会删除，移除词后重新识别即可恢复。
+
+`SearchPolicy.is_search_input_node(screen, node)` 用原生编辑框范围、同排右侧搜索按钮或明确搜索页特征排除输入文字/清除叉号，弹窗关闭与退浮层复用；不能仅因文本为X就点击。淘宝自定义普通搜索词优先原生focused set_text，原生超时或已确认层级溢出时才使用有界备用输入，入口搜索不改词。
+
+`TaskActions.refine_task_rows(screen)` 仅对当前OCR任务列表中一两个字或通用占位标题，复用当前图像局部读取最多两行；新文本需在同一行且更完整才替换短标题，保留全帧安全证据。手机、平板和横屏都按实际尺寸与任务按钮范围裁剪，不按机型写坐标。常规完整标题与连续浏览窗口不增加观察。
+
+`ScreenReader` 忽略明确不可见的原生节点。`enrich_regions` 还要求当前read确有对应图像；只有UI控件而未新截图时，不能裁剪上一页面的last_image。坐标映回和原始安全文本继续保留。
 
 ### 淘宝补扫与未确认结果
 
@@ -466,3 +509,12 @@ controller.dispatch('run', {'auto_open': True})
 `TaskPolicy.defer(task, category, limit=1)` 在现有设备/活动/实例日记录中保存未确认次数。`category` 为 `navigation` 或 `settlement`；每类默认仅放行一次，后续失败仍计入 `max_attempts`。只有核验进度后 `progress()` 才清除此状态。调用者不得替换策略方法或直接修改 `entries`。
 
 安全验证始终通过 `NeedsAttention` 交给本人处理，补扫不得吞掉停止、身份或人工验证异常。
+
+### 物理设备识别模型复用
+
+`device.ocr.device_ocr_scope(device)` 优先使用 `identity_serial`，再使用实际连接serial，无身份时仅复用同一设备对象。`ScreenReader(..., engine_scope=None)` 可显式指定作用域，默认使用物理身份；识别模型可复用，页面、图像和坐标缓存不得跨reader共享。
+
+`engine_session(scope)` 是延迟加载的运行租约。控制器在run/scan整个流水线外持有它，活动和分身切换、补扫可复用同一模型；正常结束、停止或异常退出后释放强引用。独立reader仍用弱缓存；同scope同线程配置并发首次构造仅创建一次，同引擎推理互斥。无需后台观察线程，也不保留8个闲置大模型。
+
+
+任务分类器只返回动作类型；文案跳过统一调用 `keyword_skip_reason`，不得在活动中重复硬编码关键词。`Session.next_search_keyword` 每次 `random.choice`，不保存轮询索引。默认词与迁移规则见[配置核验表](CONFIGURATION.md)；偏好通过 `task_wordlists_schema=1` 标识已完成一次迁移，用户再次清空必须保留。

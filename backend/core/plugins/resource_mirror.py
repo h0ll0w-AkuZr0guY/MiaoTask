@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 import re
 import time
-from urllib.parse import quote
 from urllib.request import Request, build_opener
 
 from backend.core.plugins.contracts import MAX_ARCHIVE_BYTES, MAX_CATALOG_BYTES, branch_name

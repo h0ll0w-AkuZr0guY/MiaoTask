@@ -2,9 +2,10 @@
 import hashlib
 import re
 import logging
+from statistics import median
 from collections import Counter
 from backend.core.models import normalize
-from backend.core.execution.task_policy import task_identity
+from backend.core.execution.task_policy import task_identity, keyword_skip_reason
 logger = logging.getLogger('backend.execution')
 
 class TaskTracking:
@@ -14,6 +15,9 @@ class TaskTracking:
 
 
     def availability_reason(self, task, check_installed=False):
+        keyword_reason = keyword_skip_reason(task, self.config.get('skip_task_keywords', []))
+        if keyword_reason:
+            return keyword_reason
         if task.kind in ('manual', 'done', 'claim'):
             return self.task_policy.reason(task) if task.kind == 'claim' else ''
         decision = self.task_policy.reason(task)
@@ -49,6 +53,20 @@ class TaskTracking:
         tasks = self.parse_tasks(screen.nodes, screen.width, screen.height)
         from backend.core.execution.browse_contract import apply_browse_contract
         tasks = [apply_browse_contract(task) for task in tasks]
+        previous_tasks = list(self._known_tasks.values())
+        rotating_caption = getattr(self, 'rotating_task_caption', lambda task: False)
+        # Stable neighbouring rows reveal a viewport shift. Positions only
+        # disambiguate an activity-declared rotating caption, never form its ID.
+        shifts = []
+        for task in tasks:
+            if rotating_caption(task):
+                continue
+            matches = [old for old in previous_tasks if old.title == task.title
+                       and old.total == task.total and old.seconds == task.seconds]
+            if len(matches) == 1:
+                shifts.append(task.bounds[1] - matches[0].bounds[1])
+        viewport_shift = (median(shifts) if len(shifts) >= 2
+                          and max(shifts)-min(shifts) < screen.height*.025 else None)
         used = set()
         for task in tasks:
             if task.key.startswith('milestone-'):
@@ -62,6 +80,15 @@ class TaskTracking:
                      and old.total == task.total and old.seconds == task.seconds]
             if len(exact) == 1:
                 key = exact[0].key
+            slot_match = False
+            if viewport_shift is not None and rotating_caption(task):
+                matches = [old for old in previous_tasks
+                           if old.key not in used and rotating_caption(old)
+                           and old.total == task.total and old.seconds == task.seconds
+                           and (task.current >= old.current or old.current == old.total-1 and task.current == 0)
+                           and abs((old.bounds[1]+old.bounds[3])/2 + viewport_shift - center_y) < screen.height*.025]
+                if len(matches) == 1:
+                    key, slot_match = matches[0].key, True
             old_asset_task = self._known_tasks.get(key)
             if old_asset_task and (old_asset_task.total != task.total or old_asset_task.seconds != task.seconds
                                    or (task.total == 1 and old_asset_task.title != task.title)):
@@ -92,6 +119,10 @@ class TaskTracking:
                 if key in used or key in self._known_tasks:
                     key += '-' + hashlib.sha256((asset or str(task.bounds)).encode()).hexdigest()[:6]
             previous = self._known_tasks.get(key)
+            if previous and slot_match:
+                task.title = previous.title
+                if previous.kind in ('browse', 'search') and task.kind != 'done':
+                    task.kind = previous.kind
             if (previous and previous.kind in ('browse', 'search') and task.total > 1 and previous.total == task.total
                     and previous.seconds == task.seconds
                     and re.match(r'^(?:看看|逛逛|浏览)#', normalize(task.title))):

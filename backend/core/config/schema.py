@@ -1,12 +1,44 @@
 from backend.core.execution.gestures import validate_swipes
+import re
+
+
+def keyword_list(value, name):
+    """Accept the settings editor's separators or an explicit JSON word list."""
+    if isinstance(value, str):
+        if len(value) > 4000:
+            raise ValueError(f'{name} 内容过长')
+        value = [word for word in re.split(r'[;；\s]+', value.strip()) if word]
+    if not isinstance(value, list) or len(value) > 100:
+        raise ValueError(f'{name} 必须为最多100项的词表')
+    words = []
+    for word in value:
+        if (not isinstance(word, str) or not 1 <= len(word.strip()) <= 40
+                or re.search(r'[;；\s\x00-\x1f]', word.strip())):
+            raise ValueError(f'{name} 每项须为1～40个字符，以分号或空白分隔')
+        word = word.strip()
+        if word not in words:
+            words.append(word)
+    return words
 
 def validate_config(config):
     validate_swipes(config)
+    for name in ('task_search_keywords', 'skip_task_keywords'):
+        config[name] = keyword_list(config.get(name, []), name)
+    config.setdefault('browse_check_interval', 1)
+    config.setdefault('screen_timeout_minutes', 10)
+    rounds = config.setdefault('browse_recheck_rounds', 3)
+    if isinstance(rounds, bool) or not isinstance(rounds, int) or not 0 <= rounds <= 10:
+        raise ValueError('browse_recheck_rounds 必须为0～10的整数')
+    quality = config.setdefault('screenshot_quality', 70)
+    if isinstance(quality, bool) or not isinstance(quality, int) or not 30 <= quality <= 95:
+        raise ValueError('screenshot_quality 必须为30～95的整数')
     limits = {
         'default_browse_seconds': (1, 120), 'visit_seconds': (1, 120),
         'browse_extra_seconds': (0, 60),
         'max_task_seconds': (5, 180), 'settle_seconds': (0, 10),
         'page_timeout': (3, 60), 'return_timeout': (5, 90),
+        'browse_check_interval': (.5, 10),
+        'screen_timeout_minutes': (1, 1440),
         'max_back_steps': (1, 8), 'max_attempts': (1, 3),
         'max_tasks': (1, 300), 'max_scroll_pages': (1, 20),
     }
@@ -19,7 +51,7 @@ def validate_config(config):
     for key in ('allow_cross_app', 'ocr', 'scroll_browse', 'claim_rewards'):
         if not isinstance(config.get(key), bool):
             raise ValueError(f'{key} 必须为布尔值')
-    for key in ('minimum_volume', 'minimum_brightness', 'reset_after_activity', 'keep_screen_on'):
+    for key in ('minimum_volume', 'minimum_brightness', 'reset_after_activity', 'keep_screen_on', 'compressed_screenshots'):
         if not isinstance(config.setdefault(key, False), bool):
             raise ValueError(f'{key} 必须为布尔值')
     if not isinstance(config.setdefault('clear_clipboard', True), bool):

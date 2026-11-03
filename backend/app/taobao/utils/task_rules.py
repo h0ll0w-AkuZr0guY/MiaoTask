@@ -1,4 +1,4 @@
-"""Platform vocabulary and classification, preserved from 0.0.9."""
+"""Task action classification; editable keyword policy owns text-based exclusion."""
 import re
 from backend.core.models import normalize
 
@@ -6,9 +6,6 @@ ACTION_RE = re.compile(r"^(?:去完成|去浏览|去逛逛|去看看|去看一�
 CLAIM_ACTIONS = {"去领取", "领取奖励", "立即领取", "领能量", "领体力", "领奖励"}
 DONE_ACTIONS = {"已完成", "已领取", "明日再来"}
 PROGRESS_RE = re.compile(r"[([]\s*(\d+)\s*/\s*(\d+)\s*[)\]]")
-UNSUPPORTED_RE = re.compile(r"下单|购买|支付\d|支付订单|充值|开通|订阅|邀请|助力|组队|分享|加购|收藏|关注|授权|登录|登陆|实名|下载|安装|答题|考试|拍照|拍摄|发布|评价|种树|喂鸡|浇水")
-EXCLUDED_RE = re.compile(r"游戏|拉人|拉\d+人|邀请|助力|组队|考试|答题")
-DRAW_RE = re.compile(r"抽奖|夺宝|抽\d+元红包")
 # Map explicit app names and known Alipay mini-app brands; internal channels
 # such as 淘宝闪购 remain usable without installing another application.
 EXTERNAL_APPS = (
@@ -42,25 +39,14 @@ def classify(title, detail, texts, action, current, total):
     duration = re.search(r"(?:浏览|停留|观看|逛|滑动|下滑)[^\d]{0,5}(\d{1,3})[秒sS]", combined)
     seconds = int(duration.group(1)) if duration else 0
     kind, reason = "browse", ""
-    action = action
     target_app, packages = next(((name, packages) for name, packages in EXTERNAL_APPS
                                  if name in title), ('', ()))
     if not target_app and re.search(r'蚂蚁庄园|蚂蚁森林', title):
         target_app, packages = '支付宝', ('com.eg.android.AlipayGphone',)
     flash_visit = (title == '领闪购红包下单直接省' and '点击去逛' in combined
                    and not re.search(r'需下单|完成下单|支付|购买|消费|订单', detail))
-    passive_app_visit = bool(target_app and re.search(r'跳转得(?:奖励)?|点击去逛', detail))
-    safety_text = combined.replace('领闪购红包下单直接省', '领闪购红包', 1) if flash_visit else combined
-    if title == '你关注的商品都可抵' and seconds and not re.search('关注|订阅|收藏', detail):
-        safety_text = safety_text.replace(title, '商品浏览', 1)
     if action in DONE_ACTIONS or current >= total:
         kind, reason = "done", "今日已完成"
-    elif EXCLUDED_RE.search(combined) or (DRAW_RE.search(combined) and not passive_app_visit):
-        kind, reason = "manual", "已跳过：需要游戏、拉人、抽奖或答题考试操作"
-    elif UNSUPPORTED_RE.search(safety_text):
-        kind, reason = "manual", "需要手动操作：" + UNSUPPORTED_RE.search(safety_text).group()
-    elif re.search(r"浏览\d+个|逛\d+个|\d+件商品", combined):
-        kind, reason = "manual", "需要多商品交互"
     elif action in CLAIM_ACTIONS:
         kind = "claim"
     elif flash_visit or target_app:
@@ -69,6 +55,4 @@ def classify(title, detail, texts, action, current, total):
         kind = "search"
     elif re.search(r"支付宝|蚂蚁庄园|蚂蚁森林|农场|菜鸟|闲鱼|饿了么|优酷|高德|淘宝闪购|天猫|去逛", combined):
         kind = "visit"
-    elif not re.search(r"浏览|逛|看|签到|打卡|频道|会场", combined):
-        kind, reason = "manual", "任务类型暂不支持"
     return seconds, kind, reason, target_app, packages
