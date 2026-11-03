@@ -471,6 +471,14 @@ class RescanPolicy:
         if not self.rescan_option('rescan_enabled', True):
             # 总开关：出问题时可退回“一轮就收工”的旧行为，不用改代码。
             return super().run(auto_open)
+        # 补扫的手段只有一个——翻页。调用方把翻页页数配成 0（或更小）就是明确
+        # 要求“不要翻”，这时候再重进扫一遍既看不到新内容，还会把框架原本那句
+        # “没有识别到任务”换成“补扫没能确认”。既然翻页被禁用，就按单轮收工。
+        # 注意：schema 的取值范围是 1–20，真机不会走到这里，只有显式配 0 才会。
+        if int(self.config.get('max_scroll_pages') or 0) < 1:
+            logger.info('补扫：配置未允许翻页（max_scroll_pages=%s），按单轮收工',
+                        self.config.get('max_scroll_pages'))
+            return super().run(auto_open)
         # 重启预算是按“一次运行”算的：停一下再跑不该被上一次的用量卡住。
         self._rescan_restarts = 0
         self._rescan_restart_capped = False

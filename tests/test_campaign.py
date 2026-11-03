@@ -1362,7 +1362,7 @@ class RunnerTests(unittest.TestCase):
         self.assertTrue(explicit)
         self.assertLess(clock[0], 27)
 
-    def test_zero_gap_does_not_wait_for_slow_ocr_or_count_rpc_overhead(self):
+    def test_zero_gap_counts_elapsed_time_and_checks_final_frame(self):
         r, clock, destination = self.scrolling_runner()
         r.config.update(swipe_duration_min=.5, swipe_duration_max=.5)
         observer = ScriptedObservation(r, destination, delay=4)
@@ -1376,13 +1376,13 @@ class RunnerTests(unittest.TestCase):
         task = r.tasks(task_screen())[0]
         explicit, cross = r.wait_for_browse(task, destination, False, 15)
         self.assertFalse(explicit or cross)
-        self.assertGreaterEqual(sum(sent), 15)
-        self.assertAlmostEqual(clock[0], 21)
+        self.assertLess(sum(sent), 15)
+        self.assertGreaterEqual(clock[0], 15)
         r.control.wait.assert_not_called()
-        r.read.assert_not_called()  # full hierarchy/OCR never blocks this loop
+        r.read.assert_called()  # final frame is checked before leaving
         self.assertTrue(observer.closed)
 
-    def test_early_completion_banner_cannot_shorten_required_scroll(self):
+    def test_completion_banner_ends_browse_before_deadline(self):
         r, clock, destination = self.scrolling_runner()
         completed = Screen([node('任务已完成', 800, 200)], 1440, 3200, r.origin)
         r.config.update(swipe_duration_min=.5, swipe_duration_max=.5)
@@ -1390,7 +1390,7 @@ class RunnerTests(unittest.TestCase):
         r.reader.visual_observer = lambda: ScriptedObservation(r, completed)
         explicit, _ = r.wait_for_browse(r.tasks(task_screen())[0], completed, False, 27)
         self.assertTrue(explicit)
-        self.assertGreaterEqual(clock[0], 15)
+        self.assertLess(clock[0], 15)
         self.assertLess(clock[0], 27)
 
     def test_background_security_result_stops_next_gesture(self):
@@ -1414,15 +1414,36 @@ class RunnerTests(unittest.TestCase):
         self.assertLess(clock[0], 4)
         self.assertTrue(observer.closed)
 
-    def test_nonzero_gaps_do_not_count_towards_scroll_time(self):
+    def test_nonzero_gaps_count_towards_elapsed_time(self):
         r, clock, destination = self.scrolling_runner()
         r.config.update(swipe_interval_min=.5, swipe_interval_max=.5,
                         swipe_duration_min=.5, swipe_duration_max=.5)
         r.device.swipe.side_effect = lambda *a, **kw: clock.__setitem__(0, clock[0] + kw['duration'])
         r.reader.visual_observer = lambda: ScriptedObservation(r, destination)
         r.wait_for_browse(r.tasks(task_screen())[0], destination, False, 5)
-        self.assertGreaterEqual(r.device.swipe.call_count * .5, 5)
-        self.assertGreaterEqual(clock[0], 10)
+        self.assertLess(r.device.swipe.call_count * .5, 5)
+        self.assertGreaterEqual(clock[0], 5)
+        self.assertLess(clock[0], 7)
+
+    def test_final_frame_extends_deadline_when_countdown_appears(self):
+        r, clock, destination = self.scrolling_runner()
+        countdown = Screen([node('还需3秒', 800, 200)], 1440, 3200, r.origin)
+        r.reader.visual_observer = lambda: ScriptedObservation(r, destination, delay=100)
+        r.config['page_timeout'] = 60
+        r.read.side_effect = [countdown, destination]
+        r.wait_for_browse(r.tasks(task_screen())[0], destination, False, 5)
+        self.assertGreaterEqual(clock[0], 9)
+        self.assertGreaterEqual(r.read.call_count, 2)
+
+    def test_positive_countdown_takes_precedence_over_completion_hint(self):
+        r, clock, destination = self.scrolling_runner()
+        mixed = Screen([node('任务已完成', 800, 200), node('还需3秒', 800, 300)], 1440, 3200, r.origin)
+        r.reader.visual_observer = lambda: ScriptedObservation(r, destination, delay=100)
+        r.config.update(page_timeout=60, max_task_seconds=6)
+        r.read.side_effect = lambda: Screen([node('任务已完成', 800, 200), node('还需3秒', 800, 300)], 1440, 3200, r.origin)
+        explicit, _ = r.wait_for_browse(r.tasks(task_screen())[0], mixed, False, 5)
+        self.assertFalse(explicit)
+        self.assertGreaterEqual(clock[0], 6)
 
     def test_stale_countdown_is_not_extended_on_every_swipe(self):
         r, clock, destination = self.scrolling_runner()
@@ -1436,7 +1457,7 @@ class RunnerTests(unittest.TestCase):
         r, clock, destination = self.scrolling_runner()
         r.reader.visual_observer = None
         r.wait_for_browse(r.tasks(task_screen())[0], destination, False, 5)
-        self.assertGreater(r.device.swipe.call_count, 10)
+        self.assertGreater(r.device.swipe.call_count, 0)
         r.read.assert_called()
 
     def test_risk_page_requires_human(self):
@@ -1920,6 +1941,100 @@ class Double11RescanTests(unittest.TestCase):
         runner.rescan()
         self.assertEqual(order.count(('start', 'com.taobao.taobao')), 1)
         self.assertEqual(order.count('list'), 2)
+
+
+class YueYueZhuanEntryTests(unittest.TestCase):
+    def policy(self):
+        from backend.app.zfb.activities.yueyuezhuan.entry import EntryPolicy
+        p = EntryPolicy()
+        p.config = {'task_search_keyword': '月月赚'}
+        p.device = Mock()
+        p.control = Mock()
+        p.click = Mock()
+        p.update = Mock()
+        p.guard = Mock()
+        p._accept_list = Mock(return_value=False)
+        return p
+
+    def frame(self, nodes):
+        return Screen(nodes, 1000, 2000, 'com.eg.android.AlipayGphone')
+
+    def test_search_labels_and_exact_preference(self):
+        p = self.policy()
+        for label in ('搜索框', '搜索得红包', '搜索'):
+            entry = node(label, 100, 100, 700, 80)
+            self.assertIs(p._search_entry_node(self.frame([entry])), entry)
+        exact = node('搜索', 850, 160, 100, 60)
+        self.assertIs(p._search_entry_node(self.frame([node('搜索框', 100, 100), exact])), exact)
+
+    def test_failed_home_navigation_does_not_type(self):
+        p = self.policy()
+        home = self.frame([node('我的', 800, 1800, 100, 60)])
+        p.read = Mock(return_value=home)
+        self.assertFalse(p.search_and_open(home))
+        p.device.input_text.assert_not_called()
+        self.assertLessEqual(p.click.call_count, 2)
+
+    def test_wide_header_is_not_search_input(self):
+        p = self.policy()
+        self.assertFalse(p._search_page_ready(self.frame([node('支付宝会员', 50, 100, 800, 90)])))
+
+    def test_search_opens_result_without_new_framework_methods(self):
+        p = self.policy()
+        home = self.frame([node('搜索得红包', 100, 100, 700, 80), node('我的', 800, 1800, 100, 60)])
+        search = self.frame([node('搜索', 100, 100, 700, 80), node('取消', 850, 100, 100, 60)])
+        result = self.frame([node('月月赚', 100, 100, 700, 80), node('月月赚', 100, 250, 200, 70), node('去看看', 700, 250, 150, 70)])
+        panel = self.frame([node('任务中心', 100, 300)])
+        p.read = Mock(side_effect=[search, result, panel])
+        p._accept_list = lambda s: s is panel
+        self.assertTrue(p.search_and_open(home))
+        p.device.input_text.assert_called_once_with('月月赚')
+        self.assertEqual(p.click.call_args.args[0].text, '去看看')
+        p.device.wake_and_unlock.assert_not_called()
+
+    def test_result_button_must_share_row_and_be_to_right(self):
+        p = self.policy()
+        title = node('月月赚', 200, 250, 200, 70)
+        frame = self.frame([title, node('去完成', 10, 250, 100, 60), node('去看看', 700, 350, 150, 60)])
+        self.assertIs(p._search_result(frame), title)
+
+    def test_control_exceptions_are_not_swallowed_or_retried(self):
+        from backend.core.errors import Stopped, NeedsAttention
+        p = self.policy()
+        for kind in (Stopped, NeedsAttention, InstanceMismatch):
+            p.read = Mock(side_effect=kind('synthetic'))
+            with self.assertRaises(kind):
+                p.ensure_list(True)
+        p.device.start_app.assert_not_called()
+
+    def test_search_retries_only_once(self):
+        p = self.policy()
+        panel = self.frame([])
+        p._bring_alipay_front = Mock(return_value=panel)
+        p.search_and_open = Mock(side_effect=[False, True])
+        p.read = Mock(return_value=panel)
+        p._accept_list = Mock(return_value=True)
+        self.assertIs(p.ensure_list(True), panel)
+        self.assertEqual(p.search_and_open.call_count, 2)
+
+
+class EmptySessionMessageTests(unittest.TestCase):
+    def test_empty_session_message_does_not_assume_task_kind_or_success(self):
+        runner = CampaignRunner(Mock(selected_instance=None), load_config())
+        runner.config.update(max_scroll_pages=0)
+        frame = task_screen()
+        runner.ensure_list = Mock(return_value=frame)
+        runner.guard = Mock()
+        runner.tasks = Mock(return_value=[])
+        runner.next_list_page = Mock(return_value=None)
+        runner.view_signature = Mock(return_value=None)
+        runner.return_to_home = Mock(return_value=frame)
+        runner.emit = Mock()
+        runner.run()
+        message = runner.emit.call_args.kwargs['message']
+        self.assertIn('没有识别到任务', message)
+        self.assertNotIn('浏览任务', message)
+        self.assertFalse(runner.daily_exhausted)
 
 
 if __name__ == '__main__':

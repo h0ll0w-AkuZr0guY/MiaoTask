@@ -119,6 +119,44 @@ class DeviceAdapter:
         else:
             raise ValueError(f"不支持的设备类型: {self.device_type}")
 
+    @serialized
+    def wake_and_unlock(self):
+        """亮屏并解除锁屏。
+
+        仅由公共保持亮屏设置启用，连接和普通预览不主动唤醒。
+        系统无法解除的锁屏交给用户处理，不发送解锁手势或认证输入。
+        """
+        if self.device_type != 'uiautomator2' or getattr(self, '_display_id', 0):
+            return False
+        # 亮屏用 WAKEUP 键：对已亮屏的设备没有副作用，比读 info.screenOn 可靠
+        # （无线调试/部分机型读不到 screenOn，只靠它会导致永远不唤醒）。
+        try:
+            self._checked_shell(['input', 'keyevent', '224'], timeout=5)
+        except Exception:
+            logger.debug('发送唤醒键失败', exc_info=True)
+            return False
+        time.sleep(0.8)
+        # 仍有锁屏时才动界面：无密码的滑动锁屏可直接解除，
+        # 有密码/图案的锁屏需用户自己解锁（这里不会尝试猜密码）。
+        if self._lockscreen_visible():
+            try:
+                self._checked_shell(['wm', 'dismiss-keyguard'], timeout=5)
+            except Exception:
+                logger.debug('解除锁屏命令未生效', exc_info=True)
+            time.sleep(0.6)
+            if self._lockscreen_visible():
+                logger.warning('设备仍处于锁屏状态，请手动解锁后重试')
+                return False
+        return True
+
+    def _lockscreen_visible(self):
+        """当前是否停留在锁屏界面，无法核定时不执行解锁。"""
+        try:
+            output = self._checked_shell(['dumpsys', 'window'], timeout=5)
+        except Exception:
+            return False
+        return bool(re.search(r'(?:mDreamingLockscreen|mKeyguardShowing|isStatusBarKeyguard)\s*=\s*true\b', output))
+
     def _android_identity(self):
         """Keep USB and Wi-Fi transports of the same handset in one daily record."""
         for prop in ('ro.serialno', 'ro.boot.serialno'):
@@ -567,6 +605,16 @@ class DeviceAdapter:
         else:
             # uiautomator2 返回XML，缓存原始XML并转为兼容JSON
             self._last_xml = self._device.dump_hierarchy(compressed=True)
+            if not self._last_xml or '<node' not in self._last_xml:
+                # 息屏/锁屏时取到的层级是空的：唤醒后重取一次，否则上层会当成空页面
+                if (getattr(self, '_wake_on_empty', False)
+                        and time.monotonic() >= getattr(self, '_next_empty_wake', 0)):
+                    self._next_empty_wake = time.monotonic() + 10
+                    self.wake_and_unlock()
+                    self._last_xml = self._device.dump_hierarchy(compressed=True)
+                if not self._last_xml or '<node' not in self._last_xml:
+                    # 唤醒后仍为空：多半是设备设了密码锁屏，脚本无法代替用户解锁
+                    logger.warning('读取到的界面为空：设备可能处于息屏或锁屏状态，请解锁屏幕后重试')
             return self._xml_to_json(self._last_xml)
 
     # XML属性名到hmdriver2 JSON key的映射
