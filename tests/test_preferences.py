@@ -91,7 +91,7 @@ class PreferenceWiringTests(unittest.TestCase):
     def test_download_proxy_preference_reaches_opener(self):
         from backend.core.plugins import networking
         preferences.save_preferences({'download_proxy': '127.0.0.1:7890'})
-        with patch.dict(os.environ, {}, clear=True):
+        with patch.dict(os.environ, {'MIAO_DATA_DIR':self.tmp.name}, clear=True):
             os.environ.pop(networking.PROXY_ENV, None)
             proxies = networking.resolve_proxies()
         self.assertEqual(proxies, {'http': 'http://127.0.0.1:7890',
@@ -205,3 +205,17 @@ class PreferencesHttpTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class SharedPreferenceRegressionTests(unittest.TestCase):
+    def test_network_updates_preserve_task_words_branch_and_other_settings(self):
+        from backend.core.storage.preferences import save_preferences as save_task,read_preferences
+        with tempfile.TemporaryDirectory() as folder,patch.dict(os.environ,{'MIAO_DATA_DIR':folder}):
+            save_task(config={'skip_task_keywords':['custom'],'default_browse_seconds':17},activity_branch='dev')
+            preferences.save_preferences({'ocr_device':'cuda'})
+            saved=read_preferences()
+            self.assertEqual(saved['config']['skip_task_keywords'],['custom'])
+            self.assertEqual(saved['activity_branch'],'dev')
+            save_task(config={'skip_task_keywords':[]})
+            self.assertEqual(preferences.load_preferences()['ocr_device'],'cuda')
+            self.assertEqual(read_preferences()['config']['skip_task_keywords'],[])

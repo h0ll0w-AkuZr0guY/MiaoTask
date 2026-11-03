@@ -132,8 +132,9 @@ class ScreenReader:
         # A backend switch bumps the generation; rebuild instead of reusing an
         # engine whose provider no longer matches the saved preference.
         if self._engine is None or self._engine_generation != engine_generation():
+            generation = engine_generation()
             self._engine = local_ocr_engine(self._ocr_scope, self.ocr_threads)
-            self._engine_generation = engine_generation()
+            self._engine_generation = generation
         import numpy as np
         prepared = self.image_processor.prepare(image)
         image = prepared.image

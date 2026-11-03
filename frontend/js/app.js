@@ -100,9 +100,10 @@ async function loadPreferences(){
       ?'已检测到 CUDA 执行器；保存后下次识别重建引擎时生效。'
       :'未检测到 CUDA 执行器，强制 CUDA 会回退 CPU；保存后下次识别生效。';
     preferencesLoaded=true;
-  }catch(_){/* 旧后端或临时失败时保留表单默认值 */}
+  }catch(_){$('ocr-device-hint').textContent='未能读取控制台偏好，暂不写入；请重新打开设置重试。';}
 }
 async function savePreferences(){
+  if(!preferencesLoaded)return; // do not overwrite saved values after a failed GET
   const payload={ocr_device:$('ocr-device').value, download_proxy:$('download-proxy').value.trim()};
   const response=await fetch(MiaoAPI.url('/api/preferences'),{method:'POST',headers:{'Content-Type':'application/json','X-Miao-Token':token},body:JSON.stringify(payload)});
   const result=await response.json();

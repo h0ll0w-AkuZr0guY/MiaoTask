@@ -136,3 +136,7 @@ GitHub Windows 发布构建使用 `scripts/package_windows.py --preinstall-all`�
 回归按类别归并至 21 个 `test_*.py`，保留连接、识别、实例、任务、存储、活动分发、前端及发布隔离用例；相近测试直接合并，不用转发文件维持重复入口。共享合成夹具从所属类别模块导入。脚本保留独立的检查、构建和站点职责，总数低于 30。
 
 直接 Windows 构建默认读取各活动配置的 `bundle_by_default`；现有六项活动均为 true，未来非默认活动设为 false。`--preinstall-all` 同样遵循该策略；`--framework-only` 明确生成纯框架，显式活动列表仍可覆盖默认。Release Builder 未提供活动列表时采用源码默认策略；显式空列表保留纯框架选项。
+
+## 可选 CUDA 环境验证
+
+使用独立 Python 3.13 环境安装 configs/environments/requirements-cuda.lock，再运行同一 scripts/check_project.py。共有依赖与 requirements-windows.lock 对齐，CPU 环境不变。CUDA 需要实际模型推理验证，编译执行器列表不等于硬件可用；Windows 识别模型使用单裁剪批量，避免动态批量的 cuDNN ReduceMean 错误。选择 CUDA 但运行库不可用、初始化或推理失败时，验证 CPU 回退。GPU 便携插件的构建与兼容验收独立于当前 CPU 发布流程。

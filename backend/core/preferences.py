@@ -5,12 +5,9 @@ whole local console. Values are a small validated JSON document; environment
 variables stay the highest-priority override for non-interactive launches.
 """
 import copy
-import json
 import logging
 import threading
-import uuid
 
-from backend.core.runtime import data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -23,11 +20,11 @@ DEFAULTS = {
     'ocr_device': 'auto',
 }
 _LOCK = threading.RLock()
-_cache = None
 
 
 def preferences_path():
-    return data_dir() / PREFERENCES_FILE
+    from backend.core.storage.preferences import preferences_path as shared_path
+    return shared_path()
 
 
 def _validate(values):
@@ -48,47 +45,27 @@ def _validate(values):
 
 
 def load_preferences(force=False):
-    """Return current preferences, loading and repairing the file once."""
-    global _cache
+    """Read the shared atomic store; never maintain a competing stale document."""
+    from backend.core.storage.preferences import read_preferences
     with _LOCK:
-        if _cache is not None and not force:
-            return copy.deepcopy(_cache)
-        current = dict(DEFAULTS)
-        path = preferences_path()
         try:
-            raw = json.loads(path.read_text(encoding='utf-8'))
-            if isinstance(raw, dict):
-                current.update(_validate(raw))
-        except FileNotFoundError:
-            pass
-        except (ValueError, OSError) as exc:
-            logger.warning('偏好设置无法读取，使用默认值：%s', exc)
-        _cache = current
-        return copy.deepcopy(current)
+            return _validate(read_preferences())
+        except ValueError as exc:
+            logger.warning('网络/OCR偏好无效，使用默认值：%s', exc)
+            return dict(DEFAULTS)
 
 
 def save_preferences(updates):
-    """Validate, persist and cache a partial update; returns the full set."""
-    global _cache
+    from backend.core.storage.preferences import _LOCK as shared_lock, save_preferences as save_shared
     if not isinstance(updates, dict):
         raise ValueError('偏好设置必须是对象')
-    with _LOCK:
-        current = load_preferences()
-        merged = dict(current)
-        merged.update({k: v for k, v in updates.items() if k in DEFAULTS})
+    with _LOCK, shared_lock:
+        merged = load_preferences()
+        merged.update({key:value for key,value in updates.items() if key in DEFAULTS})
         merged = _validate(merged)
-        path = preferences_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
-        temporary.write_text(json.dumps(merged, ensure_ascii=False, indent=2) + '\n',
-                             encoding='utf-8')
-        temporary.replace(path)
-        _cache = merged
+        save_shared(**merged)
         return copy.deepcopy(merged)
 
 
 def reset_preferences_cache():
-    """Drop the in-memory cache, mainly for tests switching data roots."""
-    global _cache
-    with _LOCK:
-        _cache = None
+    """Compatibility hook; the shared store is read fresh on each request."""

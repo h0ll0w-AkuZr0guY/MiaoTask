@@ -42,6 +42,8 @@ class ResolveOCRBackendTests(unittest.TestCase):
     def test_params_carry_cuda_flag_only_for_cuda(self):
         cpu_params = screen._ocr_engine_params('cpu')
         self.assertNotIn('EngineConfig.onnxruntime.use_cuda', cpu_params)
+        self.assertNotIn('Rec.rec_batch_num', cpu_params)
+        self.assertEqual(screen._ocr_engine_params('cuda')['Rec.rec_batch_num'], 1)
         self.assertIs(screen._ocr_engine_params('cuda')[
                       'EngineConfig.onnxruntime.use_cuda'], True)
 
@@ -133,6 +135,44 @@ class ScopedOCRBackendTests(unittest.TestCase):
         ort.preload_dlls.assert_called_once_with()
         self.assertIs(rapid.RapidOCR.call_args.kwargs['params'][
                       'EngineConfig.onnxruntime.use_cuda'], True)
+
+
+class CUDAFailureRegressionTests(unittest.TestCase):
+    def test_model_initialization_failure_retries_cpu_once(self):
+        from backend.core.device import ocr
+        fake=SimpleNamespace(RapidOCR=Mock(side_effect=[RuntimeError('CUDA dll missing'),Mock()]))
+        with patch.dict(sys.modules,{'rapidocr':fake}),patch.object(ocr,'engine_params',return_value=ocr.ocr_engine_params('cuda')):
+            engine=ocr._create_engine(2)
+        self.assertEqual(fake.RapidOCR.call_count,2)
+        self.assertFalse(fake.RapidOCR.call_args.kwargs['params'].get('EngineConfig.onnxruntime.use_cuda',False))
+
+    def test_runtime_failure_retries_same_image_on_cpu(self):
+        from backend.core.device import ocr
+        gpu=Mock(side_effect=RuntimeError('CUDA device lost'));gpu.miao_backend='cuda'
+        cpu=Mock(return_value='recognized');cpu.miao_backend='cpu'
+        managed=ocr.ManagedEngine(gpu)
+        with patch.object(ocr,'_create_engine',return_value=cpu) as build:
+            self.assertEqual(managed.infer('frame',lambda:None),'recognized')
+            self.assertEqual(managed.infer('next',lambda:None),'recognized')
+        build.assert_called_once_with(4,backend='cpu')
+        cpu.assert_any_call('frame',use_cls=False)
+
+    def test_non_spinning_session_preserves_provider_options(self):
+        from backend.core.device import ocr
+        session = Mock(_model_path='model.onnx')
+        session.get_providers.return_value = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        session.get_provider_options.return_value = {
+            'CUDAExecutionProvider': {'device_id': '1', 'cudnn_conv_algo_search': 'HEURISTIC'},
+            'CPUExecutionProvider': {'arena_extend_strategy': 'kSameAsRequested'},
+        }
+        ort = SimpleNamespace(InferenceSession=Mock(), ExecutionMode=SimpleNamespace(ORT_SEQUENTIAL=0))
+        model = SimpleNamespace(session=SimpleNamespace(session=session))
+        with patch.dict(sys.modules, {'onnxruntime': ort}):
+            ocr._sleeping_session(model)
+        self.assertEqual(ort.InferenceSession.call_args.kwargs['provider_options'], [
+            {'device_id': '1', 'cudnn_conv_algo_search': 'HEURISTIC'},
+            {'arena_extend_strategy': 'kSameAsRequested'},
+        ])
 
 
 if __name__ == '__main__':

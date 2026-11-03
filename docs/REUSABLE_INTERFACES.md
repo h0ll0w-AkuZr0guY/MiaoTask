@@ -518,3 +518,12 @@ controller.dispatch('run', {'auto_open': True})
 
 
 任务分类器只返回动作类型；文案跳过统一调用 `keyword_skip_reason`，不得在活动中重复硬编码关键词。`Session.next_search_keyword` 每次 `random.choice`，不保存轮询索引。默认词与迁移规则见[配置核验表](CONFIGURATION.md)；偏好通过 `task_wordlists_schema=1` 标识已完成一次迁移，用户再次清空必须保留。
+
+
+### 控制台级OCR后端与下载代理
+
+`core.preferences.load_preferences/save_preferences` 复用 `core/storage/preferences.py` 的原子文档和锁，返回/修改 `ocr_device` 与 `download_proxy`，不得覆盖config、词表、分支和浏览器退出偏好。环境变量MIAO_OCR_DEVICE、MIAO_DOWNLOAD_PROXY优先于保存偏好；未配置代理继续使用系统代理，off明确直连。
+
+`resolve_ocr_backend` 先选择候选执行器，模型真正初始化后读取det/rec执行器作为实际结果。编译包含CUDA不保证硬件或DLL可用。CUDA初始化或推理失败只回退CPU重试一次，CPU再次失败保留原异常，不吞掉停止/身份/认证检查。`get_preferences.cuda_available`只表示当前安装包声明含CUDA执行器，不表示硬件健康检查已经通过。
+
+修改ocr_device需要所有设备空闲，后台不恢复持续采集或识别并发；代理变化不重建识别引擎。模型世代使旧reader下次读取重建，控制器运行租约和物理设备隔离保持不变。GET/POST `/api/preferences`沿用Host/Origin与写入令牌守卫。

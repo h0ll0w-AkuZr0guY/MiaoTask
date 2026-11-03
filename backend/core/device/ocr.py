@@ -153,6 +153,10 @@ def ocr_engine_params(backend, threads=4):
     }
     if backend == 'cuda':
         params['EngineConfig.onnxruntime.use_cuda'] = True
+        # Dynamic-width PP-OCR recognition batches can fail inside cuDNN
+        # ReduceMean on Windows. Single-crop GPU inference avoids that path;
+        # retain the existing batch size for CPU and the exact-crop cache.
+        params['Rec.rec_batch_num'] = 1
     return params
 
 
@@ -206,12 +210,16 @@ def _sleeping_session(model):
     options.add_session_config_entry('session.intra_op.allow_spinning', '0')
     options.add_session_config_entry('session.inter_op.allow_spinning', '0')
     options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+    providers = session.get_providers()
+    provider_options = session.get_provider_options()
     model.session.session = ort.InferenceSession(session._model_path, sess_options=options,
-                                                providers=session.get_providers())
+                                                providers=providers,
+                                                provider_options=[provider_options.get(name, {})
+                                                                  for name in providers])
 
 
 
-def _create_engine(threads):
+def _create_engine(threads, backend=None):
     global _CV_CONFIGURED
     from rapidocr import RapidOCR
     import cv2
@@ -219,22 +227,51 @@ def _create_engine(threads):
         if not _CV_CONFIGURED:
             cv2.setNumThreads(1)
             _CV_CONFIGURED = True
-    engine = RapidOCR(params=engine_params(threads))
-    if callable(getattr(type(engine), '_load_det_model', None)):
-        _sleeping_session(engine._load_det_model())
-        rec = engine._load_rec_model()
-        _sleeping_session(rec)
-        engine.text_rec = ExactTextCache(rec)
-    return engine
+    params = engine_params(threads) if backend is None else ocr_engine_params(backend, threads)
+
+    def build(parameters):
+        engine = RapidOCR(params=parameters)
+        if callable(getattr(type(engine), '_load_det_model', None)):
+            det = engine._load_det_model()
+            _sleeping_session(det)
+            rec = engine._load_rec_model()
+            _sleeping_session(rec)
+            engine.miao_providers = {'det': det.session.session.get_providers(),
+                                     'rec': rec.session.session.get_providers()}
+            engine.miao_backend = ('cuda' if any('CUDAExecutionProvider' in providers
+                                   for providers in engine.miao_providers.values()) else 'cpu')
+            engine.text_rec = ExactTextCache(rec)
+            logger.info('OCR实际模型执行器：%s', engine.miao_providers)
+        return engine
+
+    try:
+        return build(params)
+    except Exception:
+        if not params.get('EngineConfig.onnxruntime.use_cuda'):
+            raise
+        logger.warning('CUDA模型初始化失败，改用CPU重试一次', exc_info=True)
+        return build(ocr_engine_params('cpu', threads))
 
 
 class ManagedEngine:
-    def __init__(self, engine):
+    def __init__(self, engine, threads=4):
+        self.threads = threads
         self.engine = engine
         self.lock = threading.Lock()
 
     def __call__(self, *args, **kwargs):
         with self.lock:
+            return self._run(*args, **kwargs)
+
+    def _run(self, *args, **kwargs):
+        try:
+            return self.engine(*args, **kwargs)
+        except Exception:
+            if getattr(self.engine, 'miao_backend', None) != 'cuda':
+                raise
+            logger.warning('CUDA推理失败，释放该引擎并回退CPU重试本帧一次', exc_info=True)
+            self.engine = None
+            self.engine = _create_engine(self.threads, backend='cpu')
             return self.engine(*args, **kwargs)
 
     def infer(self, image, check):
@@ -242,7 +279,7 @@ class ManagedEngine:
             check()
         try:
             check()
-            return self.engine(image, use_cls=False)
+            return self._run(image, use_cls=False)
         finally:
             self.lock.release()
 
@@ -261,7 +298,7 @@ def scoped_engine(scope, threads=4):
         with _ENGINE_LOCK:
             engine = _ENGINES.get(key)
         if engine is None:
-            engine = ManagedEngine(_create_engine(threads))
+            engine = ManagedEngine(_create_engine(threads), threads)
             with _ENGINE_LOCK:
                 _ENGINES[key] = engine
         with _ENGINE_LOCK:
