@@ -238,3 +238,34 @@ class ProgressBudgetTests(unittest.TestCase):
         policy.progress(t)
         self.assertEqual(policy.failures(t),0)
         self.assertIn('用户选择',policy.reason(t))
+
+
+class DurableDeferralTests(unittest.TestCase):
+    def test_real_daily_record_reopens_without_losing_counts_or_choices(self):
+        with tempfile.TemporaryDirectory() as folder:
+            def reopen():
+                return DailyState(folder,'synthetic-reopen','uiautomator2','2026-01-01')
+            store=reopen();policy=TaskPolicy();policy.bind(store)
+            task=Task('x','browse','15s','go',(1,2,3,4),kind='browse')
+            other=replace(task,title='other')
+            store.progress('run',{'completed':7,'attempts':9})
+            policy.choose(task_identity(other),True)
+            self.assertTrue(policy.defer(task,'settlement'))
+            restored=reopen()
+            self.assertFalse(restored.recovery_warning)
+            self.assertEqual(restored.snapshot()['stats']['completed'],7)
+            again=TaskPolicy();again.bind(restored)
+            self.assertFalse(again.defer(task,'settlement'))
+            self.assertIn('用户选择',again.reason(other))
+            again.fail(task,2)
+            again.bind(reopen())
+            self.assertEqual(again.failures(task),1)
+            self.assertFalse(again.defer(task,'settlement'))
+
+    def test_malformed_deferred_values_are_rejected(self):
+        for value in ({'settlement':True},{'unknown':1},{'navigation':-1},['settlement']):
+            with self.subTest(value=value),tempfile.TemporaryDirectory() as folder:
+                store=DailyState(folder,'synthetic-invalid','uiautomator2','2026-01-01')
+                store.save_task_decisions({'a'*24:{'deferred':value}})
+                reopened=DailyState(folder,'synthetic-invalid','uiautomator2','2026-01-01')
+                self.assertTrue(reopened.recovery_warning)

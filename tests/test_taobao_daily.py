@@ -1,3 +1,4 @@
+from backend.core.execution.loop import SessionLoop
 """Daily activities reuse the existing API across phone, tablet and landscape."""
 from pathlib import Path
 from types import SimpleNamespace
@@ -1517,3 +1518,24 @@ class MaintainerSafetyTests(unittest.TestCase):
         self.assertIs(other.progress.__func__, TaskPolicy.progress)
         other.progress(task)
         self.assertTrue(other.defer(task, 'settlement'))
+
+
+class RescanPersistenceBoundaryTests(unittest.TestCase):
+    def test_unknown_scan_cannot_persist_activity_finished(self):
+        runner = make_daily_runner()
+        runner.stats.attempts = 0
+        runner.confirm_scan = Mock(return_value=runner.SCAN_UNKNOWN)
+        def one_round(*args):
+            runner.stats.attempts += 1
+            runner.daily_exhausted = True
+            return runner.stats
+        with patch.object(SessionLoop, 'run', side_effect=one_round):
+            runner.run()
+        self.assertFalse(runner.daily_exhausted)
+
+    def test_fresh_rescan_respects_existing_unavailable_reason(self):
+        runner = make_daily_runner()
+        task = Task('sample','missing app','','去完成',(1,2,3,4),kind='browse')
+        runner.tasks = Mock(return_value=[task])
+        runner.availability_reason = Mock(return_value='今日已确认不可用')
+        self.assertEqual(runner.runnable_rows(screen_of('更多金币等你赚')), [])

@@ -73,7 +73,7 @@ class RescanPolicy:
                 continue
             if self.task_policy.failures(task) >= self.config.get('max_attempts', 2):
                 continue
-            if self.task_policy.reason(task):
+            if self.task_policy.reason(task) or self.availability_reason(task):
                 continue
             rows.append(task)
         return rows
@@ -376,10 +376,9 @@ class RescanPolicy:
             verdict = self.rescan(pages, restart=restart and attempt == 0)
             if verdict != self.SCAN_UNKNOWN:
                 return verdict
-            wait = 1.0
-            logger.warning('补扫：第 %d/%d 次扫描未能确认，%.0f 秒后重试',
-                           attempt + 1, retries, wait)
-            self.pause(wait)
+            if attempt + 1 < retries:
+                logger.warning('补扫：第 %d/%d 次扫描未能确认，1秒后重试', attempt + 1, retries)
+                self.pause(1)
             pages = min(24, pages + 5)
         return verdict
 
@@ -415,10 +414,8 @@ class RescanPolicy:
         except Exception:
             logger.warning('无法调整 empty_batch_stop，按框架默认值继续', exc_info=True)
         stats, stalled, index = None, 0, 0
-        # 每一轮结束后的固定动作只有一个：**重进客户端一次，进去看一眼**。
-        # 有可执行任务就接着跑下一轮；一条都没有就直接收工。
-        # 绝不为了“再确认一次”反复退出重进——那会变成一个永远退不完的循环，
-        # 用户看到的就是“明明已经判定没有任务了，还在不停退客户端重进”。
+        # 默认在当前客户端补扫；只有明确完整扫描为空才能写入当天完成状态。
+        confirmed_empty = False
         closing = '本轮任务已处理完毕'
         while index < limit:
             if index > 0:
@@ -427,6 +424,7 @@ class RescanPolicy:
                 if verdict == self.SCAN_FOUND:
                     logger.info('补扫：重进后仍找到可执行任务，继续下一轮')
                 elif verdict == self.SCAN_EMPTY:
+                    confirmed_empty = True
                     logger.info('补扫完毕：重进后完整扫描没有可执行任务，收工')
                     closing = '本轮任务已处理完毕：重新进入列表确认没有可执行任务'
                     break
@@ -466,6 +464,7 @@ class RescanPolicy:
             if index >= limit:
                 logger.warning('补扫达到 %d 轮保险上限，停止；列表里可能还有任务', limit)
                 closing = '补扫达到轮数上限已停止；列表里可能还有任务'
+        self.daily_exhausted = confirmed_empty
         self.restore_list_state()
         self.update('finished', message=closing, current_task='', remaining=0)
         return stats
