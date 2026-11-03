@@ -9,6 +9,7 @@ from backend.core.device.screen import Screen
 from backend.core.models import Task, TextNode
 from backend.core.registry import Registry
 from backend.core.execution.session import Session
+from backend.core.execution.task_policy import task_identity
 from backend.core.execution.activity import Activity
 from backend.core.errors import NeedsAttention
 
@@ -1360,6 +1361,58 @@ class LandingCloseTests(unittest.TestCase):
                    side_effect=NeedsAttention('页面出现支付提示')):
             runner.guard(page)
         runner.dismiss_popup.assert_not_called()
+
+
+class SoftMissTests(unittest.TestCase):
+    """页面打开了、停留也够了，只是面板还没刷新：这次不算失败。
+
+    淘金币面板是 WebView，服务端入账后要一两分钟才把新数字刷出来。11-03 的真机
+    记录里，判「发现精选好物 2/6 失败」之后 7 分钟，列表上已经是 3/6；搜一搜同理。
+    旧逻辑两次这样的误判就写 exhausted，任务整天不再执行。
+    """
+
+    def runner(self):
+        runner = make_daily_runner()
+        runner.config['max_attempts'] = 2
+        runner.install_policy_hooks()
+        runner._attempt_browsed = True
+        return runner
+
+    def task(self):
+        return Task('x', '发现精选好物', '', '去完成', (100, 100, 200, 200), kind='browse')
+
+    def miss(self, runner, task):
+        runner._task_budget_counted = False
+        return runner.record_task_failure(task)
+
+    def test_first_misses_do_not_consume_the_daily_quota(self):
+        runner, task = self.runner(), self.task()
+        for _ in range(runner.SOFT_MISS_LIMIT):
+            self.miss(runner, task)
+        self.assertEqual(runner.task_policy.failures(task), 0)
+        self.assertEqual(runner.task_policy.reason(task), '')
+
+    def test_a_streak_beyond_the_limit_counts_as_a_real_failure(self):
+        runner, task = self.runner(), self.task()
+        for _ in range(runner.SOFT_MISS_LIMIT + 1):
+            self.miss(runner, task)
+        self.assertEqual(runner.task_policy.failures(task), 1)
+
+    def test_verified_progress_clears_the_miss_streak(self):
+        runner, task = self.runner(), self.task()
+        self.miss(runner, task)
+        self.miss(runner, task)
+        runner.task_policy.progress(task)
+        self.assertNotIn('soft', runner.task_policy.entries.get(task_identity(task), {}))
+
+    def test_progress_after_a_miss_no_longer_counts_towards_the_limit(self):
+        runner, task = self.runner(), self.task()
+        for _ in range(runner.SOFT_MISS_LIMIT):
+            self.miss(runner, task)
+        runner.task_policy.progress(task)
+        for _ in range(runner.SOFT_MISS_LIMIT):
+            self.miss(runner, task)
+        self.assertEqual(runner.task_policy.failures(task), 0)
 
 
 class NavigationFailureBudgetTests(unittest.TestCase):

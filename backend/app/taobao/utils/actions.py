@@ -6,6 +6,7 @@ import re
 from contextlib import nullcontext
 from backend.core.models import normalize
 from backend.core.errors import TaskUnavailable
+from backend.core.execution.task_policy import task_identity
 logger = logging.getLogger('backend.execution')
 
 class TaskActions:
@@ -60,6 +61,9 @@ class TaskActions:
         self._task_page = False
         # 本次失败是不是“没打开页面”造成的，由 record_task_failure 归因用。
         self._attempt_nav_failure = False
+        # 这次到底有没有真的浏览过：只有真浏览过、又没看到进度涨，才算“软失败”。
+        self._attempt_browsed = False
+        self.install_policy_hooks()
         self.update('opening', current_task=task.title, message='打开任务页面', remaining=0)
         logger.info('执行 %s (%d/%d)，类型 %s', task.title, task.current, task.total, task.kind)
         self.control.check()
@@ -143,22 +147,63 @@ class TaskActions:
             if reason:
                 raise TaskUnavailable(reason)
             return self.recover(), False, False
+        self._attempt_browsed = True
         return self.browse_destination(task, screen)
 
-    def record_task_failure(self, task):
-        """导航层失败只耗“本轮次数”，不扣当日额度。
+    # 淘金币面板是 WebView：服务端入账后，页面上还是旧数字，要一两分钟才刷新。
+    # 真机证据（11-03）：10:12 判「发现精选好物 2/6 失败」，10:19 列表上已经是 3/6；
+    # 搜一搜 08:58 判失败的 4/6，09:13 已经变成 5/6。这些“失败”其实都做成了。
+    # 同一条任务连续两次这样的误判就会写 exhausted，整天不再执行——用户看到的就是
+    # 「已跳过：今日失败已达上限」，而他自己点一下执行又能跑。
+    SOFT_MISS_LIMIT = 3
 
-        真正的失败是「页面打开了、进度没动」。而「点了去完成、但没确认离开清单」
-        属于导航层问题——落地页被关掉、跳转没确认、页面加载慢——跟这个任务能不能
-        做没有关系。拿当日额度去锁它，等于让一次导航抖动把这个任务整天废掉：
-        拍立淘逛感兴趣的宝贝就是这样被锁在 2/5，剩下的 3 次再也不执行。
+    def install_policy_hooks(self):
+        """核验成功时把“软失败”计数清零。
 
-        所以这类失败只在本轮内计数（上限 max_attempts），超过才按正常额度扣，
-        免得一个真的打不开的任务把整轮拖成死循环。
+        分发包里跑的是旧框架，改不了 TaskPolicy 的源码，只能在实例上盖一层：
+        它的 ``progress()`` 只清 failures/exhausted/browse_once_attempted，
+        我们自己的 ``soft`` 字段要自己收尾，否则一天里攒够 SOFT_MISS_LIMIT 次
+        就会把后面本来能做的尝试按真失败扣掉。
         """
+        policy = getattr(self, 'task_policy', None)
+        if policy is None or getattr(policy, '_miao_hooked', False):
+            return
+        original_progress = getattr(policy, 'progress', None)
+
+        def progress(task):
+            result = original_progress(task) if callable(original_progress) else None
+            entries = getattr(policy, 'entries', None)
+            if isinstance(entries, dict):
+                item = entries.get(task_identity(task))
+                if isinstance(item, dict) and item.pop('soft', None) is not None:
+                    save = getattr(policy, '_save', None)
+                    if callable(save):
+                        save()
+            return result
+
+        try:
+            policy.progress = progress
+            policy._miao_hooked = True
+        except Exception:
+            logger.warning('任务策略钩子安装失败，按框架默认判断继续', exc_info=True)
+
+    def record_task_failure(self, task):
+        """把“没做成”分成三类，只有真失败才扣当日额度。
+
+        1) 导航层失败：点了去完成但没确认离开清单（落地页被关、跳转没确认）。
+           跟任务本身能不能做无关，见 can_auto_dismiss 的说明。
+        2) 软失败：页面打开了、停留时间也够了，回来核对却发现进度没涨。
+           多半是面板还没刷新（上面真机证据），属于“其实做成了但没看到”。
+        3) 真失败：进度、金币余额、到店证据全都对不上——这才该扣额度。
+
+        1、2 都不写 exhausted：导航层失败本轮限额内放过；软失败只累加一个当日
+        计数，超过 SOFT_MISS_LIMIT 次才按真失败算。这样一次误判不会把任务整天
+        锁死，而真的做不动的任务仍然会被额度挡住。
+        """
+        if not getattr(self, '_attempt_nav_failure', False) and getattr(self, '_attempt_browsed', False):
+            return self.record_soft_miss(task)
         if not getattr(self, '_attempt_nav_failure', False):
             return super().record_task_failure(task)
-        from backend.core.execution.task_policy import task_identity
         budget = getattr(self, '_nav_failures', None)
         if budget is None:
             budget = self._nav_failures = {}
@@ -171,6 +216,25 @@ class TaskActions:
         self._task_budget_counted = True
         logger.info('导航层失败不扣当日额度：%s（本轮第 %d 次）', task.title, budget[identity])
         return self.task_policy.failures(task)
+
+    def record_soft_miss(self, task):
+        """页面打开了、也浏览够了，就是面板上还没看到进度：先当“没看到”，别当失败。"""
+        policy = self.task_policy
+        entries = getattr(policy, 'entries', None)
+        item = entries.setdefault(task_identity(task), {}) if isinstance(entries, dict) else None
+        soft = int(item.get('soft', 0)) + 1 if isinstance(item, dict) else self.SOFT_MISS_LIMIT + 1
+        if isinstance(item, dict):
+            item['soft'] = soft
+            save = getattr(policy, '_save', None)
+            if callable(save):
+                save()
+        if soft > self.SOFT_MISS_LIMIT:
+            logger.info('连续 %d 次没在面板上看到进度，按当日额度扣除：%s', soft - 1, task.title)
+            return super().record_task_failure(task)
+        self._task_budget_counted = True
+        logger.info('这次不算失败：%s 的进度还没在面板上刷新（今日第 %d 次），继续做别的任务',
+                    task.title, soft)
+        return policy.failures(task)
 
     def page_config(self):
         page = getattr(self, 'page', None)
