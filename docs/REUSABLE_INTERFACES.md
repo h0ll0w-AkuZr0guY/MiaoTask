@@ -256,6 +256,12 @@ Session(device, config=None, control=None, emit=None, on_image=None,
 
 `daily_page.landing_markers` 描述活动内容，不能只使用同名首页图标的短标签。红包签到以“红包签到·领现金 / 累计签到奖励 / 再攒”等为落地证据；`entry_labels` 仍保留首页“红包签到”。`main_view_markers` 缺失时的顶部恢复还必须排除已确认的淘宝首页，即使旧活动配置使用了宽泛标记，也先点击首页入口，不在首页商品流反复滚动。该分支不增加读屏次数，仍保留活动内最多四次恢复上限。
 
+`daily_page.preferred_entries` 可声明多个同时可见入口的优先级，未配置时保留原生来源与控件尺寸排序。淘金币将“赚更多金币 / 去赚金币”排在切换日常版前；同标签仍优先完整原生控件。在已确认的活动落地页，OCR菜单文案缺失时可复用同帧、同尺寸、安全区域内的原生任务菜单，不把首页图标当作任务菜单。
+
+推广与任务面板重叠时，`dismiss_overlay` 优先取已配置推广文案下方、中央区域内的关闭控件；不能确认前景关闭时只返回一层再观察，不点击可读但被覆盖的任务面板X或购买按钮。
+
+月月赚`EntryPolicy`通过`origin`或`ApplicationProfile.package_for(device_type)`唤起所选实例，不访问不存在的旧package属性。首页优先点击搜索框；搜索页按原生EditText/TextInput类型、当前屏幕范围及`search_input_ids`配置确认全局搜索，允许提示词轮换，与任务关键词是否出现无关；多输入框歧义不填写。内嵌小程序的局部搜索先有界返回，输入框本身不作为搜索结果。普通任务沿用设备原生填字接口，不安装输入法。官方结果标题与同排动作确认后才进入，列表仍须通过活动身份和任务动作判定。
+
 ## 7. 今日队列与持久化
 
 实现：[task_policy.py](../backend/core/execution/task_policy.py)、[retry.py](../backend/core/execution/retry.py)、[daily_state.py](../backend/core/storage/daily_state.py)、[namespace.py](../backend/core/storage/namespace.py)。

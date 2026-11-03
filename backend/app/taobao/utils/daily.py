@@ -464,14 +464,19 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
                    and len(normalize(n.text)) < 90 for n in nodes)
 
     def entry_node(self, screen, labels):
-        matches = [n for n in screen.nodes for label in labels
+        preferred = self.page.get('preferred_entries', [])
+        matches = [(preferred.index(label) if label in preferred else len(preferred), n)
+                   for label in labels for n in screen.nodes
                    if re.fullmatch(r'(?:去|进入|回)?'+re.escape(label)+r'[>〉按钮]*', normalize(n.text))
                    and 0 <= n.bounds[0] < n.bounds[2] <= screen.width
                    and 0 <= n.bounds[1] < n.bounds[3] <= screen.height
                    and (screen.geometry is None or screen.geometry.contains(*n.center))
                    and 0 < n.bounds[2]-n.bounds[0] < screen.width*.8
                    and 0 < n.bounds[3]-n.bounds[1] < screen.height*.2]
-        return min(matches, key=lambda n: (n.source != 'ui', -(n.bounds[3]-n.bounds[1]))) if matches else None
+        # Explicit preferences express navigation intent. A tall vertical
+        # "日常版" label must not outrank the direct "去赚金币" task entrance.
+        return min(matches, key=lambda item: (item[0], item[1].source != 'ui',
+                   -(item[1].bounds[3]-item[1].bounds[1])))[1] if matches else None
 
     def official_activity_entry(self, screen):
         if screen.find(r'^历史搜索$|^搜索发现$|^猜你想搜$'):
@@ -1100,9 +1105,22 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
             return None
 
     def dismiss_overlay(self, screen):
-        close = next((n for n in screen.nodes if re.fullmatch(
+        closers = [n for n in screen.nodes if re.fullmatch(
             r'关闭|关闭按钮|取消|以后再说|暂不|下次再说|我知道了|×|✕|✖|[Xx]', normalize(n.text))
-            and not self.is_search_input_node(screen, n)), None)
+            and not self.is_search_input_node(screen, n)
+            and 0 < n.bounds[3]-n.bounds[1] < screen.height*.12]
+        promotion = self.promotion_visible(screen)
+        markers = [n for n in screen.nodes if self.page.get('promotion_markers')
+                   and re.search(self.page['promotion_markers'], normalize(n.text))]
+        if promotion and markers:
+            # The task sheet's close icon can remain readable behind a modal.
+            # A central dismissal below the promotion belongs to the overlay;
+            # otherwise Back dismisses one layer without tapping a hidden X.
+            anchor = min(n.center[1] for n in markers)
+            closers = [n for n in closers if n.center[1] > anchor
+                       and abs(n.center[0]-screen.width*.5) < screen.width*.25]
+        close = (min(closers, key=lambda n: abs(n.center[0]-screen.width*.5))
+                 if promotion and closers else next(iter(closers),None))
         # Never accept a generic confirm/open/withdrawal action. Authentication
         # was checked by guard before looking for a dismiss control.
         if (close and normalize(close.text) in ('X','×','✕','✖')
@@ -1112,7 +1130,7 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
             self.click(close)
             self.pause(.4)
             return True
-        if self.promotion_visible(screen):
+        if promotion:
             # Decorative close icons may not be readable. Dismiss the known
             # promotion with Back rather than clicking its coupon/withdraw CTA.
             self.control.check()
@@ -1418,6 +1436,11 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
                     screen = self.read_page(visual=True)
                     continue
                 node = self.entry_node(screen, self.config['task_entry_labels'])
+                if (node is None and native_frame is not None and not self.homepage_visible(screen)
+                        and (native_frame.width,native_frame.height)==(screen.width,screen.height)):
+                    native = self.entry_node(native_frame, self.config['task_entry_labels'])
+                    if native and (screen.geometry is None or screen.geometry.contains(*native.center)):
+                        node = native
             if (node is None and auto_open and screen.package == package
                     and (self.homepage_visible(screen) or screen.find('全部频道', exact=True))
                     and not self.search_results_ready(screen)

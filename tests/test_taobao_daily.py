@@ -152,6 +152,49 @@ class TaobaoDailyTests(unittest.TestCase):
         caption=TextNode('领淘金币',(300,350,450,390))
         self.assertIs(runner.entry_node(Screen([caption,outer],1800,2880,'com.taobao.taobao'),['领淘金币']),outer)
 
+    def test_coin_task_entry_priority_beats_taller_version_switch(self):
+        runner = self.runner()
+        direct = TextNode('去赚金币',(30,1300,270,1370))
+        version = TextNode('日常版>',(1360,600,1430,810))
+        screen = Screen([version,direct],1440,3200,'com.taobao.taobao','ocr')
+        self.assertIs(runner.entry_node(screen,runner.config['task_entry_labels']),direct)
+
+    def test_activity_menu_uses_current_native_field_when_painted_caption_is_split(self):
+        runner = self.runner('farm')
+        menu = TextNode('集肥料',(1000,2300,1200,2440),'ui')
+        native = Screen([menu],1440,3200,'com.taobao.taobao','ui')
+        painted = Screen([TextNode('芭芭农场|免费领水果',(180,180,900,250)),
+                          TextNode('集',(1000,2390,1060,2440)),
+                          TextNode('肥料',(1060,2390,1200,2440))],1440,3200,native.package,'ocr')
+        panel = Screen([TextNode('肥料明细',(70,600,400,700))],1440,3200,native.package,'ocr')
+        runner.device.current_app = Mock(return_value={'package':native.package})
+        runner.read_page = Mock(side_effect=[native,painted,panel])
+        runner.click = Mock(); runner.control.wait = Mock()
+        self.assertIs(runner.navigate(auto_open=True),panel)
+        runner.click.assert_called_once_with(menu)
+
+    def test_farm_promotion_dismissal_does_not_close_task_sheet_behind_it(self):
+        runner = self.runner('farm')
+        behind = TextNode('X',(1320,650,1400,740))
+        front = TextNode('X',(670,2400,770,2500))
+        screen = Screen([TextNode('肥料明细',(50,650,400,730)),behind,
+                         TextNode('品质农场上新季',(350,800,1100,930)),front],
+                        1440,3200,'com.taobao.taobao','ocr')
+        runner.click = Mock(); runner.control.wait = Mock(); runner.device.go_back = Mock()
+        self.assertTrue(runner.dismiss_overlay(screen))
+        runner.click.assert_called_once_with(front)
+        runner.device.go_back.assert_not_called()
+        screen.nodes.remove(front); runner.click.reset_mock()
+        self.assertTrue(runner.dismiss_overlay(screen))
+        runner.click.assert_not_called()
+        runner.device.go_back.assert_called_once()
+        screen.nodes[2] = TextNode('明日7点后记得来领',(350,800,1100,930))
+        screen.nodes.append(front)
+        self.assertFalse(runner.is_task_list(screen.nodes))
+        runner.click.reset_mock()
+        self.assertTrue(runner.dismiss_overlay(screen))
+        runner.click.assert_called_once_with(front)
+
     def test_confirmed_home_uses_native_icon_when_ocr_merges_adjacent_captions(self):
         runner=self.runner('farm')
         icon=TextNode('芭芭农场',(1100,440,1390,680),'ui')

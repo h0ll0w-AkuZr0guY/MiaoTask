@@ -12,6 +12,7 @@
     "日常版"
   ],
   "daily_page": {
+    "preferred_entries": ["赚更多金币", "去赚金币"],
     "reset_list_scroll": true,
     "list_markers": "赚金币抵钱|今日累计奖励|金币任务|今日速赚|更多金币等你赚|更多专享福利|收起更多任务",
     "landing_markers": "淘金币首页|升级赛车拿钱|赚更多金币|日常版",

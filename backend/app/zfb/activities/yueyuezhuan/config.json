@@ -3,6 +3,7 @@
   "ocr": false,
   "search_keyword": "",
   "task_search_keyword": "月月赚",
+  "search_input_ids": ["search_input_box"],
   "enabled_task_kinds": [
     "browse"
   ],

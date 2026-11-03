@@ -2066,13 +2066,49 @@ class YueYueZhuanEntryTests(unittest.TestCase):
     def frame(self, nodes):
         return Screen(nodes, 1000, 2000, 'com.eg.android.AlipayGphone')
 
-    def test_search_labels_and_exact_preference(self):
+    def test_search_labels_prefer_field_over_homepage_submit_action(self):
         p = self.policy()
         for label in ('搜索框', '搜索得红包', '搜索'):
             entry = node(label, 100, 100, 700, 80)
             self.assertIs(p._search_entry_node(self.frame([entry])), entry)
         exact = node('搜索', 850, 160, 100, 60)
-        self.assertIs(p._search_entry_node(self.frame([node('搜索框', 100, 100), exact])), exact)
+        field = node('搜索框',100,100)
+        self.assertIs(p._search_entry_node(self.frame([field, exact])),field)
+
+    def test_monthly_native_search_accepts_rotating_hint_without_search_caption(self):
+        p = self.policy()
+        frame = self.frame([node('搜索历史',30,300),node('搜索',850,100,100,60)])
+        frame.tree = {'children':[{'type':'android.widget.EditText',
+                                  'id':'org.example:id/search_input_box',
+                                  'text':'限时优惠','bounds':'[180,100][820,200]'}]}
+        self.assertTrue(p._search_page_ready(frame))
+        self.assertEqual(p._search_box(frame).bounds,(180,100,820,200))
+        frame.tree['children'].append({'type':'android.widget.EditText',
+                                      'id':'org.example:id/search_input_box','bounds':'[180,100][820,200]'})
+        self.assertFalse(p._search_page_ready(frame))
+
+    def test_monthly_does_not_use_an_embedded_app_search_or_click_its_input_as_result(self):
+        p = self.policy()
+        frame = self.frame([node('搜索历史',30,300),node('月月赚',100,250,550,70)])
+        frame.tree = {'children':[{'type':'android.widget.EditText','text':'请输入运单号',
+                                  'bounds':'[100,200][800,300]'}]}
+        self.assertFalse(p._search_page_ready(frame))
+        frame.tree['children'][0]['id'] = 'org.example:id/search_input_box'
+        self.assertIsNone(p._search_result(frame))
+
+    def test_monthly_pipeline_launch_uses_profile_contract_and_selected_instance(self):
+        from backend.app.zfb.manifest import PROFILE
+        for selected in (None,'com.eg.android.AlipayGphone.clone'):
+            with self.subTest(selected=selected):
+                p = self.policy()
+                p.application = PROFILE
+                p.origin = selected
+                p.device.device_type = 'uiautomator2'
+                other = Screen([],1000,2000,'com.taobao.taobao')
+                home = self.frame([node('我的',800,1800)])
+                p.read = Mock(side_effect=[other,home])
+                self.assertIs(p._bring_alipay_front(),home)
+                p.device.start_app.assert_called_once_with(selected or PROFILE.package_for('uiautomator2'))
 
     def test_failed_home_navigation_does_not_type(self):
         p = self.policy()
