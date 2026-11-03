@@ -97,6 +97,11 @@ def validate(event, base_files, head_files, changed, root=ROOT, *, metadata_advi
 
 
 def main():
+    # Windows runners may expose a legacy output code page even when Git
+    # data is UTF-8. Advisory text must not turn a healthy PR into a failure.
+    import sys
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--event', type=Path, required=True)
     parser.add_argument('--advisory-metadata', action='store_true',
