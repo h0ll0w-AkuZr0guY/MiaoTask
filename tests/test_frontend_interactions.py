@@ -53,7 +53,9 @@ class PreviewSiteTests(unittest.TestCase):
             self.assertNotIn('src="/', html)
             self.assertIn('href="/api/report"', html)
             self.assertEqual(json.loads((site / 'demo/catalog.json').read_text(encoding='utf-8')), result)
-            self.assertEqual(len(result['catalog']), 2)
+            from backend.core.registry import Registry
+            expected = {app['id'] for app in Registry(ROOT / 'backend/app').discover().catalog()}
+            self.assertEqual({app['id'] for app in result['catalog']}, expected)
             self.assertIn('demo/phone.svg', (site / 'js/api.js').read_text(encoding='utf-8'))
         self.assertEqual(before, [p.read_bytes() for p in sources])
 
