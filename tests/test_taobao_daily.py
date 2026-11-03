@@ -1414,6 +1414,19 @@ class SoftMissTests(unittest.TestCase):
             self.miss(runner, task)
         self.assertEqual(runner.task_policy.failures(task), 0)
 
+    def test_a_real_browse_does_not_set_the_once_only_lock(self):
+        """软失败之后再套「今日只试一次」，等于换了句话把任务按住。"""
+        runner, task = self.runner(), self.task()
+        runner.task_policy.mark_browse_once(task)
+        self.assertEqual(runner.task_policy.reason(task), '')
+
+    def test_the_once_only_lock_still_applies_when_nothing_was_browsed(self):
+        runner = self.runner()
+        runner._attempt_browsed = False
+        task = self.task()
+        runner.task_policy.mark_browse_once(task)
+        self.assertIn('今日已尝试一次', runner.task_policy.reason(task))
+
 
 class NavigationFailureBudgetTests(unittest.TestCase):
     """“点了去完成但没确认离开清单”不该扣当日额度。

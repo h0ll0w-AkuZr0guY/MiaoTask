@@ -169,6 +169,7 @@ class TaskActions:
         if policy is None or getattr(policy, '_miao_hooked', False):
             return
         original_progress = getattr(policy, 'progress', None)
+        original_mark = getattr(policy, 'mark_browse_once', None)
 
         def progress(task):
             result = original_progress(task) if callable(original_progress) else None
@@ -181,8 +182,22 @@ class TaskActions:
                         save()
             return result
 
+        def mark_browse_once(task):
+            """真的浏览过、只是没在面板上看到进度时，别再套「今日只试一次」。
+
+            框架在 verify 失败后无条件给“无明确浏览时长”的任务上这把锁，软失败
+            也算一次——10:47 好物沉浸看 5/6 就是这样又被打成“已跳过”的。重复次数
+            由软失败计数管着（超过 SOFT_MISS_LIMIT 才按真失败扣），不需要再叠一层。
+            """
+            if getattr(self, '_attempt_browsed', False):
+                logger.info('这次已经真的浏览过，不锁「今日只试一次」：%s', task.title)
+                return None
+            return original_mark(task) if callable(original_mark) else None
+
         try:
             policy.progress = progress
+            if callable(original_mark):
+                policy.mark_browse_once = mark_browse_once
             policy._miao_hooked = True
         except Exception:
             logger.warning('任务策略钩子安装失败，按框架默认判断继续', exc_info=True)
