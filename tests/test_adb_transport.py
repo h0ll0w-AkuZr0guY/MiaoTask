@@ -1,3 +1,4 @@
+import io
 import os
 import socket
 import subprocess
@@ -7,6 +8,8 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+
+from PIL import Image
 
 from backend.core.device import discovery as transport
 from backend.core.device.adapter import DeviceAdapter
@@ -294,8 +297,6 @@ class SwipeFallbackTests(unittest.TestCase):
             self.assertEqual((payload['method'],payload['params']),('takeScreenshot',[1,45]))
 
     def test_background_capture_uses_separate_read_only_command_and_rejects_other_display(self):
-        from PIL import Image
-        import io
         from types import SimpleNamespace
         from unittest.mock import patch
         from backend.core.device.instances import InstanceMismatch
@@ -310,7 +311,9 @@ class SwipeFallbackTests(unittest.TestCase):
                 patch('backend.core.device.displays.focused_display', return_value=0) as display, \
                 patch('backend.core.device.discovery.resolve_adb_binary', return_value='adb.exe'), \
                 patch('subprocess.run', return_value=SimpleNamespace(returncode=0, stdout=output.getvalue())) as run:
-            read.return_value.return_value = SimpleNamespace(exit_code=0, output='mCurrentFocus=Window{abc u999 org.example.shop/.Main}')
+            read.return_value.side_effect = lambda args: SimpleNamespace(exit_code=0, output=(
+                'mDisplayId=0\n mPrimaryDisplayDevice=screen(local:987654321)' if args == ['dumpsys', 'display']
+                else 'mCurrentFocus=Window{abc u999 org.example.shop/.Main}'))
             foreground, image = device.capture_observation(compressed=True)
             self.assertEqual(foreground['user_id'], 999)
             self.assertEqual(image.size, (100, 200))
@@ -318,7 +321,7 @@ class SwipeFallbackTests(unittest.TestCase):
             run.assert_not_called()
             device.capture_observation()
             self.assertEqual(run.call_args.kwargs['timeout'], 8)
-            self.assertEqual(run.call_args.args[0][-3:], ['exec-out','screencap','-p'])
+            self.assertEqual(run.call_args.args[0][-5:], ['exec-out','screencap','-p','-d','987654321'])
             display.return_value = 2
             run.reset_mock()
             with self.assertRaises(InstanceMismatch):
@@ -326,6 +329,75 @@ class SwipeFallbackTests(unittest.TestCase):
             run.assert_not_called()
         device._display_id = 2
         self.assertIsNone(device.capture_observation())
+
+    def test_png_capture_selects_primary_physical_display_before_decoding(self):
+        metadata = ('mDisplayId=7\n mPrimaryDisplayDevice=external(local:123456789)\n'
+                    'mDisplayId=0\n mPrimaryDisplayDevice=builtin(local:987654321)\n')
+        output = io.BytesIO()
+        Image.new('RGB', (100, 200), 'white').save(output, format='PNG')
+        png = output.getvalue()
+
+        def capture(command, *args, **kwargs):
+            # Android can prefix a warning and choose an arbitrary display when
+            # screencap is not given an explicit physical display ID.
+            prefix = b'' if command[-2:] == ['-d', '987654321'] else b'[Warning] Multiple displays were found\n'
+            return SimpleNamespace(returncode=0, stdout=prefix + png)
+
+        for owned in (False, True):
+            with self.subTest(cancellable_transport=owned):
+                device = self.focus_adapter()
+                device._device = Mock()
+                device._capture_focus = Mock(return_value=({'package': 'org.example.shop'}, 'synthetic focus'))
+                owner = Mock() if owned else None
+                if owner is not None:
+                    owner.run.side_effect = capture
+                with patch('backend.core.device.read_shell.AdbReadShell') as read, \
+                        patch('backend.core.device.discovery.resolve_adb_binary', return_value='adb.exe'), \
+                        patch('subprocess.run', side_effect=capture) as run:
+                    read.return_value.return_value = SimpleNamespace(exit_code=0, output=metadata)
+                    info, image = device.capture_observation(transport=owner)
+                    self.assertEqual(image.size, (100, 200))
+                    self.assertEqual(info['window_dump'], 'synthetic focus')
+                    read.assert_called_once_with(device.serial, prefer_socket=True, timeout=2, budget=2, transport=owner)
+                    read.return_value.assert_called_once_with(['dumpsys', 'display'])
+                    self.assertEqual(device._device.mock_calls, [])
+                    device._capture_jpeg.assert_not_called()
+                    device._capture_focus.assert_called_once_with(owner)
+                    if owner is not None:
+                        self.assertEqual(owner.run.call_args.args[1], 8)
+                        run.assert_not_called()
+                    else:
+                        self.assertEqual(run.call_args.kwargs['timeout'], 8)
+
+    def test_png_capture_rejects_missing_or_failed_primary_mapping_without_capture(self):
+        results = [SimpleNamespace(exit_code=0, output=''),
+                   SimpleNamespace(exit_code=0, output='mDisplayId=7\n mPrimaryDisplayDevice=external(local:123456789)'),
+                   SimpleNamespace(exit_code=1, output='mDisplayId=0\n mPrimaryDisplayDevice=builtin(local:987654321)')]
+        for metadata in results:
+            with self.subTest(metadata=metadata):
+                device = self.focus_adapter()
+                device._capture_focus = Mock(return_value=({}, 'synthetic focus'))
+                owner = Mock()
+                with patch('backend.core.device.read_shell.AdbReadShell') as read, patch('subprocess.run') as run:
+                    read.return_value.return_value = metadata
+                    with self.assertRaises(RuntimeError):
+                        device.capture_observation(transport=owner)
+                    owner.run.assert_not_called()
+                    run.assert_not_called()
+
+    def test_png_mapping_propagates_stop_and_timeout_without_capture(self):
+        from backend.core.errors import Stopped
+        for error in (Stopped(), TimeoutError('synthetic mapping timeout')):
+            with self.subTest(error=type(error).__name__):
+                device = self.focus_adapter()
+                device._capture_focus = Mock(return_value=({}, 'synthetic focus'))
+                owner = Mock()
+                with patch('backend.core.device.read_shell.AdbReadShell') as read, patch('subprocess.run') as run:
+                    read.return_value.side_effect = error
+                    with self.assertRaises(type(error)):
+                        device.capture_observation(transport=owner)
+                    owner.run.assert_not_called()
+                    run.assert_not_called()
 
     def focus_adapter(self):
         device = DeviceAdapter.__new__(DeviceAdapter)

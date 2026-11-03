@@ -488,6 +488,8 @@ controller.dispatch('run', {'auto_open': True})
 | `TaskActions.wait_for_browse(task, screen, cross, seconds)` | 首轮无中途观察；CPU首轮到时返回核验，retry_needed为真时启用停1秒检查及补滑。实际CUDA同应用browse/search首轮末尾也检查；均由browse_recheck_rounds约束补滑次数 |
 | `TaskActions.browse_completed(screen)` | 只接受明确完成/到账证据；正数倒计时优先，不能替代返回列表的最终进度核验 |
 
+`capture_observation` 的未压缩 PNG 路径每次通过有界只读 `dumpsys display` 查询，将逻辑主屏 0 映射到物理采集 ID，并显式传给 `screencap -d`，避免多屏默认选择与警告文字污染图片流。查询最多2秒，沿用当前 `transport` 的取消通道；查询失败或映射缺失时停止采集，不猜测显示屏、不回退默认屏幕。JPEG 和非主屏截图路径不变。
+
 `browse_recheck_rounds` 默认3，范围0～10，表示最多额外补滑几次（CPU失败后的第二轮，或实际CUDA首轮末尾检查）；第二轮基础时长后仍有一次初始检查。`max_task_seconds` 限定当前浏览与补滑窗口，截图/原生传输另有有界超时。失败预算继续按当天设备、活动与实例持久化；TaskPolicy.progress只在真实进度通过核验后清除失败连击，之后恢复首轮快速路径。
 
 `DeviceIO.own(cancel)` 在退出时注销资源；若主动停止导致正在读取的socket关闭并抛出传输异常，则统一抛出 `Stopped`，不进入任务失败与重启恢复。未停止时保留原始网络错误，便于诊断。已移除旧观察链的阶段状态字段；调用者不再发布空的 `observation_status`，耗时与来源仍从 `observation_metrics` 读取。

@@ -556,8 +556,17 @@ class DeviceAdapter:
             raw = self._capture_jpeg(quality, transport=transport) if transport else self._capture_jpeg(quality)
         else:
             from backend.core.device.discovery import resolve_adb_binary
+            from backend.core.device.displays import capture_display
+            from backend.core.device.read_shell import AdbReadShell
             import subprocess
-            command = [resolve_adb_binary(), '-s', self.serial, 'exec-out', 'screencap', '-p']
+            # screencap's implicit display can emit a warning into the PNG
+            # stream and is not guaranteed to be the logical primary display.
+            displays = AdbReadShell(self.serial, prefer_socket=True, timeout=2, budget=2,
+                                   transport=transport)(['dumpsys', 'display'])
+            if displays.exit_code != 0:
+                raise RuntimeError('无法读取主显示屏映射，已停止截图')
+            capture_id = capture_display(displays.output, 0)
+            command = [resolve_adb_binary(), '-s', self.serial, 'exec-out', 'screencap', '-p', '-d', capture_id]
             result = (transport.run(command, 8) if transport else subprocess.run(command,
                                     capture_output=True, timeout=8,
                                     creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)))
