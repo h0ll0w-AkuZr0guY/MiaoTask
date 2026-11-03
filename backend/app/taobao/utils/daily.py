@@ -995,17 +995,18 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
         return min(nodes, key=lambda n: n.center[1]) if nodes else None
 
     def handle_search(self, screen, query=None, activity_search=False):
+        self.check_search_context(screen)
         # Daily rewards may open a direct timed product grid with no search
         # form. Preserve that activity-specific landing contract.
-        if not activity_search and self.search_results_ready(screen):
+        _, native_buttons = self.search_controls(screen.tree)
+        search_form = self._submit_buttons(screen, native_buttons)
+        if not activity_search and not search_form and self.search_results_ready(screen):
             return True
         voice = self.page.get('voice_search_markers')
         task = self._active_task
         if not (voice and task is not None and re.search(voice, task.title)):
             return super().handle_search(screen, query, activity_search)
         logger = logging.getLogger('backend.execution')
-        if self.search_results_ready(screen):
-            return True
         # 语音搜索不要求真的说话：页面上任意一个分类点一下就进结果页，
         # 直接找输入框只会一路报“没有可确认的输入框”。
         chip = self.voice_chip(screen)
@@ -1037,12 +1038,19 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
             raise NeedsAttention('搜索输入前页面已离开所选应用，已停止输入')
         if not (screen.find(r'^历史搜索$|^搜索发现$|^搜索有福利$|^猜你想搜$') and self._submit_buttons(screen)):
             raise NeedsAttention('无法重新确认搜索输入框，已停止输入')
+        # Focusing the field can resize/rebuild its native node. Never use the
+        # old page's edit rectangle when a current native field is available.
+        edits, _ = self.search_controls(self.search_tree())
+        current_edit = self.search_edit(screen, edits)
+        if current_edit is not None:
+            edit = current_edit
         box = bounds_of(edit.get('bounds', edit.get('rect')))
         if not (0 <= box[0] < box[2] <= screen.width and 0 <= box[1] < box[3] <= screen.height*.3):
             raise NeedsAttention('搜索输入框位置无法确认，已停止输入')
         self.click(TextNode('',box))
         self.pause(.15)
         self.control.check()
+        self.check_search_context(screen, live=True)
         ascii_input = getattr(self.device,'input_ascii',None)
         if (self.config.get('task_search_keywords') and not re.fullmatch(r'[0-9]{1,32}',query)
                 and edit.get('source') != 'ocr'

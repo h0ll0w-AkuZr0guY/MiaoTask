@@ -10,6 +10,7 @@ import re
 from contextlib import contextmanager, nullcontext
 from functools import wraps
 import shlex
+import subprocess
 import tempfile
 import threading
 import time
@@ -478,6 +479,69 @@ class DeviceAdapter:
             transport.cancel()
             self._operation_io = self._run_control = None
 
+    def _capture_focus(self, transport=None):
+        """Wait briefly for window focus without weakening instance/display guards.
+
+        Window summaries can omit focus during a launch transition. Older
+        systems may expose it only in the full window dump. All queries share
+        one budget; no input or stale identity is used while focus is unknown.
+        """
+        from backend.core.device.read_shell import AdbReadShell
+        from backend.core.device.displays import focused_display
+        read = AdbReadShell(self.serial, prefer_socket=getattr(self, '_bounded_capture', False),
+                            timeout=2, budget=5, transport=transport)
+        deadline = time.monotonic() + 5
+        control = getattr(self, '_run_control', None)
+        reason = '前台焦点暂缺'
+        observations = []
+        for round_no in range(3):
+            if control is not None:
+                control.check()
+            for command in ('displays', 'windows'):
+                if time.monotonic() >= deadline:
+                    break
+                try:
+                    result = read(['dumpsys', 'window', command])
+                except (OSError, TimeoutError, subprocess.TimeoutExpired) as exc:
+                    if control is not None:
+                        control.check()
+                    reason = '窗口元数据读取超时或断流'
+                    observations.append(dict(query=command, error=type(exc).__name__))
+                    continue
+                if (result.exit_code != 0 or not isinstance(result.output, str)
+                        or not result.output.strip() or re.search(
+                            r'SecurityException|Permission Denial|(?:^|\n)\s*(?:Error:|Exception)', result.output)):
+                    reason = '窗口元数据查询未成功'
+                    observations.append(dict(query=command, error='invalid-result'))
+                    continue
+                display = focused_display(result.output)
+                info = parse_foreground(result.output)
+                observations.append(dict(query=command, display=display, focus_found=bool(info)))
+                if display != 0:
+                    raise InstanceMismatch('截图目标已切换至非主显示屏，已停止操作；请确认当前窗口')
+                if info:
+                    if getattr(self, '_instance_guard_active', False):
+                        self.check_instance(info)
+                    if control is not None:
+                        control.check()
+                    if round_no or command != 'displays':
+                        logger.debug('截图前台焦点已重新核定（第%d轮，%s）', round_no + 1, command)
+                    return info, result.output
+            if round_no < 2 and time.monotonic() < deadline:
+                delay = min(.15 * (round_no + 1), max(0, deadline - time.monotonic()))
+                if control is not None:
+                    control.wait(delay)
+                elif transport is not None:
+                    transport.check()
+                    time.sleep(delay)
+                    transport.check()
+                else:
+                    time.sleep(delay)
+        error = InstanceMismatch('截图采集未能核定主显示屏及前台身份，已停止操作'
+                                 f'（{reason}；已在5秒总预算内尝试复读，未执行输入）')
+        error.capture_diagnostics = observations
+        raise error
+
     def capture_observation(self, *, compressed=False, quality=70, transport=None):
         """Independent, bounded read-only ADB channel for primary-screen capture.
 
@@ -486,13 +550,8 @@ class DeviceAdapter:
         """
         if self.device_type != 'uiautomator2' or getattr(self, '_display_id', 0):
             return None
-        from backend.core.device.read_shell import AdbReadShell
-        from backend.core.device.displays import focused_display
         from PIL import Image
-        metadata = AdbReadShell(self.serial, prefer_socket=getattr(self, '_bounded_capture', False), timeout=5, budget=5, transport=transport)(['dumpsys', 'window', 'displays'])
-        info = parse_foreground(metadata.output) if metadata.exit_code == 0 else None
-        if not info or focused_display(metadata.output) != 0:
-            raise InstanceMismatch('截图采集未能核定主显示屏及前台身份，已停止操作')
+        info, window_dump = self._capture_focus(transport)
         if compressed:
             raw = self._capture_jpeg(quality, transport=transport) if transport else self._capture_jpeg(quality)
         else:
@@ -506,7 +565,7 @@ class DeviceAdapter:
                 raise RuntimeError('设备截图失败')
             raw = result.stdout
         image = Image.open(io.BytesIO(raw)).convert('RGB')
-        info['window_dump'] = metadata.output
+        info['window_dump'] = window_dump
         return info, image
 
     def _capture_jpeg(self, quality=70, transport=None):

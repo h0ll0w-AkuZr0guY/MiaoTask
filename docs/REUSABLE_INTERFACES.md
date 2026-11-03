@@ -477,7 +477,7 @@ controller.dispatch('run', {'auto_open': True})
 | `ScreenReader.require_after()` | 后续截图不复用旧图缓存；不触发后台任务 |
 | `DeviceAdapter.capture_observation(compressed=False, quality=70, transport=None)` | 一次主屏身份查询及截图，保留有界传输和显示屏核定；由读屏调用者同步执行 |
 | `DeviceAdapter.operation_session(control)` / `read_shell.DeviceIO` | 绑定/取消仅本次所属的socket与ADB子进程，不关闭共享ADB服务 |
-| `TaskActions.wait_for_browse(task, screen, cross, seconds)` | 首轮无中途观察，经过时长后返回；TaskPolicy.retry_needed(task)为真的浏览/搜索任务才启用停1秒检查与补滑1秒检查；补滑次数由browse_recheck_rounds约束 |
+| `TaskActions.wait_for_browse(task, screen, cross, seconds)` | 首轮无中途观察；CPU首轮到时返回核验，retry_needed为真时启用停1秒检查及补滑。实际CUDA同应用browse/search首轮末尾也检查；均由browse_recheck_rounds约束补滑次数 |
 | `TaskActions.browse_completed(screen)` | 只接受明确完成/到账证据；正数倒计时优先，不能替代返回列表的最终进度核验 |
 
 `browse_recheck_rounds` 默认3，范围0～10，表示最多额外补滑几次（CPU失败后的第二轮，或实际CUDA首轮末尾检查）；第二轮基础时长后仍有一次初始检查。`max_task_seconds` 限定当前浏览与补滑窗口，截图/原生传输另有有界超时。失败预算继续按当天设备、活动与实例持久化；TaskPolicy.progress只在真实进度通过核验后清除失败连击，之后恢复首轮快速路径。
@@ -529,3 +529,13 @@ controller.dispatch('run', {'auto_open': True})
 修改ocr_device需要所有设备空闲，后台不恢复持续采集或识别并发；代理变化不重建识别引擎。模型世代使旧reader下次读取重建，控制器运行租约和物理设备隔离保持不变。GET/POST `/api/preferences`沿用Host/Origin与写入令牌守卫。
 
 `core.device.runtime_plugin.activate_runtime_plugin()` 在RapidOCR导入ORT前仅尝试一次本地扩展，校验平台、Python ABI与ORT版本；不下载、不运行pip、不覆盖基础包，添加的DLL目录句柄随进程存活。更换扩展必须退出服务重启。`ScreenReader.ocr_backend`只读取已加载模型的实际后端，不触发初始化，CUDA回退后返回cpu；浏览策略据此决定首轮末尾是否做一次有界检查。不要据编译执行器列表启用高速策略。
+
+### 截图前台核定与过渡焦点
+
+`DeviceAdapter.capture_observation` 在Android主屏截图前通过私有 `_capture_focus(transport=None)` 读取窗口身份。正常仅一次display摘要；摘要不含焦点时读windows详情，最多3轮、共享5秒总预算，单条查询最多2秒。轮间短暂等待支持停止，不发送输入、不使用上次前台缓存；真实非主屏和所选应用实例冲突立即拒绝，HDC与既有非主屏路径不变。预算耗尽抛出InstanceMismatch，附capture_diagnostics的查询种类、焦点是否可读及错误类别；控制器写入私有失败记录，不包含原始窗口内容。
+
+淘宝标准浏览的CUDA首轮检查仅用于同应用browse/search；visit、跨应用跳转和支付宝月月赚保持活动自身停留策略。日常搜索先核定当前应用，只有不带搜索提交控件的直接奖励页可免输入；可见表单复用SearchPolicy。月月赚完成依据为真实奖励回执或该任务同排完成反馈，缺行、空白和其他行已完成均不足以证明成功。
+
+`TaskActions.page_transition_wait()` 在任务点击、主页搜索聚焦及搜索提交后等待1.2秒再采集，不计入浏览时长。CPU及未知/回退后端接受首张就绪画面，不强制增加识别；实际CUDA且观察耗时不足0.6秒时，`execute` 与 `SearchPolicy.handle_search` 间隔0.4秒复核 `destination_layout(screen)`，比较包名、尺寸及顶部搜索/任务控件的相对位置，忽略状态栏和商品动画。明显加载提示、空画面或移动中的控件继续留在既有page_timeout内；搜索再次提交间隔至少3秒，避免动画期间连发。安全和实例检查每帧保留。
+
+`SearchPolicy.is_search_input_node` 保护搜索框清除控件及输入法X键，不将其作为弹窗关闭；有键盘时奖励提示也不能解除该保护。原生输入框重新定位后再填写，不使用上一页面的旧bounds，不更换输入法。

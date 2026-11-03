@@ -555,7 +555,10 @@ class Controller(ActivityPipeline, PreviewWorker):
             self.log('WARNING', str(exc))
             self.update(status='needs_attention', phase='needs_attention', message=str(exc), remaining=0)
             if not exc.evidence_saved:
-                self.on_failure(dict(reason=str(exc), phase='needs_attention', kind=exc.kind))
+                evidence = dict(reason=str(exc), phase='needs_attention', kind=exc.kind)
+                if getattr(exc, 'capture_diagnostics', None) is not None:
+                    evidence['capture_diagnostics'] = exc.capture_diagnostics
+                self.on_failure(evidence)
             if exc.kind == 'security':
                 notify_security_attention()
         except Exception as exc:

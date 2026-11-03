@@ -31,6 +31,48 @@ class TaobaoDailyTests(unittest.TestCase):
             self.assertFalse(item.activity.legacy_storage)
             self.assertIn('uiautomator2', item.activity.device_types)
 
+    def test_daily_activities_keep_cpu_sparse_browse_and_cuda_end_check(self):
+        for activity in ('coins', 'farm', 'cash-signin', 'achievements'):
+            for backend in ('cpu', 'cuda'):
+                with self.subTest(activity=activity, backend=backend):
+                    runner = self.runner(activity)
+                    runner.origin = 'com.taobao.taobao'
+                    runner.reader._engine = SimpleNamespace(engine=SimpleNamespace(miao_backend=backend))
+                    clock = [0.0]
+                    runner.control.now = lambda: clock[0]
+                    runner.control.wait = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+                    runner.browse_swipe = lambda screen: clock.__setitem__(0, clock[0] + .5)
+                    runner.guard = Mock()
+                    runner.check_destination = Mock()
+                    runner.config.update(scroll_browse=True, browse_recheck_rounds=3)
+                    pending = Screen([TextNode('浏览商品', (10,300,300,350))], 1080,2400,runner.origin)
+                    completed = Screen([TextNode('任务已完成', (10,300,300,350))],1080,2400,runner.origin)
+                    runner.read = Mock(return_value=completed)
+                    task = Task('synthetic', '浏览商品', '浏览15秒', '去完成', (800,400,950,460), seconds=15)
+                    explicit, _ = runner.wait_for_browse(task, pending, False, 15)
+                    self.assertEqual(explicit, backend == 'cuda')
+                    self.assertEqual(runner.read.call_count, 1 if backend == 'cuda' else 0)
+                    self.assertLess(clock[0], 16)
+
+    def test_daily_search_grid_with_submit_still_uses_shared_search(self):
+        from backend.app.taobao.utils.search import SearchPolicy
+        for activity in ('coins', 'farm', 'cash-signin', 'achievements'):
+            with self.subTest(activity=activity):
+                runner = self.runner(activity)
+                runner.search_results_ready = Mock(return_value=True)
+                page = Screen([TextNode('搜索', (900,120,1050,180))],1080,2400,'com.taobao.taobao')
+                with patch.object(SearchPolicy, 'handle_search', return_value=True) as submit:
+                    self.assertTrue(runner.handle_search(page))
+                submit.assert_called_once_with(page, None, False)
+
+    def test_daily_search_never_accepts_results_from_another_application(self):
+        runner = self.runner()
+        runner.search_results_ready = Mock(return_value=True)
+        page = Screen([],1080,2400,'org.example.chat')
+        with self.assertRaisesRegex(NeedsAttention, '离开所选应用'):
+            runner.handle_search(page)
+        runner.search_results_ready.assert_not_called()
+
     def test_counterless_rows_and_completed_feedback_scale_across_displays(self):
         runner = self.runner()
         for width, height in ((1080, 2400), (1800, 2880), (2880, 1800)):
@@ -735,6 +777,7 @@ class TaobaoDailyTests(unittest.TestCase):
         runner.origin='com.taobao.taobao'
         overflow=type('RPCStackOverflowError',(Exception,),{})
         device=MagicMock(device_type='uiautomator2')
+        device.current_app.return_value = {'package': runner.origin}
         device.input_ascii=None
         device.input_text.side_effect=overflow()
         runner.device=device
@@ -752,6 +795,7 @@ class TaobaoDailyTests(unittest.TestCase):
         runner=self.runner();runner.origin='com.taobao.taobao'
         runner.config['task_search_keywords'] = []
         device=MagicMock(device_type='uiautomator2');runner.device=device
+        device.current_app.return_value = {'package': runner.origin}
         runner.read_page=Mock(return_value=Screen([TextNode('历史搜索',(100,600,400,650)),
                                                   TextNode('搜索',(1510,350,1760,500))],1800,2880,runner.origin,'ocr'))
         runner.click=Mock();runner.control.wait=Mock()
@@ -769,6 +813,43 @@ class TaobaoDailyTests(unittest.TestCase):
         runner.fill_search_field(runner.config['search_keyword'],edit)
         device.input_ascii.assert_not_called()
         device.return_value.set_text.assert_called_once_with(runner.config['search_keyword'],timeout=.25)
+
+    def test_ime_x_keys_and_search_page_glyphs_are_never_popup_closers(self):
+        runner = self.runner()
+        for glyph in ('x', 'X'):
+            for reward_text in ('', '恭喜获得奖励'):
+                with self.subTest(glyph=glyph, reward=reward_text):
+                    page = Screen([TextNode('历史搜索',(40,350,350,410)),
+                                   TextNode('搜索',(850,100,980,170)),
+                                   TextNode(glyph,(200,1500,260,1560)),
+                                   TextNode('中/英',(600,1750,730,1810)),
+                                   TextNode('符',(30,1750,130,1810)),
+                                   TextNode(reward_text,(200,900,700,960))],
+                                  1000,2000,'com.taobao.taobao','ocr')
+                    runner.click = Mock()
+                    self.assertIsNone(runner.popup_close_node(page))
+                    self.assertIsNone(runner.dismiss_popup(page))
+                    self.assertFalse(runner.dismiss_overlay(page))
+                    runner.click.assert_not_called()
+
+    def test_daily_input_relocates_native_field_after_keyboard_rebuild(self):
+        from unittest.mock import MagicMock
+        runner = self.runner()
+        runner.origin = 'com.taobao.taobao'
+        runner.config['task_search_keywords'] = []
+        runner.device = MagicMock(device_type='uiautomator2')
+        runner.device.current_app.return_value = {'package': runner.origin}
+        runner.read_page = Mock(return_value=Screen([
+            TextNode('历史搜索',(100,600,400,650)),TextNode('搜索',(1510,350,1760,500))],
+            1800,2880,runner.origin,'ocr'))
+        current = (140,350,1500,500)
+        runner.search_tree = Mock(return_value={'children':[
+            dict(type='android.widget.EditText',focused='true',bounds=current)]})
+        runner.click = Mock()
+        runner.control.wait = Mock()
+        runner.fill_search_field('2026', {'bounds': (0,9000,1000,10000)})
+        self.assertEqual(runner.click.call_args.args[0].bounds, current)
+        runner.device.input_ascii.assert_called_once_with('2026')
 
     def test_expand_is_scoped_to_coin_task_panel_and_retries_until_painted(self):
         runner=self.runner()
