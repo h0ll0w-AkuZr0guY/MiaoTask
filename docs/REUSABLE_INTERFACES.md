@@ -114,15 +114,18 @@ DeviceAdapter(device_type, serial=None, on_status=None,
 TextNode(text, bounds, source='ui')
 Screen(nodes, width, height, package, source='ui', tree=None,
        user_id=None, geometry=None, obscured=False)
-ScreenReader(device, ocr=True, on_image=None, image_processor=None)
+ScreenReader(device, ocr=True, on_image=None, image_processor=None, engine_scope=None)
 reader.read(force_ocr=False)                      # Screen
 reader.enrich_regions(screen, regions)           # Screen
 screen.find(pattern, exact=False)                # TextNode 或 None
+device_ocr_scope(device)                         # 识别引擎作用域键或 None
+local_ocr_engine(scope=None)                     # 共享引擎实例
+ocr_engine_lock(scope=None)                      # 该作用域的推理锁
 ```
 
 `bounds` 为 `(left, top, right, bottom)`，`TextNode.center` 为中心。`find` 默认在规范化文案上使用正则，`exact=True` 则比较完整规范化文字。它只返回第一个匹配；需要“最右侧搜索按钮”等规则时，应筛选 `screen.nodes` 后显式排序。
 
-读屏优先前台控件；控件不足或要求 `force_ocr` 时使用本地 OCR，黑屏无法识别时回查可读控件并标记遮挡。OCR 引擎按工作区上下文隔离。`enrich_regions` 只处理当前 `last_screen` 对应原帧中的像素区域，回映裁剪偏移，不另取一帧；返回的是新观察对象，调用者不要假定对象身份不变。切换画面后须重新读取，不能保留坐标等待稍后点击。
+读屏优先前台控件；控件不足或要求 `force_ocr` 时使用本地 OCR，黑屏无法识别时回查可读控件并标记遮挡。OCR 引擎按物理设备（`identity_serial`，缺失时回退 `serial`）隔离，同一设备的 USB、Wi-Fi 别名和分身共用一个实例；`engine_scope` 显式指定时优先，其次工作区上下文，都不存在才用固定默认值，不能再用线程身份，否则每个后台识别线程都会重新加载模型。同一作用域的推理由 `ocr_engine_lock` 串行（一个引擎同时只跑一帧），不同设备的作用域不同、仍并行。`enrich_regions` 只处理当前 `last_screen` 对应原帧中的像素区域，回映裁剪偏移，不另取一帧；返回的是新观察对象，调用者不要假定对象身份不变。切换画面后须重新读取，不能保留坐标等待稍后点击。
 
 ## 4. 屏幕、裁剪与缩放
 
@@ -246,7 +249,7 @@ Session(device, config=None, control=None, emit=None, on_image=None,
 
 `TaskActions.wait_for_browse(task, screen, cross, seconds)` 在单任务硬上限内计时。滚动任务按实际经过时间计时，包含识别、传输和间隔；到期时读取新画面核对倒计时。`browse_countdown(screen)` 返回剩余秒数或 `None`；同一帧只消费一次倒计时，防止陈旧画面反复延长。当前画面没有正数倒计时时，完成提示可提前结束，成功仍由返回页核验。
 
-启用滚动与 OCR 时，`with reader.visual_observer() as observer` 提供一帧在途的异步识别：`request()` 在所有者线程采集截图与前台身份，`poll()` 非阻塞返回识别后的 `Screen` 或 `None`，异常回到调用者。`observer.pending/captured` 用于确认识别状态和采集时的尺寸、身份；工作线程只处理该帧像素，不访问设备、操作页面、调用 Session 回调或共享另一读屏器的缓存。关闭后迟到结果丢弃。`browse_observation_interval(scrolling)` 决定截图请求节奏，未提供时一秒，双十一与日常滚动时三秒；OCR耗时不再阻塞后续手势。每个手势仍检查暂停、停止与实例；检测到新前台或尺寸变化时，先等该帧确认，不沿用旧坐标；识别画面超过 `page_timeout` 未刷新时停止输入并交还恢复逻辑。OCR关闭时沿用同步原生观察，计时包含读屏耗时。活动下载到不具备 `visual_observer` 的旧框架时也回退同步观察，不因新增接口崩溃；后台识别与零间隔连续滑动需要更新框架 ZIP。
+启用滚动与 OCR 时，`with reader.visual_observer() as observer` 提供一帧在途的异步识别：`request()` 在所有者线程采集截图与前台身份，`poll()` 非阻塞返回识别后的 `Screen` 或 `None`，异常回到调用者。`observer.pending/captured` 用于确认识别状态和采集时的尺寸、身份；工作线程只处理该帧像素，不访问设备、操作页面、调用 Session 回调，帧缓存保持独立，但识别引擎继承所有者读屏器的 `engine_scope`，与任务工作线程共用同一设备的模型实例（同作用域串行推理），不能为每帧或每个观察者重新加载模型。关闭后迟到结果丢弃。`browse_observation_interval(scrolling)` 决定截图请求节奏，未提供时一秒，双十一与日常滚动时三秒；OCR耗时不再阻塞后续手势。每个手势仍检查暂停、停止与实例；检测到新前台或尺寸变化时，先等该帧确认，不沿用旧坐标；识别画面超过 `page_timeout` 未刷新时停止输入并交还恢复逻辑。OCR关闭时沿用同步原生观察，计时包含读屏耗时。活动下载到不具备 `visual_observer` 的旧框架时也回退同步观察，不因新增接口崩溃；后台识别与零间隔连续滑动需要更新框架 ZIP。
 
 `DeviceAdapter.clear_clipboard()` 只写空设备剪贴板，不读取旧内容、不切换输入法。当前支持 uiautomator2，未支持的驱动抛 `NotImplementedError`。控制器仅在开始执行前按公共配置 `clear_clipboard`（默认 True）调用；失败提示后继续，停止和实例异常仍传播。活动不应自行读取或记录剪贴板内容。
 
