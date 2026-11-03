@@ -2,6 +2,30 @@
 
 按新到旧维护用户可见变化。GitHub Release 正文从对应的 `## 版本号` 小节提取，发布状态以 [Releases](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/releases) 为准。
 
+## MiaoTask-v0.1.6
+
+串行低频识别、公共词表与设备兼容优化。
+
+* 【优化】首轮连续浏览后返回核验，失败才有界补滑；移除持续采集、后台OCR与试验性CPU/GPU资源配置，保留多设备并行。
+* 【新增】搜索词每次随机抽取，任务跳过统一使用可编辑公共词表；配置保存到用户目录，升级保留。
+* 【修复】三态补扫、折叠任务列表与落地页关闭按钮保护；未确认的扫描不标记完成，补查额度跨重启保留。
+* 【优化】物理设备模型复用、重复任务按实际进度计数；活动中心先显示本地目录，再后台刷新。
+* 【修复】部分ROM忽略媒体音量命令时回退AudioService并读回核验，结束恢复原音量；默认基础浏览17秒、补滑复查3次、今日失败上限3次，本轮80次。
+
+下载 Windows x64 ZIP，完整解压后运行 `MiaoTask.exe`，保留 `_internal/` 和 `activities/`。包内预装当前六项活动。升级前退出旧助手，安全认证需本人处理。
+
+感谢 @ashen0116（#26）、@J202407（#28）、@Chilzen-smx（#31）、@jiang123574（#32）的贡献，以及 [MonsterNone/tmall-miao](https://github.com/MonsterNone/tmall-miao) 提供的早期思路参考。[使用说明](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/blob/main/docs/USAGE.md) · [项目介绍](https://github.com/h0ll0w-AkuZr0guY/MiaoTask#readme)
+
+| 框架模块 | 主要修改 |
+| --- | --- |
+| `core/execution` | 串行观察、失败后补滑、有界延期，整轮预算共享 |
+| `core/device/screen.py`、`ocr.py` | 按需截图、物理设备模型复用与运行结束释放 |
+| `core/device/comfort.py` | 媒体流命令兼容回退，降低与恢复均核验 |
+| `core/device/read_shell.py`、`adapter.py` | 有界可取消I/O、连续滑动和显示屏核对 |
+| `core/config`、`storage` | 公共词表与参数继承，持久化及旧配置迁移 |
+| `core/plugins`、`service` | 活动目录缓存、后台单次刷新与工作区状态隔离 |
+| `frontend` | 公共词表、串行浏览配置，移除失效资源选项 |
+
 ## MiaoTask-v0.1.5
 
 任务复查、持续滑动与设备兼容修复。
