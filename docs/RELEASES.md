@@ -6,9 +6,11 @@
 
 可选 CUDA 加速与活动入口修复。
 
+**2026-11-04 修订包：** 已包含 [#36](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/pull/36)，修复多屏设备未压缩 PNG 截图解码失败；已下载旧 v0.2.0 的用户请重新下载基础 ZIP，CUDA 扩展 v1.0 可继续沿用。
+
 * 【新增】可选 CUDA 扩展 v1.0，独立下载与更新；基础包继续使用 CPU，扩展不兼容或 GPU 初始化、推理失败时回退 CPU。
 * 【优化】CPU 保留串行稀疏识别；CUDA 在浏览末尾核验并有界补滑。页面加载后再开始浏览计时，减少动画期间过早返回。
-* 【修复】搜索必须确认提交，重新定位可输入控件；输入法 X 键不再被误当弹窗关闭。跳转短暂失焦有界重读，保留实例与显示屏身份检查。
+* 【修复】搜索必须确认提交，重新定位可输入控件；输入法 X 键不再被误当弹窗关闭。跳转短暂失焦有界重读；PNG 截图显式映射主屏，避免多屏警告混入图片。保留实例与显示屏身份检查。
 * 【修复】红包签到首页入口、淘金币任务入口优先级、农场叠层推广关闭，以及月月赚实例唤起与全局搜索入口；奖励仍以回执或对应任务进度核验。
 * 【新增】公共设置支持 OCR 后端与活动下载代理；复用已有偏好存储，保留词表、任务配置和分支选择。代理连接异常有界重试。
 
@@ -18,12 +20,12 @@
 
 本版提供运行时扩展加载，源码自动更新与本地重打包启动器尚未实现。
 
-感谢 @jiang123574（#33）的 CUDA 与下载代理贡献，以及 [MonsterNone/tmall-miao](https://github.com/MonsterNone/tmall-miao) 提供的早期思路参考。[使用说明](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/blob/main/docs/USAGE.md) · [项目介绍](https://github.com/h0ll0w-AkuZr0guY/MiaoTask#readme)
+感谢 @jiang123574（#33）的 CUDA 与下载代理贡献、@kamao945（#36）的主屏截图修复，以及 [MonsterNone/tmall-miao](https://github.com/MonsterNone/tmall-miao) 提供的早期思路参考。[使用说明](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/blob/main/docs/USAGE.md) · [项目介绍](https://github.com/h0ll0w-AkuZr0guY/MiaoTask#readme)
 
 | 框架模块 | 主要修改 |
 | --- | --- |
 | `core/device/ocr.py`、`runtime_plugin.py`、`screen.py` | 可选运行库加载、兼容校验、实际执行后端与 CPU 回退；保留物理设备模型复用 |
-| `core/device/adapter.py`、`read_shell.py` | 短暂失焦共享超时预算、窗口信息回退与诊断，保留显示屏和实例守卫 |
+| `core/device/adapter.py`、`read_shell.py` | 短暂失焦共享超时预算、窗口信息回退与诊断；PNG 主屏映射与有界取消，保留显示屏和实例守卫 |
 | `core/preferences.py`、`core/service` | OCR 后端与代理偏好持久化；后端切换限定设备空闲，保留既有配置 |
 | `app/taobao/utils`、`app/zfb` | 搜索提交、页面就绪与浏览补时；日常入口和任务核验修复 |
 | `scripts/package_windows.py`、`configs/environments/requirements-cuda.lock` | CPU 基础包与独立版本 CUDA ZIP 分开构建，共有依赖对齐 |
