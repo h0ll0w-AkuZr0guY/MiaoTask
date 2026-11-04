@@ -204,6 +204,17 @@ class GeometryTests(unittest.TestCase):
         windows='  Display: mDisplayId=0\n mCurrentFocus=launcher\n  Display: mDisplayId=7\n mCurrentFocus=app\n'
         self.assertNotIn('mCurrentFocus=app',focused_window_dump(windows,0))
 
+    def test_display_mapping_rejects_duplicate_names_and_unrelated_unique_ids(self):
+        inventory = ('DisplayDeviceInfo{"Panel": uniqueId="local:111"}\n'
+                     'DisplayDeviceInfo{"Panel": uniqueId="local:222"}\n')
+        block = 'Display 0:\n mDisplayId=0\n mPrimaryDisplayDevice=Panel\n'
+        with self.assertRaises(RuntimeError):
+            capture_display(inventory + block, 0)
+        self.assertEqual(capture_display(inventory + block +
+            ' mBaseDisplayInfo=DisplayInfo{uniqueId "local:222"}\n', 0), '222')
+        with self.assertRaises(RuntimeError):
+            capture_display(block + ' mOverrideDisplayInfo=DisplayInfo{uniqueId "local:999"}\n', 0)
+
     def test_named_primary_display_without_local_port_maps_unique_id(self):
         # Some MTK ROMs print the primary device name only and record fields
         # between mDisplayId and mPrimaryDisplayDevice, so the compact fast

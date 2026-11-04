@@ -55,15 +55,17 @@ def capture_display(display_dump, logical_id):
     if block:
         # Some ROMs print the primary device name only, without its (local:N)
         # port; look the name up in the physical-device inventory instead.
+        direct = re.search(r'mPrimaryDisplayDevice=[^\n]*\(local:(\d+)\)', block)
+        if direct:
+            return direct[1]
+        own = re.search(r'mBaseDisplayInfo=([^\n]+)', block)
+        own_id = re.search(r'uniqueId[= ]"?local:(\d+)', own[1]) if own else None
+        if own_id:
+            return own_id[1]
         named = re.search(r'mPrimaryDisplayDevice=([^\n(]+)', block)
         if named:
-            device = re.search(r'DisplayDeviceInfo\{"' + re.escape(named[1].strip())
-                               + r'":\s*uniqueId="local:(\d+)"', display_dump)
-            if device:
-                return device[1]
-        # Last resort on single-display devices: the logical display's own
-        # mBaseDisplayInfo carries the physical uniqueId of its source device.
-        own = re.search(r'uniqueId[= ]"?local:(\d+)', block)
-        if own:
-            return own[1]
+            matches = set(re.findall(r'DisplayDeviceInfo\{"' + re.escape(named[1].strip())
+                                     + r'":[^\n]*?uniqueId="local:(\d+)"', display_dump))
+            if len(matches) == 1:
+                return matches.pop()
     raise RuntimeError('无法映射当前应用屏幕，已停止截图和点击；请检查模拟器多屏状态')

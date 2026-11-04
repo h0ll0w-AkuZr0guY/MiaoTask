@@ -82,7 +82,7 @@ class MigrationContracts(unittest.TestCase):
         self.assertTrue(configured.pop('clear_clipboard'))
         self.assertEqual(configured.pop('browse_check_interval'), 1)
         self.assertEqual(configured.pop('browse_recheck_rounds'), 3)
-        self.assertEqual(configured.pop('completion_return_ms'), 0)
+        self.assertEqual(configured.pop('completion_return_ms'), 1000)
         self.assertEqual(configured.pop('task_search_keywords'), ['123','2026','100'])
         self.assertIn('头条', configured.pop('skip_task_keywords'))
         self.assertEqual(configured.pop('screenshot_quality'), 70)

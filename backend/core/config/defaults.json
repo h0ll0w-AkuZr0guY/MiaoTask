@@ -38,7 +38,7 @@
   "screen_timeout_minutes": 10,
   "clear_clipboard": true,
   "browse_recheck_rounds": 3,
-  "completion_return_ms": 0,
+  "completion_return_ms": 1000,
   "task_search_keywords": [
     "123",
     "2026",
