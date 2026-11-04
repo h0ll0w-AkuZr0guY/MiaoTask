@@ -53,7 +53,7 @@ class PreviewSiteTests(unittest.TestCase):
             self.assertNotIn('src="/', html)
             self.assertIn('href="/api/report"', html)
             self.assertEqual(json.loads((site / 'demo/catalog.json').read_text(encoding='utf-8')), result)
-            self.assertEqual(len(result['catalog']), 2)
+            self.assertEqual(len(result['catalog']), 3)
             self.assertIn('demo/phone.svg', (site / 'js/api.js').read_text(encoding='utf-8'))
         self.assertEqual(before, [p.read_bytes() for p in sources])
 
