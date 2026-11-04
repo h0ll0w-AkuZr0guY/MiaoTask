@@ -37,7 +37,7 @@ STEP_RE = r'再走\d+步完成1圈'
 # 可用步数显示在按钮右上方，形如「再走4步完成1圈 5步」末尾的「5步」
 STEP_LEFT_RE = r'(\d+)步$'
 # 页面自己给出的完成提示：出现即认定任务已达标
-DONE_PROMPT_RE = r'任务已完成|浏览已完成|浏览完成|完成浏览|奖励已到账|恭喜完成|领取成功|已领取'
+DONE_PROMPT_RE = r'^(?:任务已完成|浏览已完成|浏览完成|完成浏览|奖励已到账|恭喜完成|领取成功|已领取)[!！。\s]*$'
 # 浏览页倒计时（「还需12秒 / 剩余8秒」），用来动态调整结束时间
 COUNTDOWN_RE = r'(?:还需|剩余|再逛|再看|浏览还差)[^\d]{0,3}(\d{1,2})\s*秒'
 # 进入浏览页时的总时长提示（「浏览20秒获得100闲鱼币」）
@@ -46,6 +46,11 @@ BROWSE_SECONDS_RE = r'浏览\s*(\d+)\s*[秒sS]'
 
 class IdleFishCoinsActivity(EntryPolicy, Activity):
     application = PROFILE
+
+    def read(self, **kwargs):
+        screen = super().read(**kwargs)
+        self.guard(screen)
+        return screen
 
     # ------------------------------------------------------------------
     # 契约：配置
@@ -105,15 +110,8 @@ class IdleFishCoinsActivity(EntryPolicy, Activity):
             seconds = (self.config['browse']['video_seconds']
                        if self._is_video(title)
                        else self.config['browse']['regular_seconds'])
-            # key 主要由标题决定；但「可重复 N 次」的任务（如观看视频 x/3、点击好物 0/10）
-            # 同一行每次进度变化都要当成不同任务重做，直到变「领取奖励」。
-            # 因此把进度并入 key：无进度的普通任务 key 仍固定（避免无限重复），
-            # 有进度的任务随 current 变化生成新 key，框架会一路做到满。
-            if total and total > 1:
-                key = hashlib.sha256(
-                    (title + '|' + str(current) + '/' + str(total)).encode()).hexdigest()[:16]
-            else:
-                key = hashlib.sha256(title.encode()).hexdigest()[:16]
+            # Stable identity: progress belongs to framework verification, not the key.
+            key = hashlib.sha256(title.encode()).hexdigest()[:16]
             tasks.append(Task(key, title, title, action, btn.bounds,
                               current=current, total=total, seconds=seconds,
                               kind=self._classify(title, action)))
@@ -212,10 +210,16 @@ class IdleFishCoinsActivity(EntryPolicy, Activity):
         return screen, last
 
     def execute(self, task, before):
+        if task.kind == 'trade':
+            raise TaskUnavailable('该任务不自动执行')
+        self._completed_evidence = set()
         # 每次点击前都按当前页面重新识别，绝不使用外层缓存的坐标
         screen, fresh = self._stable_target(task.title)
         if fresh is None:
             return screen, False, False
+        if fresh.kind == 'trade':
+            raise TaskUnavailable('该任务不自动执行')
+        task = fresh
         self.update('opening', current_task=task.title, message='开始执行')
         logger.info('点击任务：%s | 按钮=%s | 区域=%s', task.title, fresh.action, fresh.bounds)
         self.click(TextNode(fresh.action, fresh.bounds))
@@ -224,9 +228,11 @@ class IdleFishCoinsActivity(EntryPolicy, Activity):
             # 交给外层继续下一个任务（核验已在 verify 里关闭，不再额外等待）。
             self.control.wait(1.2)
             screen = self.read()
+            self.guard(screen)
+            explicit = bool(screen.find(DONE_PROMPT_RE))
             if self._dismiss_popups(screen):
                 screen = self.read()
-            return screen, False, False
+            return screen, explicit, False
         self.control.wait(2)
         screen = self.read()
         if task.kind == 'trade':
@@ -272,6 +278,7 @@ class IdleFishCoinsActivity(EntryPolicy, Activity):
             row = next((t for t in self.parse_tasks(screen.nodes, screen.width, screen.height)
                         if t.title == task.title), None)
             if row is not None and row.action in ('领取奖励', '立即领取'):
+                self._completed_evidence = getattr(self, '_completed_evidence', set()) | {task.key}
                 logger.info('任务已完成，领取奖励：%s', task.title)
                 self.click(TextNode(row.action, row.bounds))
                 self.control.wait(1)
@@ -287,13 +294,10 @@ class IdleFishCoinsActivity(EntryPolicy, Activity):
     # 契约：核验
     # ------------------------------------------------------------------
     def verify(self, task, before, after, explicit=False):
-        """多证据核验：进度、按钮语义、页面完成提示，任一成立即通过。
-
-        默认关闭（config.verify_enabled=false）：执行阶段已尽力领奖并返回，
-        核验读数慢且易误判——跳转类任务领奖后任务行直接消失/进度不刷新，
-        会被误报失败并触发框架重试，反而更耗时。
-        """
-        if not self.config.get('verify_enabled', False):
+        """Count only same-task progress, reward eligibility or explicit receipts."""
+        if after.package != self.origin:
+            return False
+        if explicit or task.key in getattr(self, '_completed_evidence', set()):
             return True
         if not self.is_task_list(after.nodes):
             return False
@@ -305,11 +309,11 @@ class IdleFishCoinsActivity(EntryPolicy, Activity):
             # 按钮从「去完成」变「领取奖励」：任务已达标，只是还没领
             if task.kind != 'claim' and current.kind == 'claim':
                 return True
-            if task.kind == 'claim' and current.action != task.action:
+            if task.kind == 'claim' and current.kind != 'claim':
                 return True
             return bool(explicit) and current.kind == 'claim'
         # 任务行消失：领取类视为已领；浏览类要求页面给过完成提示
-        return task.kind == 'claim' or bool(explicit)
+        return False
 
     # ------------------------------------------------------------------
     # 生命周期
@@ -324,11 +328,13 @@ class IdleFishCoinsActivity(EntryPolicy, Activity):
         # 避免「任务还没做完就先走步数」（例如达到 max-tasks 提前结束）。
         try:
             screen = self.read()
+            self.guard(screen)
             if self.is_task_list(screen.nodes) and self._has_pending(screen):
                 logger.info('仍有待执行任务，本轮跳过累计奖励与走步数')
                 return
         except Exception as exc:
-            logger.info('收尾前检查任务状态失败，继续收尾：%s', exc)
+            logger.info('收尾前检查未通过，停止收尾：%s', exc)
+            return
         try:
             self._claim_top_rewards()
         except Exception as exc:
@@ -508,9 +514,9 @@ class IdleFishCoinsActivity(EntryPolicy, Activity):
             if self.is_task_list(screen.nodes):
                 cur = next((t for t in self.parse_tasks(screen.nodes, screen.width, screen.height)
                             if t.title == task.title), None)
-                if cur is None:
-                    return True          # 行已消失：多半已完成领奖
-                if cur.action in ('领取奖励', '立即领取'):
+                if cur is not None and cur.current > task.current:
+                    return True
+                if cur is not None and cur.action in ('领取奖励', '立即领取'):
                     return True
                 # 仍是「去完成」：等进度刷新，再读一次
                 self.control.wait(1)
@@ -692,6 +698,7 @@ class IdleFishCoinsActivity(EntryPolicy, Activity):
         → 连续滑动浏览若干次 → 返回。若页面没有可点的推荐词，则退化浏览当前页。
         """
         s = self.read()
+        submitted = False
         box = self._find(s, r'搜索|搜一搜|找闲置|搜你想不到')
         if box is not None:
             self.click(box)
@@ -705,17 +712,20 @@ class IdleFishCoinsActivity(EntryPolicy, Activity):
                                                   '历史搜索', '清空')
                     and screen.height * 0.25 < n.center[1] < screen.height * 0.72
                     and not re.fullmatch(ACTION_RE, normalize(n.text))]
-            if recs:
+            if recs and self._find(s, r'搜索发现|热门搜索|猜你想搜|历史搜索'):
                 self.click(recs[0])
+                submitted = True
                 self.control.wait(1.2)
                 logger.info('搜索任务：点推荐词「%s」', normalize(recs[0].text))
+        if not submitted:
+            raise TaskUnavailable('未确认搜索推荐词入口，跳过当前搜索任务')
         # 浏览搜索结果：连续滑动若干次
         swipes = int(self.config.get('search_browse_swipes', 6))
         for _ in range(swipes):
             self._swipe_once(s)
             self.control.wait(0.4)
             s = self.read()
-        return s
+        return s, bool(s.find(DONE_PROMPT_RE))
 
     def _browse(self, seconds):
         """浏览页：必须不间断滑动满 N 秒才计时。

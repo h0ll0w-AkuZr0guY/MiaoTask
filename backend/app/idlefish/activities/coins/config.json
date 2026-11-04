@@ -3,7 +3,7 @@
   "panel_open_timeout": 10,
   "ocr": false,
   "ocr_fallback": true,
-  "verify_enabled": false,
+  "verify_enabled": true,
   "force_ocr_entry": false,
   "visit_seconds": 5,
   "visit_settle_seconds": 4,
