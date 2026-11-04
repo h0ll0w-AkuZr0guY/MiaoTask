@@ -1,8 +1,6 @@
 {
-  "version": "MiaoTask-v0.2.0",
+  "version": "MiaoTask-v0.2.1",
   "previous_version": "MiaoTask-v0.2.0",
-  "contributions": 1,
-  "contribution_digest": "40ade73bbedaba4354d1d2567334b9af40259c7b6cb5040fa5924bbea22c1ad8",
-  "release_revision": 1,
-  "replaces_commit": "95cbaa001b41db060c912004660cb12f969e50b4"
+  "contributions": 3,
+  "contribution_digest": "123636741e4086706150bf6d09513b66f796aa53709c1cf8fe1d7433430f0abb"
 }

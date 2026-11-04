@@ -2,6 +2,29 @@
 
 按新到旧维护用户可见变化。GitHub Release 正文从对应的 `## 版本号` 小节提取，发布状态以 [Releases](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/releases) 为准。
 
+## MiaoTask-v0.2.1
+
+完成返回节奏与 MTK 屏幕兼容优化。
+
+* 【新增】公共设置 → 任务设置提供「完成后随机返回延时」，在读到明确完成提示后随机等待再返回。默认范围为0～1000毫秒，可按实际情况调整上限；**CPU识别本身较慢的用户建议设为0**。等待支持暂停/停止，并受剩余任务预算限制。
+* 【修复】兼容部分MTK设备及其他ROM的主屏设备名、分散字段和uniqueId格式，优先解析当前逻辑屏的物理ID；同名屏幕有歧义时停止，不猜测目标。
+* 【文档】贡献规范与AI开发约定明确：活动入口、解析、点击和核验问题优先修改活动源码；确有公共框架问题时说明理由、兼容影响并更新接口文档。
+
+本版主要针对完成后返回过快的反馈提供可调节奏，不保证避免平台安全验证；出现验证仍需本人处理。已有用户保存的配置继续保留，实际延时以公共设置当前值为准。
+
+下载 Windows x64 ZIP，完整解压后运行 `MiaoTask.exe`，保留 `_internal/` 与 `activities/`；预装当前六项活动。升级前退出旧托盘服务，用户目录中的配置与日记录保留。
+
+GPU加速继续使用独立的 [CUDA扩展 v1.0](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/releases/tag/MiaoTask-CUDA-v1.0)，已安装的兼容扩展可迁移 `runtime_plugins/`，无需重新下载。[使用说明](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/blob/main/docs/USAGE.md) · [项目介绍](https://github.com/h0ll0w-AkuZr0guY/MiaoTask#readme)
+
+感谢 @jiang123574（#39、#40）的贡献，以及 [MonsterNone/tmall-miao](https://github.com/MonsterNone/tmall-miao) 提供的早期思路参考。
+
+| 框架模块 | 主要修改 |
+| --- | --- |
+| `core/device/displays.py` | MTK等ROM的逻辑屏块与物理uniqueId解析，同名歧义保护 |
+| `core/execution/session.py`、`app/taobao/utils/actions.py` | 活动显式调用完成后等待，暂停/停止与剩余预算约束 |
+| `core/config`、`frontend` | 可持久化的毫秒上限、默认值与CPU调整提示 |
+| `docs/CONTRIBUTING.md`、`AGENTS.md`、接口文档 | 活动与框架修改边界，新增设置及接口契约 |
+
 ## MiaoTask-v0.2.0
 
 可选 CUDA 加速与活动入口修复。
