@@ -94,8 +94,9 @@
   "water_times_per_run": 8,
   "claim_water_bubbles": true,
   "browse_shortcut_seconds": 6,
+  "cross_app_seconds": 25,
   "max_scroll_pages": 6,
   "empty_batch_stop": 1,
-  "description": "京东东东农场（免费水果）：自动进农场 → 签到领水滴 → 领可领的水滴 → 浇水 → 打开「做任务 领水滴」逐条做浏览类任务并领奖。默认只做浏览/领取类任务：下单、邀请助力、通关小游戏、跨应用登录、添加桌面小组件、话费充值等一律跳过。",
+  "description": "京东东东农场（免费水果）：自动进农场 → 签到领水滴 → 领可领的水滴 → 浇水 → 打开「做任务 领水滴」逐条做浏览类任务并领奖。浏览任务分两种：站内落地页（商品/PLUS/农场活动）停留在页面里，站外任务（百度、快手极速版等）会拉起对应 App 停留后返回京东。下单、邀请助力、通关小游戏、添加桌面小组件、话费充值等一律跳过。",
   "bundle_by_default": true
 }

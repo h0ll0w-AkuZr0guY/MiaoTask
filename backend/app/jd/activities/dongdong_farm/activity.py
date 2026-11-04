@@ -49,9 +49,14 @@ class DongDongFarmActivity(EntryPolicy, TaskRows, TaskActions, VerificationPolic
 
     def ensure_list(self, auto_open=False):
         screen = self.read()
-        if self.homepage_visible(screen) and not self.farm_visible(screen):
-            screen = self.scroll_home_to_top(screen)
-        screen = super().ensure_list(auto_open)
+        screen = self.dismiss_popups(screen)
+        if not self.panel_visible(screen) and self.farm_visible(screen):
+            # 已经站在农场页：直接开抽屉，别再走一轮「返回 → 回桌面 → 冷启动」。
+            screen = self.enter_task_panel(screen)
+        if not self.panel_visible(screen):
+            if self.homepage_visible(screen) and not self.farm_visible(screen):
+                screen = self.scroll_home_to_top(screen)
+            screen = super().ensure_list(auto_open)
         if self._running and not self._chores_done:
             self._chores_done = True
             try:

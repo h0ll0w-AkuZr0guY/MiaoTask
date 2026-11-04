@@ -15,10 +15,10 @@ import re
 
 from backend.core.models import Task, normalize
 
-# 浏览类按钮：点了会离开面板去开页面
-BROWSE_ACTIONS = frozenset({'去完成', '逛一逛', '去逛逛', '去看看', '去浏览', '去关注'})
-# 已做完、点一下才到账
-CLAIM_ACTIONS = frozenset({'去领奖', '领取', '立即领取'})
+# 浏览类按钮：点了会离开面板去开页面。「继续逛」是可重复任务的第二次及以后。
+BROWSE_ACTIONS = frozenset({'去完成', '逛一逛', '去逛逛', '去看看', '去浏览', '去关注', '继续逛'})
+# 已做完、点一下才到账。京东同一件事有三种按钮文案：去领奖 / 领奖励 / 领取。
+CLAIM_ACTIONS = frozenset({'去领奖', '领奖励', '领取', '立即领取'})
 # 浇水：留在农场页，直接消耗一次浇水次数
 WATER_ACTIONS = frozenset({'去浇水'})
 # 其余按钮（下单/开通…）一律不可执行，交给跳过规则说明原因
@@ -32,17 +32,29 @@ TITLE_PROGRESS = re.compile(r'^(.*?)\s*[（(]\s*(\d+)\s*/\s*(\d+)\s*[)）]\s*$')
 BROWSE_TIME = re.compile(r'(?:浏览|停留|观看|逛逛|逛|读|看)\s*(\d{1,3})\s*(?:秒|[sS])')
 
 # 安全规则：这些任务一律不点。顺序即命中顺序。
+# 站外应用那几条不在这里拦：它们被识别成 target_app 的浏览任务，按跨应用流程执行。
 SKIP_RULES = (
     (re.compile(r'下单|购买|抢购|品质保证|专供|加购'), '需要下单或加购，不自动执行'),
     (re.compile(r'通知|提醒|权限'), '需要开启系统通知或权限，不自动执行'),
     (re.compile(r'邀请|助力|组队|好友|拉人|分享'), '需要邀请好友助力，不自动执行'),
     (re.compile(r'通过\s*1\s*关|通关|第\s*[一二三1-9]\s*关|小游戏|消消乐|打个螺丝|箭了又箭|挑战我最牛|汪了个汪'),
      '需要通关小游戏，不自动执行'),
-    (re.compile(r'快手|百度|抖音|拼多多|小红书|极速版'), '需要跳转到其他应用，当前不执行'),
-    (re.compile(r'PLUS\s*会员中心', re.I), '点击后会跳转到站外应用，不自动执行'),
     (re.compile(r'小组件|桌面'), '需要添加桌面小组件，不自动执行'),
     (re.compile(r'话费|充值|办卡|保险|贷款|借款|白条|金条|理财|基金'), '涉及充值或金融业务，不自动执行'),
     (re.compile(r'开通|绑定|实名|授权'), '需要授权或实名，不自动执行'),
+)
+
+# 站外的浏览任务：点「去完成」会拉起对应 App，停留后回京东即算完成。
+# 顺序有讲究——「百度极速版」必须先于「百度」匹配。
+EXTERNAL_TARGETS = (
+    (re.compile(r'快手极速版'), '快手极速版', ('com.kuaishou.nebula',)),
+    (re.compile(r'快手'), '快手', ('com.smile.gifmaker', 'com.kuaishou.nebula')),
+    (re.compile(r'百度极速版'), '百度极速版', ('com.baidu.searchbox.lite',)),
+    (re.compile(r'百度'), '百度', ('com.baidu.searchbox', 'com.baidu.searchbox.lite')),
+    (re.compile(r'抖音极速版'), '抖音极速版', ('com.ss.android.ugc.aweme.lite',)),
+    (re.compile(r'抖音'), '抖音', ('com.ss.android.ugc.aweme',)),
+    (re.compile(r'拼多多'), '拼多多', ('com.xunmeng.pinduoduo',)),
+    (re.compile(r'小红书'), '小红书', ('com.xingin.xhs',)),
 )
 
 
@@ -83,6 +95,14 @@ class TaskRows:
             if pattern.search(title):
                 return reason
         return ''
+
+    @staticmethod
+    def _external_target(title):
+        """这条任务要拉起哪个站外应用；不是站外任务就返回 ('', ())。"""
+        for pattern, name, packages in EXTERNAL_TARGETS:
+            if pattern.search(title):
+                return name, packages
+        return '', ()
 
     @staticmethod
     def _row_title(texts, action, top, width, height):
@@ -130,6 +150,7 @@ class TaskRows:
         if top is None:
             return []
         default_seconds = int(self.config.get('browse_shortcut_seconds', 6))
+        cross_seconds = int(self.config.get('cross_app_seconds', 15))
         water_cap = int(self.config.get('water_times_per_run', 8))
         water_used = int(getattr(self, '_water_actions', 0))
         tasks, seen = [], set()
@@ -143,6 +164,7 @@ class TaskRows:
             found = BROWSE_TIME.search(_norm(detail))
             seconds = int(found.group(1)) if found else 0
             current, total = min(current, total), max(1, total)
+            target_app, target_packages = '', ()
             if text in CLAIM_ACTIONS:
                 kind, action, reason = 'claim', 'claim', ''
                 key = title + '#claim'
@@ -157,6 +179,8 @@ class TaskRows:
                 reason = self._skip_reason(title)
                 if not reason and text in OTHER_ACTIONS:
                     reason = '需要下单或开通，不自动执行'
+                if not reason:
+                    target_app, target_packages = self._external_target(title)
                 kind, action = ('manual', 'manual') if reason else ('browse', 'browse')
             if key in seen:
                 continue
@@ -164,6 +188,7 @@ class TaskRows:
             tasks.append(Task(
                 key=key, title=title, detail=detail, action=action, bounds=node.bounds,
                 kind=kind, skip_reason=reason, current=current, total=total,
-                seconds=seconds or default_seconds,
+                seconds=seconds or (cross_seconds if target_app else default_seconds),
+                target_app=target_app, target_packages=target_packages,
             ))
         return tasks

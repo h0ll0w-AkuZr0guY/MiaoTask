@@ -79,15 +79,46 @@ class PanelParsingTests(unittest.TestCase):
         for title, word in (('【农场专供】品质保证', '下单'),
                             ('去小程序邀请好友助力', '邀请'),
                             ('玩消消乐得红包', '通关'),
-                            ('去快手极速版领金币', '其他应用'),
                             ('添加并访问农场小组件', '小组件'),
                             ('至高领100元话费', '金融'),
-                            ('逛PLUS会员中心', '站外'),
                             ('去开启定时领水通知', '通知')):
             with self.subTest(title=title):
                 task = by_title[title]
                 self.assertEqual(task.kind, 'manual')
                 self.assertIn(word, task.skip_reason)
+
+    def test_external_app_tasks_target_the_right_package(self):
+        """站外任务不跳过：带 target_app/target_packages，交给跨应用流程。"""
+        screen = panel_screen(
+            ('去快手极速版领金币(0/1)', '完成任务奖励+150g', '去完成'),
+            ('去百度APP领现金(0/1)', '访问并登录奖励+50g', '去完成'),
+            ('去百度极速版领现金(0/1)', '访问并登录奖励+10g', '去完成'),
+            ('逛PLUS会员中心(0/1)', '浏览6秒，奖励+10g', '逛一逛'),
+        )
+        tasks = self.runner.parse_tasks(screen.nodes, screen.width, screen.height)
+        by_title = {task.title: task for task in tasks}
+        self.assertEqual(by_title['去快手极速版领金币'].target_app, '快手极速版')
+        self.assertIn('com.kuaishou.nebula', by_title['去快手极速版领金币'].target_packages)
+        self.assertEqual(by_title['去百度APP领现金'].target_app, '百度')
+        self.assertEqual(by_title['去百度极速版领现金'].target_app, '百度极速版')
+        self.assertIn('com.baidu.searchbox.lite',
+                      by_title['去百度极速版领现金'].target_packages)
+        # 站外任务给足停留时间；站内的 PLUS 中心不算站外，按普通浏览计 6 秒
+        self.assertEqual(by_title['去快手极速版领金币'].seconds,
+                         self.runner.config['cross_app_seconds'])
+        self.assertEqual(by_title['逛PLUS会员中心'].target_app, '')
+        self.assertEqual(by_title['逛PLUS会员中心'].kind, 'browse')
+
+    def test_reward_and_continue_buttons_are_recognised(self):
+        """京东的领奖按钮还叫「领奖励」，可重复的浏览行是「继续逛」。"""
+        screen = panel_screen(
+            ('读一本小说最高赚20(1/1)', '读6s书得奖励+10g', '领奖励'),
+            ('逛家电家居领京豆(1/1)', '浏览6秒，奖励+10g', '继续逛'),
+        )
+        tasks = {task.title: task for task in
+                 self.runner.parse_tasks(screen.nodes, screen.width, screen.height)}
+        self.assertEqual(tasks['读一本小说最高赚20'].kind, 'claim')
+        self.assertEqual(tasks['逛家电家居领京豆'].kind, 'browse')
 
     def test_watering_row_is_a_visit_and_stops_at_the_run_cap(self):
         screen = panel_screen(('每日累计浇水20次(1/20)', '完成任务，奖励+40g', '去浇水'))
@@ -114,6 +145,37 @@ class PanelParsingTests(unittest.TestCase):
         self.assertIsNotNone(node)
         self.assertEqual(node.center, (291, 535))
         self.assertTrue(self.runner.homepage_visible(home))
+
+
+class NavigationTests(unittest.TestCase):
+    """恢复失败的真机现场：京东小程序/H5 盖住了农场，返回键又退不出来。"""
+
+    def setUp(self):
+        self.runner = make_runner()
+
+    def test_mini_program_page_is_foreign_and_has_close_button(self):
+        manto = Screen([
+            TextNode('更多', (867, 147, 951, 231)),
+            TextNode('关闭', (951, 147, 1035, 231)),
+            TextNode('点击钉子回收到盒子里', (156, 519, 924, 585)),
+        ], 1080, 2400, PACKAGE)
+        self.assertTrue(self.runner.foreign_page(manto))
+        node = self.runner.page_close_node(manto)
+        self.assertIsNotNone(node)
+        self.assertEqual(node.center, (993, 189))
+        # 恢复流程会把「入口」指向这个关闭控件：点一下就能退出小程序
+        self.assertEqual(self.runner.task_panel_entry(manto).center, (993, 189))
+
+    def test_farm_home_and_panel_are_not_foreign(self):
+        self.assertFalse(self.runner.foreign_page(farm_home_screen()))
+        panel = panel_screen(('养猪猪抽1888现金(0/1)', '浏览6秒，奖励+20g', '去完成'))
+        self.assertFalse(self.runner.foreign_page(panel))
+        self.assertIsNone(self.runner.page_close_node(panel))
+
+    def test_other_app_is_not_foreign_page(self):
+        kuaishou = Screen([TextNode('返回', (33, 120, 153, 240))], 1080, 2400,
+                          'com.kuaishou.nebula')
+        self.assertFalse(self.runner.foreign_page(kuaishou))
 
 
 class FarmVerificationTests(unittest.TestCase):

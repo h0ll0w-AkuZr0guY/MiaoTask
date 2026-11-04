@@ -95,6 +95,42 @@ class TaskActions:
     def in_app(self, screen):
         return self.application.matches(screen.package or '')
 
+    def back_to_jd(self, screen, tries=2):
+        """从外部应用回到京东。
+
+        真机事实：快手极速版的首页会吃掉返回键，京东自己的小程序（MantoActivity）
+        也不响应返回。这两种情况下继续按返回只是在原地打转，必须直接把京东拉回前台。
+        """
+        for _ in range(max(1, tries)):
+            if self.in_app(screen) or not screen.package:
+                return screen
+            logger.info('在外部应用 %s 里，先按返回', screen.package)
+            self.device.go_back()
+            self.control.wait(1.4)
+            screen = self.read()
+        if not self.in_app(screen) and screen.package:
+            package = self.origin or self.application.android_package
+            logger.info('返回键退不出 %s，重新拉起京东', screen.package)
+            self.device.start_app(package)
+            self.control.wait(2.4)
+            screen = self.read()
+        return screen
+
+    def leave_inner_page(self, screen):
+        """退出京东自家的 H5 / 小程序 / 商品详情页，回到农场或首页。"""
+        settled = self.wait_screen(lambda s: not self.foreign_page(s), timeout=2.5, interval=.6)
+        if not self.foreign_page(settled):
+            return settled
+        screen = settled
+        node = self.page_close_node(screen)
+        if node is not None:
+            logger.info('关闭京东内嵌页面：%s', _norm(node.text))
+            self._tap(node)
+        else:
+            self.device.go_back()
+        self.control.wait(1.4)
+        return self.read()
+
     def escape_foreign(self, screen, tries=2):
         """跳出京东：系统「京东想要打开XX」跳转框、外部浏览器/应用。
 
@@ -195,7 +231,7 @@ class TaskActions:
             if self.panel_visible(screen):
                 closer = self._find_exact(screen, ['关闭任务面板'])
                 if closer is not None:
-                    self.click(closer)
+                    self._tap(closer)
                     self.control.wait(1.2)
                     screen = self.read()
                     continue
@@ -205,6 +241,12 @@ class TaskActions:
                 continue
             if self.farm_visible(screen):
                 return screen
+            if not self.in_app(screen):
+                screen = self.back_to_jd(screen)
+                continue
+            if self.foreign_page(screen):
+                screen = self.leave_inner_page(screen)
+                continue
             if self.homepage_visible(screen) or self.launcher_screen(screen):
                 screen = self.open_farm(screen)
                 continue
@@ -253,6 +295,12 @@ class TaskActions:
                 self.click(entry)
                 self.control.wait(1.6)
                 screen = self.read()
+                continue
+            if not self.in_app(screen):
+                screen = self.back_to_jd(screen)
+                continue
+            if self.foreign_page(screen):
+                screen = self.leave_inner_page(screen)
                 continue
             if self.homepage_visible(screen):
                 screen = self.open_farm(screen)
@@ -303,11 +351,7 @@ class TaskActions:
             return screen, False, False
         self.click(target)
         self.control.wait(1.5)
-        screen = self.escape_foreign(self.read())
-        if not self.in_app(screen):
-            # 外部应用里退不回来，交给主循环重新定位，不算成功。
-            logger.info('任务跳到了站外且无法退回：%s', task.title)
-            return screen, False, True
+        screen = self.read()
         if self.verify_blocked(screen):
             self.update('verifying', message='京东安全验证', remaining=0)
             screen = self.solve_quick_verify(screen)
@@ -317,6 +361,9 @@ class TaskActions:
                 saved = self.report_failure(reason, phase='security')
                 raise NeedsAttention(reason, kind='security', evidence_saved=saved)
             screen = self.recover_farm_panel(screen)
+        if task.target_app:
+            screen = self._finish_cross_app(task, screen)
+            return screen, self._credited, True
         if task.kind == 'claim':
             screen = self._finish_claim(screen)
         elif task.kind == 'visit':
@@ -324,6 +371,57 @@ class TaskActions:
         else:
             screen = self._finish_browse(task, screen)
         return screen, self._credited, False
+
+    # ---- 站外应用任务 ----
+
+    @staticmethod
+    def target_running(screen, task):
+        return bool(screen.package) and screen.package in tuple(task.target_packages or ())
+
+    def launch_button(self, screen):
+        """系统「想要打开 XX」跳转框里的确认按钮：只点一次性的，绝不点「始终」。"""
+        for node in screen.nodes:
+            text = _norm(node.text)
+            if not text or len(text) > 8:
+                continue
+            if any(bad in text for bad in ('始终', '总是', '不再', '取消', '拒绝', '禁止')):
+                continue
+            if text in ('仅打开一次', '仅此一次', '打开', '立即打开', '继续打开', '允许'):
+                return node
+        return None
+
+    def confirm_launch(self, screen, tries=2):
+        """确认应用跳转框；京东有时直接拉起目标应用，没有这一框。"""
+        for _ in range(max(1, tries)):
+            context = re.search(r'想要打开|即将打开|即将跳转|是否打开|允许.{0,8}打开', _norm(screen.text))
+            node = self.launch_button(screen) if context else None
+            if node is None:
+                return screen
+            logger.info('确认应用跳转：%s', _norm(node.text))
+            self._tap(node)
+            self.control.wait(1.2)
+            screen = self.read()
+        return screen
+
+    def _finish_cross_app(self, task, screen):
+        """站外任务：确认跳转 → 等目标应用起来 → 停留 → 回京东 → 面板。"""
+        screen = self.confirm_launch(screen)
+        screen = self.wait_screen(lambda s: self.target_running(s, task), timeout=10)
+        if not self.target_running(screen, task):
+            logger.info('没有进入%s（当前 %s），这一条按未完成处理', task.target_app, screen.package)
+            screen = self.back_to_jd(screen)
+            return self.ensure_panel(screen)
+        self.update('browsing', message='浏览%s：%s' % (task.target_app, task.title), remaining=0)
+        self.control.wait(max(6, int(task.seconds or 15)))
+        self.device.go_back()
+        self.control.wait(1.2)
+        screen = self.read()
+        screen = self.back_to_jd(screen)
+        screen = self.dismiss_popups(screen)
+        screen = self.recover_farm_panel(screen)
+        screen = self.ensure_panel(screen)
+        self.control.wait(2.5)  # 站外任务的归因有延迟，回到面板后再给一点结算时间
+        return self.read()
 
     def _finish_claim(self, screen):
         self.update('browsing', message='领取水滴奖励', remaining=0)
@@ -347,6 +445,8 @@ class TaskActions:
         seconds = max(3, int(task.seconds or self.config.get('browse_shortcut_seconds', 6)))
         self.update('browsing', message='浏览：' + task.title, remaining=0)
         screen = self._dwell(screen, seconds)
+        # 跨应用任务要先把人从外部应用带回来，否则后面的恢复会在别人的首页里打转。
+        screen = self.back_to_jd(screen)
         screen = self.dismiss_popups(screen)
         screen = self.recover_farm_panel(screen)
         screen = self.ensure_panel(screen)

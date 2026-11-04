@@ -17,12 +17,15 @@ import logging
 import re
 
 from backend.core.models import normalize
+from backend.app.jd.activities.dongdong_farm.tasks import ALL_ACTIONS
 
 logger = logging.getLogger('backend.execution')
 
 FARM_MARKERS = ('点击前往做任务领水滴页面', '这里是要浇水的大树', '选奖品按钮')
 PANEL_TITLE = '做任务领水滴'
 SIGN_MARKERS = ('连续签到', '已连续签到', '点击签到领水滴')
+# 容器页上的关闭/返回控件：小程序右上角「关闭」，H5 与商品详情左上角「返回」/「×」。
+CLOSE_TEXTS = ('关闭', '关闭页面', '关闭弹窗', '返回', '×', '✕', 'X', 'close')
 
 
 def _norm(text):
@@ -38,7 +41,22 @@ class EntryPolicy:
 
     @staticmethod
     def farm_visible(screen):
-        return any(marker in _texts(screen) for marker in FARM_MARKERS)
+        """农场页。
+
+        浇水动画、切换页面时控件树会有一两帧只剩零星节点，文案读不全；
+        但农场页始终挂着一个铺满全屏的「东东农场」容器，认它比认按钮稳。
+        首页金刚区那个同名图标只有 194x194，不会被这条判据误命中。
+        """
+        if any(marker in _texts(screen) for marker in FARM_MARKERS):
+            return True
+        for node in screen.nodes:
+            if _norm(node.text) != '东东农场':
+                continue
+            width = node.bounds[2] - node.bounds[0]
+            height = node.bounds[3] - node.bounds[1]
+            if width >= screen.width * .8 and height >= screen.height * .8:
+                return True
+        return False
 
     @staticmethod
     def panel_visible(screen):
@@ -83,8 +101,39 @@ class EntryPolicy:
         """抽屉已经出现、行还没渲染完：给任务行独立的等待窗口。"""
         if not cls.panel_visible(screen):
             return False
-        return not any(_norm(node.text) in {'去完成', '逛一逛', '去领奖', '去浇水', '去关注'}
-                       for node in screen.nodes)
+        return not any(_norm(node.text) in ALL_ACTIONS for node in screen.nodes)
+
+    # ---- 京东自家的「其它页面」----
+
+    def foreign_page(self, screen):
+        """京东里既不是农场、也不是首页、也不是任务面板/签到的页面。
+
+        真机上这类页面包括：商品详情、活动 H5（WebActivity）、PLUS 会员（FloatViewActivity）、
+        小程序（MantoActivity，例如小游戏、任务中心）。它们的共同点是「不像我们的三个目标页」。
+        恢复时必须先退出去，而不是把入口反复点在这张页面上。
+        """
+        if not (screen.package or '').startswith('com.jingdong.app.mall'):
+            return False
+        return not (self.farm_visible(screen) or self.homepage_visible(screen)
+                    or self.panel_visible(screen) or self.sign_visible(screen))
+
+    @staticmethod
+    def page_close_node(screen):
+        """容器页上的关闭/返回控件（只认顶部区域，避免点到正文里的「关闭」）。"""
+        best = None
+        for node in screen.nodes:
+            text = _norm(node.text)
+            if not text or text not in CLOSE_TEXTS:
+                continue
+            if node.center[1] > screen.height * .12:
+                continue
+            width = node.bounds[2] - node.bounds[0]
+            height = node.bounds[3] - node.bounds[1]
+            if width > screen.width * .5 or height > screen.height * .1:
+                continue
+            if best is None or (node.center[0], node.bounds[1]) < (best.center[0], best.bounds[1]):
+                best = node
+        return best
 
     # ---- 入口定位 ----
 
@@ -107,6 +156,10 @@ class EntryPolicy:
     def task_panel_entry(self, screen):
         if self.panel_visible(screen):
             return None
+        if self.foreign_page(screen):
+            # 恢复途中停在商品详情/H5/小程序上时，这里返回顶部关闭控件：
+            # 导航循环点一下就能退出这张页面，下一轮再找真正的农场入口。
+            return self.page_close_node(screen)
         for label in self.config.get('task_entry_labels', ['点击前往做任务领水滴页面']):
             text = _norm(label)
             for node in screen.nodes:
