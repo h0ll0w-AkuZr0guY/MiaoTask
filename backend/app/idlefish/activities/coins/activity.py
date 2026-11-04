@@ -194,7 +194,7 @@ class IdleFishCoinsActivity(EntryPolicy, Activity):
 
         列表点击后会自行重排：完成的任务跳首行、领奖后整行消失、后面各行整体上移，
         在重排动画中间态点击极易落到相邻行，所以必须等坐标稳定再动手。
-        按标题匹配（key 含进度，进度一变就对不上）；两次读数不同直接用最新位置。
+        按标题匹配；两次读数不同使用最新位置，进度由核验层处理。
         """
         screen, last = None, None
         for _ in range(tries):
@@ -225,7 +225,7 @@ class IdleFishCoinsActivity(EntryPolicy, Activity):
         self.click(TextNode(fresh.action, fresh.bounds))
         if task.kind == 'claim':
             # 领奖按钮响应快，1.2 秒足够；读一屏点掉「获得XX」弹窗就立刻
-            # 交给外层继续下一个任务（核验已在 verify 里关闭，不再额外等待）。
+            # 交给外层按实际回执与任务进度核验。
             self.control.wait(1.2)
             screen = self.read()
             self.guard(screen)
@@ -270,7 +270,7 @@ class IdleFishCoinsActivity(EntryPolicy, Activity):
         """浏览/点击完成后按钮会从「去完成」变成「领取奖励」，顺手点掉。
 
         服务端结算有几秒延迟，第一次读往往还是「去完成」，所以查三拍（约 3 秒）；
-        按标题匹配（进度变化后 key 已不同），确保达标后能第一时间领奖。
+        按标题匹配，确保达标后能及时领奖。
         """
         for _ in range(tries):
             if not self.is_task_list(screen.nodes):
@@ -695,7 +695,7 @@ class IdleFishCoinsActivity(EntryPolicy, Activity):
 
         点「去完成」进入搜索页后，还需在搜索框输入/点推荐词再浏览才能完成。
         这里尽力而为：点开搜索框 → 点搜索发现词云里的第一个推荐词触发搜索
-        → 连续滑动浏览若干次 → 返回。若页面没有可点的推荐词，则退化浏览当前页。
+        → 连续滑动浏览若干次 → 返回。无法确认推荐词入口时跳过，不在未搜索的页面滑动。
         """
         s = self.read()
         submitted = False
