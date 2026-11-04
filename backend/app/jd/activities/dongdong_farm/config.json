@@ -1,0 +1,107 @@
+{
+  "name": "东东农场",
+  "ocr": false,
+  "search_keyword": "",
+  "task_search_keyword": "东东农场",
+  "enabled_task_kinds": [
+    "browse",
+    "visit",
+    "claim"
+  ],
+  "entry_labels": [
+    "东东农场"
+  ],
+  "task_entry_labels": [
+    "点击前往做任务领水滴页面"
+  ],
+  "panel_title_labels": [
+    "做任务 领水滴"
+  ],
+  "go_complete_labels": [
+    "去完成",
+    "逛一逛",
+    "去逛逛",
+    "去看看",
+    "去浏览",
+    "去关注"
+  ],
+  "claim_labels": [
+    "去领奖",
+    "领奖励",
+    "领取",
+    "立即领取"
+  ],
+  "claim_sweep_limit": 24,
+  "claim_sweep_scrolls": 8,
+  "claim_retry": 2,
+  "claim_settle_timeout": 5,
+  "water_labels": [
+    "去浇水"
+  ],
+  "done_labels": [
+    "已完成",
+    "已领取",
+    "已领奖",
+    "明日再来"
+  ],
+  "sign_entry_labels": [
+    "点击前往签到页面"
+  ],
+  "sign_button_labels": [
+    "点击签到领水滴",
+    "立即签到",
+    "签到领水滴",
+    "去签到"
+  ],
+  "sign_done_labels": [
+    "已连续签到",
+    "已签到",
+    "明天再来"
+  ],
+  "water_can_labels": [
+    "水滴剩余"
+  ],
+  "reward_popup_text": "恭喜获得",
+  "popup_close_labels": [
+    "开心收下",
+    "明天再来",
+    "知道了",
+    "我知道了",
+    "确认领取",
+    "关闭",
+    "取消",
+    "稍后再说"
+  ],
+  "promo_popup_labels": [
+    "下1单奖励",
+    "点击手机桌面",
+    "天降惊喜红包",
+    "邀请好友助力"
+  ],
+  "popup_close_points": [
+    [
+      0.895,
+      0.315
+    ],
+    [
+      0.539,
+      0.757
+    ],
+    [
+      0.965,
+      0.168
+    ]
+  ],
+  "quick_verify": true,
+  "quick_verify_labels": [
+    "快速验证"
+  ],
+  "water_times_per_run": 8,
+  "claim_water_bubbles": true,
+  "browse_shortcut_seconds": 6,
+  "cross_app_seconds": 25,
+  "max_scroll_pages": 14,
+  "empty_batch_stop": 1,
+  "description": "京东东东农场（免费水果）：自动进农场 → 签到领水滴 → 领可领的水滴 → 浇水 → 打开「做任务 领水滴」。每次回到面板都先把「去领奖/领奖励」一次领完（可重复任务靠这一步才能接着做下一轮），再做浏览类任务：站内落地页（商品/PLUS/农场活动）停留浏览，站外任务（百度、快手极速版等）拉起对应 App 停留后返回京东。下单、邀请助力、通关小游戏、添加桌面小组件、话费充值等一律跳过。",
+  "bundle_by_default": true
+}

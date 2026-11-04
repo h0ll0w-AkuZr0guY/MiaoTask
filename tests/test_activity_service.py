@@ -183,9 +183,13 @@ class ActivityDescriptionTests(unittest.TestCase):
         registry=Registry(Path(__file__).resolve().parents[1]/'backend/app').discover()
         described=[(app['id'],activity['id'],activity['description']) for app in registry.catalog()
                    for activity in app['activities'] if activity.get('description')]
-        self.assertEqual([(a,b) for a,b,_ in described],[('zfb','yueyuezhuan')])
-        self.assertIn('这是一款转账红包（非支付减免红包）',described[0][2])
-        self.assertIn('积少成多',described[0][2])
+        self.assertEqual([(a,b) for a,b,_ in described],
+                         [('jd','dongdong_farm'),('zfb','yueyuezhuan')])
+        transfer=next(text for a,b,text in described if (a,b)==('zfb','yueyuezhuan'))
+        self.assertIn('这是一款转账红包（非支付减免红包）',transfer)
+        self.assertIn('积少成多',transfer)
+        farm=next(text for a,b,text in described if (a,b)==('jd','dongdong_farm'))
+        self.assertIn('东东农场',farm)
 
 
 class CatalogOpeningLatencyTests(unittest.TestCase):
