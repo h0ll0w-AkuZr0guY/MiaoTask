@@ -269,6 +269,44 @@ class ClaimSweepTests(unittest.TestCase):
         runner.setup()
         self.assertTrue(runner._running)
 
+    def test_alt_swipe_reopens_the_drawer_instead_of_closing_it(self):
+        """京东抽屉不认反向拖动：往上拖会被识别成「下拉关闭」，抽屉直接消失。
+
+        真机上连滑三次就退回农场首页，导航随后全部扑空。所以反向检索必须走
+        「收起 → 重新打开」，语义仍是回到列表顶部。
+        """
+        panel = panel_screen(('逛家电家居领京豆(1/1)', '浏览6秒，奖励+10g', '继续逛'),
+                             extra=[('关闭任务面板', (957, 363, 1032, 438))])
+        farm = farm_home_screen()
+        self.play([farm, panel])
+        self.runner._tap = self.runner.click
+        self.assertTrue(self.runner.alt_swipe(panel))
+        self.assertEqual([node.text for node in self.runner.clicked],
+                         ['关闭任务面板', '点击前往做任务领水滴页面'])
+
+    def test_panel_reopens_near_the_last_finished_row(self):
+        """抽屉每次重开都回到顶部，主循环就得重滑三屏才够到刚才那一行。
+
+        一轮下来滑动预算全花在「回到原位」上，列表下半截的浏览任务永远轮不到。
+        """
+        full = panel_screen(
+            ('逛PLUS会员中心(0/1)', '浏览6秒，奖励+10g', '逛一逛'),
+            ('去浏览直播挑战赛(0/1)', '浏览6秒，奖励+10g', '逛一逛'),
+            ('读一本小说最高赚20(0/1)', '读6s书奖励+10g', '逛一逛'),
+        )
+        tasks = self.runner.parse_tasks(full.nodes, full.width, full.height)
+        first = next(t for t in tasks if t.title == '逛PLUS会员中心')
+        self.runner._remember_anchor(full, first)
+        self.assertEqual(self.runner._anchor_titles, ('去浏览直播挑战赛', '读一本小说最高赚20'))
+
+        top = panel_screen(('逛PLUS会员中心(1/1)', '浏览6秒，奖励+10g', '继续逛'))
+        deeper = panel_screen(('去浏览直播挑战赛(0/1)', '浏览6秒，奖励+10g', '逛一逛'))
+        self.runner.browse_swipe = Mock()
+        self.runner.read = lambda force_ocr=False: deeper
+        screen = self.runner._restore_panel_position(top)
+        self.runner.browse_swipe.assert_called_once()
+        self.assertIn('去浏览直播挑战赛(0/1)', [node.text for node in screen.nodes])
+
     def test_claim_records_that_left_the_panel_are_closed(self):
         self.runner.records = {
             'gone#claim': dict(kind='claim', title='抢20元外卖金券', status='pending', current=1),

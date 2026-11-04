@@ -42,6 +42,9 @@ class DongDongFarmActivity(EntryPolicy, TaskRows, TaskActions, VerificationPolic
         self._claims_swept = False
         self._water_actions = 0
         self._credited = False
+        # 上次执行的任务后面紧跟着哪几行：抽屉重开回到顶部时用它定位，
+        # 免得每做一条都要从顶部重滑三屏（滑动预算一轮就被这些白滑耗光）。
+        self._anchor_titles = ()
 
     def run(self, auto_open=False):
         self._running = True

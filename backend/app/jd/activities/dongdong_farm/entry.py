@@ -260,9 +260,50 @@ class EntryPolicy:
         self.device.swipe(x, int(screen.height * .78), x, int(screen.height * .42), duration=.4)
 
     def alt_swipe(self, screen):
-        x = int(screen.width * .5)
-        self.device.swipe(x, int(screen.height * .42), x, int(screen.height * .78), duration=.4)
-        return True
+        """反向「回顶部」。
+
+        京东的任务抽屉是底部弹层：在里面往上拖（内容回到顶部）会被识别成
+        「下拉关闭」，抽屉直接收起来——真机上连滑三次就退回农场首页了。
+        所以反向检索一律用「收起 → 重新打开」实现，语义等价（回到列表顶部），
+        副作用是重新渲染，不会把抽屉关掉。
+        """
+        return self.reopen_panel(screen)
+
+    def reopen_panel(self, screen, timeout=8):
+        """收起抽屉再打开，等价于把列表滚回顶部。
+
+        收起和重开都要等，京东这两步各有 1-2 秒的渲染空档：点完「关闭任务面板」
+        立刻读屏往往还是旧树，点完入口立刻读屏又还没画出行。真机上不等待就会
+        判成「重开失败」，导航层接着去冷启动，白跑半分钟。
+        """
+        if not self.panel_visible(screen):
+            return False
+        closer = next((node for node in screen.nodes
+                       if _norm(node.text) in ('关闭任务面板', '关闭')), None)
+        tap = getattr(self, '_tap', self.click)
+        if closer is not None:
+            tap(closer)
+        else:
+            self.device.go_back()
+        deadline = self.control.now() + timeout
+        farm = None
+        while self.control.now() < deadline:
+            self.control.wait(.6)
+            current = self.read()
+            if self.farm_visible(current) and not self.panel_visible(current):
+                farm = current
+                break
+        if farm is None:
+            return False
+        entry = self.task_panel_entry(farm)
+        if entry is None:
+            return False
+        tap(entry)
+        while self.control.now() < deadline:
+            self.control.wait(.6)
+            if self.panel_visible(self.read()):
+                return True
+        return False
 
     @staticmethod
     def view_signature(screen):

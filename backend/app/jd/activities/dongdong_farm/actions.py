@@ -278,9 +278,43 @@ class TaskActions:
                     continue
                 self.click(entry)
                 self.control.wait(1.6)
-                screen = self.read()
+                screen = self._restore_panel_position(self.read())
                 continue
             screen = self.recover_farm_panel(screen)
+        return screen
+
+    # ---- 面板位置记忆 ----
+    #
+    # 京东这个抽屉有 20 多行，而抽屉每次关掉重开都会回到顶部。主循环又是
+    # 「做一条 → 回面板 → 再挑一条」，如果每次都从顶往下重滑三屏，整轮的
+    # 滑动预算（max_scroll_pages 是累计值）全花在「回到原位」上，做到一半就
+    # 收工，列表下方的浏览任务整天轮不到。所以执行前记住「这一行后面还有谁」，
+    # 重开抽屉后直接滚回那里。
+
+    def _remember_anchor(self, screen, task):
+        try:
+            rows = [t for t in self.tasks(screen) if t.kind in ('browse', 'visit', 'claim')]
+        except Exception:
+            self._anchor_titles = ()
+            return
+        index = next((i for i, row in enumerate(rows) if row.key == task.key), -1)
+        self._anchor_titles = tuple(row.title for row in rows[index + 1:index + 3]) if index >= 0 else ()
+
+    def _restore_panel_position(self, screen, max_scrolls=8):
+        anchors = [normalize(title) for title in getattr(self, '_anchor_titles', ()) if title]
+        if not anchors or not self.panel_visible(screen):
+            return screen
+        for _ in range(max_scrolls):
+            texts = [normalize(node.text) for node in screen.nodes]
+            if any(anchor in text for anchor in anchors for text in texts):
+                return screen
+            if any('没有更多了' in text for text in texts):
+                return screen          # 已经到底：这一批在它后面，没有更靠下的行了
+            if not self.panel_visible(screen):
+                return screen
+            self.browse_swipe(screen)
+            self.control.wait(.8)
+            screen = self.read()
         return screen
 
     def recover_farm_panel(self, screen, tries=4):
@@ -294,7 +328,7 @@ class TaskActions:
                     return screen
                 self.click(entry)
                 self.control.wait(1.6)
-                screen = self.read()
+                screen = self._restore_panel_position(self.read())
                 continue
             if not self.in_app(screen):
                 screen = self.back_to_jd(screen)
@@ -344,6 +378,7 @@ class TaskActions:
         self._active_task = task
         self._credited = False
         self.update('opening', message='打开任务：' + task.title, remaining=0)
+        self._remember_anchor(before, task)
         screen = self.ensure_panel(before)
         screen, target = self.locate_row(screen, task)
         if target is None:
@@ -543,7 +578,12 @@ class TaskActions:
             logger.info('本轮领到 %d 个奖励', claimed)
         if deep and self._sweep_complete:
             self._drop_stale_claims()
-        return self.ensure_panel(screen)
+        screen = self.ensure_panel(screen)
+        if deep:
+            # 深扫结束时视口停在列表底部，主循环从这里往下看只会以为「没任务」。
+            # 收回到顶部，让它从头按顺序挑。
+            screen = self._panel_scroll_to_top(screen)
+        return screen
 
     def _drop_stale_claims(self):
         """整屏扫过一遍后，把记录里已经不存在的领奖行收尾。
@@ -581,17 +621,15 @@ class TaskActions:
         return screen, (not before or not after or after != before)
 
     def _panel_scroll_to_top(self, screen, limit=4):
-        for _ in range(max(1, limit)):
-            before = self._panel_rows(screen)
-            if not self.alt_swipe(screen):
-                break
-            self.control.wait(.5)
-            screen = self.read()
-            if not self.panel_visible(screen):
-                screen = self.ensure_panel(screen)
-            if self._panel_rows(screen) == before:
-                break
-        return screen
+        """回到列表顶部。
+
+        京东的抽屉是底部弹层，在里面反向拖动会被识别成「下拉关闭」，直接把
+        抽屉收起来；所以这里不滑动，收起再打开一次就等于回到顶部。
+        """
+        if not self.panel_visible(screen):
+            return screen
+        self.reopen_panel(screen)
+        return self.read()
 
     def _mark_claimed(self, task):
         """直接领掉的奖励也要落到记录里，界面上不能一直挂着「待处理」。
