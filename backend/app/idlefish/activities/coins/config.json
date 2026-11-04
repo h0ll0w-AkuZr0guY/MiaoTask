@@ -1,0 +1,68 @@
+{
+  "page_timeout": 45,
+  "panel_open_timeout": 10,
+  "ocr": false,
+  "ocr_fallback": true,
+  "force_ocr_entry": false,
+  "visit_seconds": 5,
+  "visit_settle_seconds": 4,
+  "entry_ocr_label": "赚更多",
+  "entry_ocr_band": [0.45, 0.75],
+  "entry_ocr_fullscreen": true,
+  "entry_point_fallback": [0.89, 0.80],
+  "entry_ocr_offset": 0.024,
+  "entry_settle_min": 0.8,
+  "entry_settle_interval": 0.25,
+  "entry_settle_samples": 3,
+  "entry_settle_timeout": 12,
+  "enabled_task_kinds": ["browse", "claim", "visit", "search"],
+  "browse_extra_seconds": 2,
+  "browse_read_interval": 3,
+  "search_keyword": "",
+  "task_search_keyword": "手机壳",
+
+  "browse": {
+    "regular_seconds": 20,
+    "video_seconds": 18,
+    "map_event_seconds": 21,
+    "swipe_interval": 2.5
+  },
+  "dice": {
+    "max_rounds": 40,
+    "post_swipe_pause": 1.5
+  },
+  "feed": {
+    "max_items": 10,
+    "per_item_seconds": 3
+  },
+
+  "entry_labels": ["闲鱼币"],
+  "task_entry_labels": ["赚更多"],
+  "homepage_labels": ["闲鱼", "我的"],
+
+  "landing_regex": "7天圈数挑战|再走\\d+步完成1圈|挑战大奖",
+  "step_regex": "再走\\d+步完成1圈|再走\\d+步|^\\d+步$",
+  "panel_heading_regex": "提醒签到|累积任务奖励",
+  "panel_loading_regex": "加载中|请稍候|正在加载",
+
+  "game_keywords": [
+    "玩游戏", "消了还想消", "玩1关", "向往的生活", "点点消不停",
+    "织梦森林", "赵云与阿斗", "游戏", "合成", "主线"
+  ],
+  "skip_titles": ["发布"],
+
+  "list_markers": ["去完成", "去浏览", "领取奖励", "立即领取", "提醒签到", "签到"],
+
+  "popup_buttons": [
+    "暂不升级", "放弃", "确定", "我知道了", "收下礼物", "开心收下",
+    "全部收下", "关闭", "返回"
+  ],
+
+  "video_skip_words": ["跳过"],
+  "video_exit_words": ["坚持退出", "残忍离开", "离开"],
+
+  "browse_reward_prompt": "浏览(\\d+)秒获得",
+  "browse_reward_button": "返回",
+
+  "stage_reward_labels": ["+100", "+300", "+500"]
+}
