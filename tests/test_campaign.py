@@ -1466,6 +1466,44 @@ class RunnerTests(unittest.TestCase):
         self.assertTrue(explicit)
         self.assertLess(clock[0], 2)
 
+    def test_completion_return_delay_waits_random_time_before_returning(self):
+        r, clock, destination = self.scrolling_runner()
+        completed = Screen([node('任务已完成', 800, 200)], 1440, 3200, r.origin)
+        r.config.update(completion_return_ms=800, swipe_duration_min=.5, swipe_duration_max=.5)
+        r.device.swipe.side_effect = lambda *a, **kw: clock.__setitem__(0, clock[0] + kw['duration'])
+        r.reader.visual_observer = lambda: ScriptedObservation(r, completed)
+        explicit, _ = r.wait_for_browse(r.tasks(task_screen())[0], completed, False, 27)
+        self.assertTrue(explicit)
+        waits = [call.args[0] for call in r.control.wait.call_args_list]
+        self.assertEqual(len(waits), 1)
+        self.assertGreater(waits[0], 0)
+        self.assertLessEqual(waits[0], .8)
+        self.assertLess(clock[0], 2)
+
+    def test_completion_return_delay_is_drawn_per_completion_check(self):
+        # The recheck loop draws a new random pause each time the completion
+        # prompt is read, so the settle helper must not rely on call order.
+        r = self.runner()
+        completed = Screen([node('任务已完成', 800, 200)], 1440, 3200, r.origin)
+        r.config['completion_return_ms'] = 500
+        r.settle_completion()
+        r.settle_completion()
+        waits = [call.args[0] for call in r.control.wait.call_args_list]
+        self.assertEqual(len(waits), 2)
+        self.assertTrue(all(0 < wait <= .5 for wait in waits))
+        r.config['completion_return_ms'] = 0
+        r.settle_completion()
+        self.assertEqual(len(r.control.wait.call_args_list), 2)
+
+    def test_completion_return_delay_rejects_out_of_range_values(self):
+        for invalid in (-1, 10001, True, '300', 1.5):
+            config = load_config()
+            config['completion_return_ms'] = invalid
+            with self.assertRaises(ValueError):
+                validate_config(config)
+        config = load_config()
+        self.assertEqual(validate_config(config)['completion_return_ms'], 0)
+
 
     def test_newly_delivered_result_does_not_double_charge_previous_inference_age(self):
         import time

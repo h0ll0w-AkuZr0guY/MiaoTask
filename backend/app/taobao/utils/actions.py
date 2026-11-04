@@ -541,6 +541,7 @@ class TaskActions:
         self.guard(screen)
         self.check_destination(screen)
         if self.browse_completed(screen):
+            self.settle_completion()
             return True, cross
         retry_needed = getattr(self.task_policy, 'retry_needed', self.task_policy.failures)
         retry = task.kind in ('browse', 'search') and bool(retry_needed(task))
@@ -582,6 +583,7 @@ class TaskActions:
                 # A changed destination must be handled by the normal return path.
                 break
             if self.browse_completed(screen):
+                self.settle_completion()
                 return True, cross
             if round_no == self.config.get('browse_recheck_rounds', 3):
                 break

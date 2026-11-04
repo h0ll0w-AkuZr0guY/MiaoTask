@@ -50,6 +50,18 @@ class Session:
             return self.config.get('task_search_keyword', '123')
         return random.choice(words)
 
+    def settle_completion(self):
+        """Random pause between the completion prompt and the return navigation.
+
+        `completion_return_ms` caps the wait; the drawn value is uniform in
+        0..N so 0 keeps the immediate return. `control.wait` still honours
+        stop requests during the pause.
+        """
+        limit = self.config.get('completion_return_ms') or 0
+        if isinstance(limit, bool) or not isinstance(limit, (int, float)) or limit <= 0:
+            return
+        self.control.wait(random.uniform(0, min(limit, 10000)) / 1000)
+
 
     def reset_task_marks(self):
         """Discard scheduling decisions/aliases, retaining accumulated run statistics."""
