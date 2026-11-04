@@ -1,5 +1,5 @@
 """Discover declarative application manifests; no platform imports in core."""
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import lru_cache
 import importlib
 import importlib.util

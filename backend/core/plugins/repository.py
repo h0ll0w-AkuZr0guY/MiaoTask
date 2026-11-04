@@ -6,11 +6,12 @@ import re
 import sys
 import time
 from urllib.parse import quote, unquote, urlparse
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, Request
 from urllib.error import HTTPError, URLError
 import zipfile
 
-from backend.core.plugins.contracts import (ALLOWED_SUFFIXES, CATALOG_URL, FRAMEWORK_API,
+from backend.core.plugins.networking import fetch_with_retry, official_opener
+from backend.core.plugins.contracts import (ALLOWED_SUFFIXES, FRAMEWORK_API,
     LEGACY_COMPATIBLE_MANIFESTS, MAX_ARCHIVE_BYTES, MAX_CATALOG_BYTES, MAX_EXPANDED_BYTES,
     MAX_FILES, MAX_SOURCE_FILE_BYTES, MAX_TREE_BYTES, OFFICIAL_REPOSITORY,
     PACKAGE_SCHEMA, SOURCE_REF, module_id, package_version, branch_name)
@@ -72,15 +73,21 @@ class _NoRedirect(HTTPRedirectHandler):
 
 
 def download_source(url, maximum):
-    global _API_RETRY_AT
     source_url(url)
     if urlparse(url).hostname == 'api.github.com' and time.time() < _API_RETRY_AT:
         raise SourceRateLimited('GitHub API 暂时限流，已暂停 API 重试')
+    # One refresh reads dozens of small objects; a dropped proxy handshake
+    # must not abort the whole catalog update.
+    return fetch_with_retry(lambda: _download_source_once(url, maximum))
+
+
+def _download_source_once(url, maximum):
+    global _API_RETRY_AT
     request = Request(url, headers={'User-Agent': 'MiaoTask-GitHub-Activities',
                       'Accept': 'application/vnd.github+json' if urlparse(url).hostname == 'api.github.com' else 'application/octet-stream',
                       'X-GitHub-Api-Version': '2022-11-28'})
     try:
-        response = build_opener(_NoRedirect()).open(request, timeout=15)
+        response = official_opener(_NoRedirect()).open(request, timeout=15)
     except HTTPError as exc:
         if urlparse(url).hostname == 'api.github.com' and exc.code in (403, 429):
             try:
@@ -256,22 +263,25 @@ class GitHubSourceProvider:
         from backend.core.registry import checked_id
         self.deadline = self.clock() + 60
         self._mirror = None
+        # Pages contains only the small, reviewed catalog. API tree/manifests
+        # and repository archives are fallback paths, not the opening screen.
+        from backend.core.plugins.resource_mirror import RESOURCE_MIRRORS, ResourceMirror
+        for base in RESOURCE_MIRRORS:
+            try:
+                mirror = ResourceMirror(base, fetch=None if self.fetch is download_source else self.fetch,
+                                        source_ref=self.source_ref)
+                value = mirror.catalog(commit)
+                self._mirror, self.commit, self.transport = mirror, value['source_commit'], 'pages'
+                self.entries = {(item['app'],item['activity']): item for item in value['packages']}
+                return value
+            except (OSError, ValueError):
+                continue
         try:
             self._resolve(commit)
             self.transport = 'github-api'
         except (HTTPError, URLError, SourceRateLimited) as exc:
             if isinstance(exc, HTTPError) and exc.code not in (403,429):
                 raise
-            from backend.core.plugins.resource_mirror import RESOURCE_MIRRORS, ResourceMirror
-            for base in RESOURCE_MIRRORS:
-                try:
-                    mirror = ResourceMirror(base, fetch=None if self.fetch is download_source else self.fetch, source_ref=self.source_ref)
-                    value = mirror.catalog(commit)
-                    self._mirror, self.commit, self.transport = mirror, value['source_commit'], 'pages'
-                    self.entries = {(item['app'],item['activity']):item for item in value['packages']}
-                    return value
-                except (OSError, ValueError):
-                    continue
             self._resolve_archive(commit)
         packages, warnings, ids, owners = [], [], set(), {}
         app_paths = sorted(path for path in self.blobs if re.fullmatch(r'backend/app/[a-z][a-z0-9_]*/manifest\.py', path))

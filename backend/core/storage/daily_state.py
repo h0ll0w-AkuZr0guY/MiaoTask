@@ -114,8 +114,12 @@ class DailyState:
                 decisions = loaded.get('task_decisions', {})
                 if (not isinstance(decisions, dict) or any(
                         not isinstance(key, str) or len(key) != 24 or not isinstance(item, dict)
-                        or set(item) - {'skip', 'failures', 'exhausted', 'browse_once_attempted'}
+                        or set(item) - {'skip', 'failures', 'exhausted', 'browse_once_attempted', 'deferred'}
                         or not isinstance(item.get('browse_once_attempted', False), bool)
+                        or not isinstance(item.get('deferred', {}), dict)
+                        or any(category not in ('navigation', 'settlement')
+                               or type(count) is not int or count < 0
+                               for category, count in item.get('deferred', {}).items())
                         or not isinstance(item.get('skip', False), bool)
                         or not isinstance(item.get('exhausted', False), bool)
                         or type(item.get('failures', 0)) is not int or item.get('failures', 0) < 0

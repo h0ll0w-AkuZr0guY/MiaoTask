@@ -54,6 +54,9 @@ def audit_worktree(root=ROOT):
 
 
 def main():
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(encoding='utf-8')
     try:
         print('Checking current public source...', flush=True)
         print(f'{audit_worktree()} files checked', flush=True)

@@ -5,6 +5,16 @@ import threading
 from backend.core.models import normalize
 
 
+def keyword_skip_reason(task, words):
+    def get(name, default=''):
+        return task.get(name, default) if isinstance(task, dict) else getattr(task, name, default)
+    if get('kind') == 'done':
+        return ''
+    text = normalize(get('title') + ' ' + (get('detail') or '')).casefold()
+    word = next((word for word in words if normalize(word).casefold() in text), None)
+    return f'已跳过：命中常驻关键词“{word}”；请在公共词表中修改' if word else ''
+
+
 def task_identity(task):
     def get(name, default=''):
         return task.get(name, default) if isinstance(task, dict) else getattr(task, name, default)
@@ -15,7 +25,7 @@ def task_identity(task):
 
 class TaskPolicy:
     # 基于「上一轮那次尝试」得出的临时判定：可以重新来过，不属于用户选择。
-    CLEAR_ON_PROGRESS = ('browse_once_attempted', 'failures', 'exhausted')
+    CLEAR_ON_PROGRESS = ('browse_once_attempted', 'failures', 'exhausted', 'deferred')
     # 重新进入列表后只放行「无明确时长只试一次」这条锁；失败次数是当日额度，
     # 清了就等于把 max_attempts 变成无限重试，正在出问题的任务会被反复空跑。
     CLEAR_ON_REENTRY = ('browse_once_attempted',)
@@ -48,6 +58,27 @@ class TaskPolicy:
     def failures(self, task):
         with self.lock:
             return self.entries.get(task_identity(task), {}).get('failures', 0)
+
+    def defer(self, task, category, limit=1):
+        """Persist bounded unconfirmed attempts without claiming task success."""
+        if category not in ('navigation', 'settlement'):
+            raise ValueError('unknown task deferral category')
+        with self.lock:
+            item = self.entries.setdefault(task_identity(task), {})
+            if item.get('skip') or item.get('exhausted'):
+                return False
+            deferred = item.setdefault('deferred', {})
+            used = deferred.get(category, 0)
+            if used >= limit:
+                return False
+            deferred[category] = used + 1
+            self._save()
+            return True
+
+    def retry_needed(self, task):
+        with self.lock:
+            item = self.entries.get(task_identity(task), {})
+            return bool(item.get('failures') or item.get('deferred'))
 
     def fail(self, task, limit):
         with self.lock:
@@ -122,5 +153,9 @@ class TaskPolicy:
             if skip:
                 self.entries.setdefault(identity, {})['skip'] = True
             else:
-                self.entries.pop(identity, None)
+                self.entries[identity] = {'skip': False}
             self._save()
+
+    def explicitly_enabled(self, task):
+        with self.lock:
+            return self.entries.get(task_identity(task), {}).get('skip') is False

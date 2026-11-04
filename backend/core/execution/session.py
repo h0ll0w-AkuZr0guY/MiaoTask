@@ -2,6 +2,7 @@
 from collections import Counter
 from dataclasses import asdict
 import logging
+import random
 import time
 from backend.core.execution.run_control import RunControl
 from backend.core.execution.stats import RunStats
@@ -18,6 +19,8 @@ class Session:
         self.control = control or RunControl()
         self.emit = emit or (lambda **event: None)
         self.reader = ScreenReader(device, self.config['ocr'], on_image=on_image)
+        self.reader.compressed_screenshots = self.config.get('compressed_screenshots', False)
+        self.reader.screenshot_quality = self.config.get('screenshot_quality', 70)
         self.stats = RunStats()
         self.failures = Counter()
         from backend.core.execution.task_policy import TaskPolicy
@@ -39,6 +42,29 @@ class Session:
         self._active_task = None
         self._phase = 'locating'
         self._task_restart_used = False
+
+    def next_search_keyword(self):
+        """Task queries share the public list; navigation keeps activity wording."""
+        words = self.config.get('task_search_keywords', [])
+        if not words:
+            return self.config.get('task_search_keyword', '123')
+        return random.choice(words)
+
+    def settle_completion(self, *, deadline=None):
+        """Random pause between the completion prompt and the return navigation.
+
+        `completion_return_ms` caps the wait; the drawn value is uniform in
+        0..N so 0 keeps the immediate return. `control.wait` still honours
+        stop requests during the pause.
+        """
+        limit = self.config.get('completion_return_ms', 1000) or 0
+        if isinstance(limit, bool) or not isinstance(limit, (int, float)) or limit <= 0:
+            return
+        delay = random.uniform(0, min(limit, 10000)) / 1000
+        if deadline is not None:
+            delay = min(delay, max(0, deadline - self.control.now()))
+        if delay > 0:
+            self.control.wait(delay)
 
 
     def reset_task_marks(self):
@@ -84,7 +110,8 @@ class Session:
         self.control.check()
         self.assert_instance(screen)
         self.update(package=screen.package, source=screen.source,
-                    observation_ms=round(self.reader.last_observation_seconds * 1000))
+                    observation_ms=round(self.reader.last_observation_seconds * 1000),
+                    observation_metrics=getattr(self.reader, 'observation_metrics', {}))
         return screen
 
 
@@ -112,12 +139,15 @@ class Session:
             x1,x2=x1+left,x2+left;y1,y2=y1+top,y2+top
         else:
             x1, y1, x2, y2, duration = self.gestures.sample(screen.width, screen.height)
-        self.device.swipe(x1, y1, x2, y2, duration=duration)
+        send = (self.device.continuous_swipe if callable(getattr(type(self.device), 'continuous_swipe', None))
+                else self.device.swipe)
+        send(x1, y1, x2, y2, duration=duration)
         return duration
 
 
     def scan(self, auto_open=False):
-        screen = self.ensure_list(auto_open)
+        with self.reader.observation_session(self.config, self.control):
+            screen = self.ensure_list(auto_open)
         self.remember(self.tasks(screen))
         self.update('ready', message='已识别当前屏幕任务，可以开始执行')
         return list(self.records.values())

@@ -60,7 +60,7 @@ def parse_tasks(nodes, width=1440, height=3200, *, rules):
         # Do not guess what an unlabelled button does.
         if not texts:
             continue
-        title = next((t for t in texts if rules.progress_re.search(t)), texts[0])
+        title = max((t for t in texts if rules.progress_re.search(t)), key=len, default=texts[0])
         if title in rules.ignored_titles:
             continue
         detail = " ".join(t for t in texts if t != title)

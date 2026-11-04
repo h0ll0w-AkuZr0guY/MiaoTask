@@ -11,6 +11,7 @@ class ActivityCatalogHub:
         self.plugin_operation = {}
         self.plugin_manager = None
         self._plugin_snapshot = {}
+        self.catalog_refresh_thread = None
 
     def _manager(self, origin):
         with self.catalog_gate:
@@ -30,11 +31,28 @@ class ActivityCatalogHub:
             busy = self.plugin_busy
             cached = copy.deepcopy(self._plugin_snapshot)
             operation = copy.deepcopy(self.plugin_operation)
+        manager = self._manager(origin)
         if not busy:
-            cached = self._manager(origin).snapshot(refresh=refresh)
+            cached = manager.snapshot(refresh=refresh, cache_only=manager.source_provider is not None)
             with self.catalog_gate:
                 self._plugin_snapshot = copy.deepcopy(cached)
-        return dict(cached, busy=busy, operation=operation)
+        with self.catalog_gate:
+            if refresh and not busy and manager.source_provider is not None and not (
+                    self.catalog_refresh_thread and self.catalog_refresh_thread.is_alive()):
+                self.catalog_refresh_thread = threading.Thread(target=self._refresh_catalog, args=(manager,),
+                                                               name='miao-catalog-refresh', daemon=True)
+                self.catalog_refresh_thread.start()
+            refreshing = bool(self.catalog_refresh_thread and self.catalog_refresh_thread.is_alive())
+        return dict(cached, busy=busy, operation=operation, refreshing=refreshing)
+
+    def _refresh_catalog(self, manager):
+        try:
+            result = manager.snapshot(refresh=True)
+            with self.catalog_gate:
+                self._plugin_snapshot = copy.deepcopy(result)
+        except Exception:
+            # Manager retains validated cache and its diagnostic on fetch error.
+            pass
 
     def activity_branches(self, origin):
         from backend.core.plugins.repository import GitHubSourceProvider
@@ -45,6 +63,8 @@ class ActivityCatalogHub:
         from backend.core.storage.preferences import save_preferences
         ref = branch_name(payload.get('source_ref'))
         with self.catalog_gate, self.lock:
+            if self.catalog_refresh_thread and self.catalog_refresh_thread.is_alive():
+                raise ValueError('目录正在后台刷新，请稍候再切换分支')
             if self.closing or self.plugin_busy or any(c.thread and c.thread.is_alive() for c in self.controllers.values()):
                 raise ValueError('请先停止设备与活动安装，再切换源码分支')
             manager = self._manager(origin)
@@ -81,6 +101,35 @@ class ActivityCatalogHub:
                                                   args=(manager, action, app, activity, source_commit),
                                                   name='miao-activity-installer', daemon=False)
             self.plugin_thread.start()
+
+    def get_preferences(self):
+        """Console-wide network/OCR preferences plus OCR capabilities."""
+        from backend.core.preferences import load_preferences
+        preferences = load_preferences()
+        providers = []
+        try:
+            from backend.core.device.runtime_plugin import activate_runtime_plugin
+            activate_runtime_plugin()
+            import onnxruntime
+            providers = onnxruntime.get_available_providers()
+        except Exception:
+            pass
+        return dict(preferences, ocr_providers=providers,
+                    cuda_available='CUDAExecutionProvider' in providers)
+
+    def update_preferences(self, payload):
+        from backend.core.preferences import save_preferences
+        updates = {key: payload[key] for key in ('download_proxy', 'ocr_device') if key in payload}
+        before = self.get_preferences()['ocr_device']
+        with self.catalog_gate, self.lock:
+            if updates.get('ocr_device', before) != before and any(
+                    c.thread and c.thread.is_alive() for c in getattr(self,'controllers',{}).values()):
+                raise ValueError('请先停止设备任务，再切换OCR后端')
+            saved = save_preferences(updates)
+            if saved['ocr_device'] != before:
+                from backend.core.device.screen import reset_ocr_engines
+                reset_ocr_engines()
+        return self.get_preferences()
 
     def open_activity_folder(self, origin):
         import os

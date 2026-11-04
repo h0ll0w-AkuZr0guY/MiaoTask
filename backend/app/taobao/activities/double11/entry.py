@@ -213,7 +213,8 @@ class EntryPolicy:
             text = normalize(label)
             candidates = [n for n in screen.nodes if 0 < n.bounds[2] - n.bounds[0]
                           and 0 < n.bounds[3] - n.bounds[1] < screen.height * .2
-                          and (not homepage or n.center[1] < screen.height * .7)]
+                          and (not homepage or (n.center[1] < screen.height * .7
+                               and n.bounds[2] - n.bounds[0] < screen.width * .45))]
             exact = next((n for n in candidates if normalize(n.text) == text), None)
             if exact:
                 return exact
@@ -221,11 +222,24 @@ class EntryPolicy:
             # Keep this fallback within homepage functions, outside product cards.
             if homepage:
                 matches = [n for n in candidates if text in normalize(n.text)
-                           and len(normalize(n.text)) <= 40
+                           and len(normalize(n.text)) <= len(text) + 8
                            and not re.search(r'[¥￥]|已售|人付款|商品详情', n.text)]
                 if matches:
                     return min(matches, key=lambda n: (len(normalize(n.text)), n.bounds[1]))
         return None
+
+    def homepage_visual_fallback(self, screen):
+        """Split the icon band so OCR cannot merge neighboring entry captions."""
+        if not self.homepage_visible(screen):
+            return screen
+        # Proportional overlapping columns work on phones and wide tablets;
+        # actual click locations still come from recognized text boxes.
+        width, height = screen.width, screen.height
+        columns = 4 if width < height else 6
+        regions = [(round(width*i/columns), round(height*.08),
+                    min(width, round(width*(i+1.15)/columns)), round(height*.45))
+                   for i in range(columns)]
+        return self.reader.enrich_regions(screen, regions)
 
 
     @staticmethod

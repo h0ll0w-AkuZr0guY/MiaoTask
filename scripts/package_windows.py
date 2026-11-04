@@ -14,11 +14,73 @@ import sys
 import zipfile
 
 ROOT = Path(__file__).resolve().parent.parent
-PORTABLE_DOCS = ('USAGE.md', 'SAFETY.md', 'RELEASES.md', 'LICENSING.md')
+CUDA_PLUGIN_VERSION = '1.0'
+PORTABLE_DOCS = ('USAGE.md', 'CONFIGURATION.md', 'SAFETY.md', 'RELEASES.md', 'LICENSING.md')
 PROJECT_LICENSES = ('LICENSE', 'NOTICE')
 LICENSE_TEXT_SUFFIXES = {'', '.txt', '.md', '.rst', '.html', '.apache', '.bsd',
                          '.mit', '.gpl', '.gpl2', '.gpl3', '.gplv2', '.gplv3',
                          '.lgpl', '.mpl', '.zlib', '.isc'}
+
+
+def cuda_plugin_archive(output):
+    """Package only GPU-specific wheels from a separate locked GPU environment."""
+    import sysconfig
+    from packaging.requirements import Requirement
+
+    def locked(path):
+        return {Requirement(line).name.lower().replace('_', '-'): Requirement(line)
+                for line in path.read_text(encoding='utf-8').splitlines()
+                if line.strip() and not line.startswith('#')}
+
+    cpu = locked(ROOT / 'requirements-windows.lock')
+    gpu = locked(ROOT / 'configs/environments/requirements-cuda.lock')
+    for name in cpu.keys() & gpu.keys():
+        if cpu[name].specifier != gpu[name].specifier:
+            raise ValueError('CPU/CUDA共有依赖不一致：' + name)
+    for name, requirement in gpu.items():
+        if metadata.version(name) not in requirement.specifier:
+            raise ValueError('CUDA环境不符合锁定版本：' + name)
+    plugin_names = sorted(gpu.keys() - cpu.keys())
+    if 'onnxruntime-gpu' not in plugin_names or 'onnxruntime' in gpu:
+        raise ValueError('CUDA环境必须仅使用onnxruntime-gpu')
+    if any(distribution.metadata['Name'].lower() == 'onnxruntime'
+           for distribution in metadata.distributions()):
+        raise ValueError('CUDA环境混装了CPU ORT，请使用独立环境')
+    base = Path(sysconfig.get_paths()['purelib']).resolve()
+    manifest = dict(schema=1, kind='cuda', version=CUDA_PLUGIN_VERSION,
+                    tested_with='MiaoTask-v0.2.0', python=f'{sys.version_info.major}.{sys.version_info.minor}',
+                    system=platform.system(), machine=platform.machine().lower(),
+                    onnxruntime=metadata.version('onnxruntime-gpu'),
+                    packages={name: metadata.version(name) for name in plugin_names})
+    output = Path(output).resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    prefix = PurePosixPath('runtime_plugins/cuda')
+    with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED, compresslevel=3) as archive:
+        archive.writestr(str(prefix / 'manifest.json'), json.dumps(manifest, indent=2))
+        archive.writestr(str(prefix / 'README.txt'),
+            f'MiaoTask CUDA扩展 v{CUDA_PLUGIN_VERSION}，不包含主程序。\n'
+            '退出MiaoTask托盘服务后，将本ZIP的runtime_plugins目录放到MiaoTask.exe旁。\n'
+            '重启服务，在高级选项选择自动或CUDA。没有可用CUDA设备时回退CPU。\n'
+            '移除扩展：退出服务后删除runtime_plugins/cuda目录。不要覆盖_internal。\n'
+            '兼容：Windows x64、Python 3.13、ORT 1.31.0；已验证MiaoTask v0.2.0。\n'
+            '需要支持本包CUDA运行库的NVIDIA显卡与驱动，无需另外安装Torch或CUDA Toolkit。\n'
+            '更新主程序时可迁移相同兼容版本的runtime_plugins目录，无需重复下载。\n'
+            '此扩展包含本地可执行代码，仅安装可信来源；兼容版本见manifest.json。\n')
+        seen = set()
+        for name in plugin_names:
+            distribution = metadata.distribution(name)
+            for entry in distribution.files or ():
+                path = Path(distribution.locate_file(entry)).resolve()
+                if not path.is_relative_to(base) or not path.is_file():
+                    continue
+                relative = path.relative_to(base)
+                if '__pycache__' in relative.parts or path.suffix == '.pyc':
+                    continue
+                member = str(prefix / 'python' / PurePosixPath(relative.as_posix()))
+                if member not in seen:
+                    archive.write(path, member)
+                    seen.add(member)
+    return manifest
 
 
 def copy_documentation(destination, *, include_activities=False):
@@ -37,6 +99,9 @@ def copy_documentation(destination, *, include_activities=False):
         + activity_help +
         '活动源码位于 exe 旁的 `activities/`，可在活动中心查看实际位置或打开文件夹；'
         '日记录与设备信息另存于本机用户数据目录。\n\n'
+        '可选GPU加速：[CUDA扩展v1.0](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/releases/tag/MiaoTask-CUDA-v1.0)。'
+        '先退出托盘服务，将扩展的runtime_plugins目录放到MiaoTask.exe同级，不覆盖_internal；'
+        'CPU包可独立运行，扩展不包含主程序。\n\n'
         '[使用说明](docs/USAGE.md) · [风险与隐私](docs/SAFETY.md) · '
         '[发布记录](docs/RELEASES.md) · [许可与声明](docs/LICENSING.md)\n',
         encoding='utf-8')
@@ -142,6 +207,8 @@ def selected_packages(catalog, choices, all_activities=False):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--cuda-plugin', metavar='ZIP',
+                        help='Package the separate locked CUDA environment as a runtime overlay; no exe build')
     parser.add_argument('--adb-dir', help='Folder containing adb.exe, DLLs and NOTICE.txt')
     parser.add_argument('--hdc-dir', help='Optional authorized HDC runtime folder')
     parser.add_argument('--skip-tests', action='store_true', help='Skip unit tests already run on this commit')
@@ -156,6 +223,11 @@ def main():
     parser.add_argument('--preinstall-all', action='store_true', help='Preinstall source activities whose bundle_by_default flag is true')
     parser.add_argument('--framework-only', action='store_true', help='Exclude default-preinstalled activities')
     args = parser.parse_args()
+    if args.cuda_plugin:
+        if sys.platform != 'win32' or platform.machine().lower() not in ('amd64', 'x86_64'):
+            parser.error('CUDA overlay currently supports Windows x64 only')
+        print(json.dumps(cuda_plugin_archive(args.cuda_plugin), indent=2))
+        return
     if args.framework_only and (args.preinstall_all or args.preinstall_activity or args.include_activities):
         parser.error('Pure framework cannot be combined with activity selections')
     if sys.platform != 'win32' or platform.machine().lower() not in ('amd64', 'x86_64'):

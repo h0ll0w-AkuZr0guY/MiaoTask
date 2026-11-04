@@ -1,45 +1,25 @@
 """Prefer readable controls; visual verification skips redundant hierarchy RPCs."""
 import copy
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
-from functools import lru_cache
 import hashlib
-import logging
-import os
-import queue
 import re
 import time
 
 from backend.core.models import TextNode, bounds_of, normalize
 from backend.core.device.geometry import IdentityImageProcessor, DisplayGeometry, ocr_tiles
 from backend.core.context import workspace_scope
-import threading
+from backend.core.device.ocr import (OCR_DEVICE_ENV, device_ocr_scope, engine_generation,
+                                     ocr_engine_params as _ocr_engine_params, reset_engines,
+                                     resolve_ocr_backend, scoped_engine as _scoped_ocr_engine)
 
-logger = logging.getLogger(__name__)
+def local_ocr_engine(scope=None, threads=4):
+    return _scoped_ocr_engine(scope if scope is not None else workspace_scope.get() or 'default', threads)
 
 
-def local_ocr_engine():
-    return _scoped_ocr_engine(workspace_scope.get() or ('thread', threading.get_ident()))
-
-
-@lru_cache(maxsize=8)
-def _scoped_ocr_engine(scope):
-    try:
-        from rapidocr import RapidOCR
-    except ImportError as exc:
-        raise RuntimeError('页面未提供可读控件，请先运行 pip install -r requirements.txt 安装本地 OCR') from exc
-    engine = RapidOCR(params={
-        'EngineConfig.onnxruntime.intra_op_num_threads': min(4, os.cpu_count() or 2),
-        'EngineConfig.onnxruntime.inter_op_num_threads': 1,
-        'Global.log_level': 'warning',
-    })
-    # The locked RapidOCR version exposes this recognizer protocol. If a source
-    # install uses an incompatible release, retain its standard OCR path.
-    try:
-        from backend.core.device.ocr import ExactTextCache
-        engine.text_rec = ExactTextCache(engine._load_rec_model())
-    except (AttributeError, ImportError):
-        logger.info('当前 OCR 版本不支持文字块缓存，使用标准识别')
-    return engine
+def reset_ocr_engines():
+    """Drop cached recognizers so the next frame rebuilds with a new backend."""
+    reset_engines()
 
 
 @dataclass
@@ -53,6 +33,7 @@ class Screen:
     user_id: int | None = None
     geometry: DisplayGeometry | None = None
     obscured: bool = False
+    captured_at: float = 0.0
 
     @property
     def text(self):
@@ -67,12 +48,14 @@ class Screen:
 
 
 class ScreenReader:
-    def __init__(self, device, ocr=True, on_image=None, image_processor=None):
+    def __init__(self, device, ocr=True, on_image=None, image_processor=None, engine_scope=None):
         self.device = device
         self.ocr_enabled = ocr
         self.on_image = on_image
         self._engine = None
-        self._ocr_notice = False
+        # Recognizers follow the device, not the calling thread, so an observer
+        # thread reuses the models already loaded by the task worker.
+        self._engine_generation = engine_generation()
         self._size = None
         self.last_image = None
         self.last_screen = None
@@ -81,10 +64,32 @@ class ScreenReader:
         self._ocr_cache_nodes = None
         self.last_observation_seconds = 0.0
         self.image_processor = image_processor or IdentityImageProcessor()
+        self.engine_scope = engine_scope if engine_scope is not None else device_ocr_scope(device)
+        self._ocr_scope = self.engine_scope if self.engine_scope is not None else workspace_scope.get() or ('reader', id(self))
+        self.ocr_threads = 4
+        self.control = None
+        self._minimum_frame_time = 0.0
+        self._image_matches_screen = True
 
-    def visual_observer(self):
-        """Capture on the owner thread; recognize frames without blocking input."""
-        return VisualObserver(self)
+    def require_after(self, stamp=None):
+        """One-way freshness barrier for settlement checks and explicit rescans."""
+        self._minimum_frame_time = max(self._minimum_frame_time,
+                                       time.monotonic() if stamp is None else stamp)
+
+    @contextmanager
+    def observation_session(self, config, control):
+        """Own cancellation and one synchronous reader; start no capture/OCR thread."""
+        operation = getattr(type(self.device), 'operation_session', None)
+        context = self.device.operation_session(control) if callable(operation) else nullcontext()
+        self.control = control
+        self.compressed_screenshots = config.get('compressed_screenshots', False)
+        self.screenshot_quality = config.get('screenshot_quality', 70)
+        try:
+            with context:
+                yield
+        finally:
+            self._engine = None
+            self.control = None
 
     def _flatten(self, tree, foreground_package=None):
         nodes = []
@@ -94,6 +99,8 @@ class ScreenReader:
                     walk(child, inherited_package)
             elif isinstance(item, dict):
                 attrs = item.get("attributes", item)
+                if any(attrs.get(key) in (False, 'false') for key in ('visible', 'visible-to-user', 'displayed')):
+                    return
                 package = attrs.get("package", inherited_package)
                 if (not foreground_package or not package or package == foreground_package) and not package.startswith(("com.android.systemui", "com.miui.notes", "com.google.android.inputmethod")):
                     text = attrs.get("text") or attrs.get("description") or attrs.get("content-desc") or ""
@@ -116,16 +123,32 @@ class ScreenReader:
                     nodes.append(mapped)
         return nodes
 
+    def _check_ocr(self):
+        if self.control:
+            self.control.check()
+
+    @property
+    def ocr_backend(self):
+        """Actual loaded backend, including a runtime CPU fallback; never loads models."""
+        return getattr(getattr(self._engine, 'engine', None), 'miao_backend', None)
+
     def _ocr_tile(self, image):
-        if self._engine is None:
-            self._engine = local_ocr_engine()
+        self._check_ocr()
+        # A backend switch bumps the generation; rebuild instead of reusing an
+        # engine whose provider no longer matches the saved preference.
+        if self._engine is None or self._engine_generation != engine_generation():
+            generation = engine_generation()
+            self._engine = local_ocr_engine(self._ocr_scope, self.ocr_threads)
+            self._engine_generation = generation
         import numpy as np
         prepared = self.image_processor.prepare(image)
         image = prepared.image
         # Limit image width to reduce CPU work, then map boxes back to the phone.
         scale = min(1.0, 1000 / image.width)
         resized = image.resize((round(image.width * scale), round(image.height * scale)))
-        result = self._engine(np.asarray(resized), use_cls=False)
+        managed = callable(getattr(type(self._engine), 'infer', None))
+        result = (self._engine.infer(np.asarray(resized), self._check_ocr)
+                  if managed else self._engine(np.asarray(resized), use_cls=False))
         results = zip(result.boxes, result.txts, result.scores) if result.boxes is not None else []
         nodes = []
         for box, text, confidence in results:
@@ -148,17 +171,35 @@ class ScreenReader:
         return nodes
 
     def _capture(self):
-        image = self.device.screenshot(max_age=.15).convert('RGB')
+        self._check_ocr()
+        started = time.monotonic()
+        self._capture_foreground = None
+        device = self.device
+        independent = (callable(getattr(type(device), 'capture_observation', None))
+                       and getattr(device, 'device_type', '') == 'uiautomator2'
+                       and not getattr(device, '_display_id', 0))
+        if independent:
+            self._capture_foreground, image = device.capture_observation(
+                compressed=getattr(self, 'compressed_screenshots', False),
+                quality=getattr(self, 'screenshot_quality', 70),
+                transport=getattr(device, '_operation_io', None))
+            image = image.convert('RGB')
+        else:
+            image = device.screenshot(max_age=0 if self._minimum_frame_time else .15).convert('RGB')
         self.last_image = image
+        self._image_matches_screen = True
         self._size = image.size
+        self._captured_at = started
         if self.on_image:
             self.on_image(image)
         self._last_preview = time.monotonic()
+        self._check_ocr()
         return image
 
     def enrich_regions(self, screen, regions):
         """OCR crops of this exact observed frame, keeping full-frame guards."""
-        if not self.ocr_enabled or self.last_screen is not screen or self.last_image is None:
+        if (not self.ocr_enabled or self.last_screen is not screen or self.last_image is None
+                or not self._image_matches_screen):
             return screen
         nodes = list(screen.nodes)
         for left, top, right, bottom in regions:
@@ -169,118 +210,57 @@ class ScreenReader:
             for node in self._ocr(self.last_image.crop((left, top, right, bottom))):
                 x1, y1, x2, y2 = node.bounds
                 nodes.append(TextNode(node.text, (x1+left, y1+top, x2+left, y2+top), 'ocr-region'))
-        enriched = Screen(nodes, screen.width, screen.height, screen.package, 'ocr+regions', screen.tree, screen.user_id)
+        from dataclasses import replace
+        enriched = replace(screen, nodes=nodes, source='ocr+regions')
         self.last_screen = enriched
         return enriched
 
     def read(self, force_ocr=False):
+        self._check_ocr()
+        self._image_matches_screen = False
         started = time.monotonic()
-        direct_visual = bool(force_ocr and self.ocr_enabled)
-        tree = None if direct_visual else self.device.dump_hierarchy()
-        foreground = self.device.current_app()
-        package = foreground.get("package", "")
-        nodes = [] if direct_visual else self._flatten(tree, package)
-        self._size = self.device.display_size
-        meaningful = [n for n in nodes if n.bounds[3] - n.bounds[1] < (self._size or (1440, 3200))[1] * .4]
-        source = "ui"
-        if self.ocr_enabled and (force_ocr or len(meaningful) < 5):
-            if not self._ocr_notice:
-                logger.info("正在本地识别页面文字（正常识别方式，截图不上传）")
-                self._ocr_notice = True
+        direct = bool(force_ocr and self.ocr_enabled)
+        tree, image = None, None
+        if direct:
             image = self._capture()
-            nodes = [] if max(hi for lo,hi in image.getextrema()) < 8 else self._image_nodes(image)
-            source = "ocr"
+            foreground = getattr(self, '_capture_foreground', None) or self.device.current_app()
+        else:
+            tree = self.device.dump_hierarchy()
+            foreground = self.device.current_app()
+            self._size = self.device.display_size
+        package = foreground.get('package', '')
+        nodes = [] if direct else self._flatten(tree, package)
+        meaningful = [n for n in nodes if n.bounds[3] - n.bounds[1] < (self._size or (1440,3200))[1] * .4]
+        source = 'ui'
+        obscured = False
+        if self.ocr_enabled and (direct or len(meaningful) < 5):
+            image = image if image is not None else self._capture()
+            captured_info = getattr(self, '_capture_foreground', None)
+            if captured_info:
+                if captured_info.get('package') != package:
+                    tree = None
+                foreground, package = captured_info, captured_info.get('package', '')
+            obscured = max(hi for lo,hi in image.getextrema()) < 8
+            nodes = [] if obscured else self._image_nodes(image)
+            source = 'ocr'
             if not nodes:
                 tree = self.device.dump_hierarchy()
-                nodes = self._flatten(tree,package)
+                nodes = self._flatten(tree, package)
                 source = 'ui-fallback'
-        elif (self.on_image and not getattr(self.device, 'preview_managed', False)
-              and time.monotonic() - self._last_preview >= 1):
+        elif self.on_image and not getattr(self.device, 'preview_managed', False) and time.monotonic()-self._last_preview >= 1:
             self._capture()
-        if self._size is None:
-            self._size = self.device.display_size
-        screen = Screen(nodes, *self._size, package, source, tree, foreground.get('user_id'))
-        if source == 'ui-fallback' and self.last_image is not None:
-            screen.obscured = max(hi for lo,hi in self.last_image.getextrema()) < 8
-        geometry = getattr(self.device,'display_geometry', None)
-        if isinstance(geometry,DisplayGeometry) and (geometry.width,geometry.height)==self._size:
-            screen.geometry=geometry
+        self._check_ocr()
+        screen = Screen(nodes, *self._size, package, source, tree, foreground.get('user_id'),
+                        obscured=obscured, captured_at=getattr(self,'_captured_at',started) if image is not None else started)
+        from backend.core.device.geometry import geometry_from_window
+        if foreground.get('window_dump'):
+            screen.geometry = geometry_from_window(*self._size, foreground['window_dump'])
+        else:
+            geometry = getattr(self.device, 'display_geometry', None)
+            if isinstance(geometry, DisplayGeometry) and (geometry.width,geometry.height)==self._size:
+                screen.geometry = geometry
         self.last_screen = screen
-        self.last_observation_seconds = time.monotonic() - started
+        self.last_observation_seconds = time.monotonic()-started
+        self._minimum_frame_time = 0
+        self.observation_metrics = dict(observation_ms=round(self.last_observation_seconds*1000), source=source)
         return screen
-
-
-class VisualObserver:
-    """One in-flight frame, no device access or callbacks on the OCR thread.
-
-    The private reader owns its recognition cache/engine. Closing discards late
-    results; even a slow recognizer cannot send input or mutate the session.
-    """
-    def __init__(self, reader):
-        self.source = reader
-        self.reader = ScreenReader(None, image_processor=reader.image_processor)
-        self.requests = queue.Queue(maxsize=1)
-        self.results = queue.Queue(maxsize=1)
-        self.closed = threading.Event()
-        self.pending = False
-        self.captured = None
-        self.thread = threading.Thread(target=self._run, daemon=True, name='miao-browse-ocr')
-
-    def __enter__(self):
-        self.thread.start()
-        return self
-
-    def request(self):
-        if self.pending or self.closed.is_set():
-            return False
-        # Capture is serialized by the adapter, just like the preview. Expensive
-        # OCR does not own its device lock and cannot delay the next swipe.
-        started = time.monotonic()
-        foreground = self.source.device.current_app()
-        image = self.source._capture()
-        screen = Screen([], *image.size, foreground.get('package', ''), 'ocr',
-                        user_id=foreground.get('user_id'))
-        geometry = getattr(self.source.device, 'display_geometry', None)
-        if isinstance(geometry, DisplayGeometry) and (geometry.width, geometry.height) == image.size:
-            screen.geometry = geometry
-        self.captured = screen
-        self.pending = True
-        self.requests.put_nowait((screen, image, started))
-        return True
-
-    def _run(self):
-        while not self.closed.is_set():
-            request = self.requests.get()
-            if request is None or self.closed.is_set():
-                break
-            screen, image, started = request
-            try:
-                screen.obscured = max(hi for lo, hi in image.getextrema()) < 8
-                screen.nodes = [] if screen.obscured else self.reader._image_nodes(image)
-                result = (screen, None, time.monotonic() - started)
-            except Exception as exc:
-                result = (None, exc, time.monotonic() - started)
-            if not self.closed.is_set():
-                self.results.put_nowait(result)
-
-    def poll(self):
-        try:
-            screen, error, elapsed = self.results.get_nowait()
-        except queue.Empty:
-            return None
-        self.pending = False
-        if error:
-            raise error
-        self.source.last_screen = screen
-        self.source.last_observation_seconds = elapsed
-        return screen
-
-    def __exit__(self, *exc):
-        self.closed.set()
-        try:
-            self.requests.put_nowait(None)
-        except queue.Full:
-            pass
-        # No UI/RPC can outlive this context. Only private, read-only CPU work
-        # may finish later; never wait several seconds to honor a stop request.
-        self.thread.join(timeout=.2)

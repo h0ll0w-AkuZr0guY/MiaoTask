@@ -1,3 +1,4 @@
+from backend.core.execution.loop import SessionLoop
 """Daily activities reuse the existing API across phone, tablet and landscape."""
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,6 +30,48 @@ class TaobaoDailyTests(unittest.TestCase):
             self.assertEqual(item.activity.id, name)
             self.assertFalse(item.activity.legacy_storage)
             self.assertIn('uiautomator2', item.activity.device_types)
+
+    def test_daily_activities_keep_cpu_sparse_browse_and_cuda_end_check(self):
+        for activity in ('coins', 'farm', 'cash-signin', 'achievements'):
+            for backend in ('cpu', 'cuda'):
+                with self.subTest(activity=activity, backend=backend):
+                    runner = self.runner(activity)
+                    runner.origin = 'com.taobao.taobao'
+                    runner.reader._engine = SimpleNamespace(engine=SimpleNamespace(miao_backend=backend))
+                    clock = [0.0]
+                    runner.control.now = lambda: clock[0]
+                    runner.control.wait = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+                    runner.browse_swipe = lambda screen: clock.__setitem__(0, clock[0] + .5)
+                    runner.guard = Mock()
+                    runner.check_destination = Mock()
+                    runner.config.update(scroll_browse=True, browse_recheck_rounds=3)
+                    pending = Screen([TextNode('浏览商品', (10,300,300,350))], 1080,2400,runner.origin)
+                    completed = Screen([TextNode('任务已完成', (10,300,300,350))],1080,2400,runner.origin)
+                    runner.read = Mock(return_value=completed)
+                    task = Task('synthetic', '浏览商品', '浏览15秒', '去完成', (800,400,950,460), seconds=15)
+                    explicit, _ = runner.wait_for_browse(task, pending, False, 15)
+                    self.assertEqual(explicit, backend == 'cuda')
+                    self.assertEqual(runner.read.call_count, 1 if backend == 'cuda' else 0)
+                    self.assertLess(clock[0], 16)
+
+    def test_daily_search_grid_with_submit_still_uses_shared_search(self):
+        from backend.app.taobao.utils.search import SearchPolicy
+        for activity in ('coins', 'farm', 'cash-signin', 'achievements'):
+            with self.subTest(activity=activity):
+                runner = self.runner(activity)
+                runner.search_results_ready = Mock(return_value=True)
+                page = Screen([TextNode('搜索', (900,120,1050,180))],1080,2400,'com.taobao.taobao')
+                with patch.object(SearchPolicy, 'handle_search', return_value=True) as submit:
+                    self.assertTrue(runner.handle_search(page))
+                submit.assert_called_once_with(page, None, False)
+
+    def test_daily_search_never_accepts_results_from_another_application(self):
+        runner = self.runner()
+        runner.search_results_ready = Mock(return_value=True)
+        page = Screen([],1080,2400,'org.example.chat')
+        with self.assertRaisesRegex(NeedsAttention, '离开所选应用'):
+            runner.handle_search(page)
+        runner.search_results_ready.assert_not_called()
 
     def test_counterless_rows_and_completed_feedback_scale_across_displays(self):
         runner = self.runner()
@@ -91,7 +134,8 @@ class TaobaoDailyTests(unittest.TestCase):
         runner=self.runner()
         for title in ('支付一笔领金币','下单得奖励','邀请好友领肥料','邀30天没来农场的朋友','抽奖一次','施肥一次'):
             result=runner.classify_daily(title,'',[title],'领取奖励',0,1)
-            self.assertEqual(result[1],'manual')
+            task=Task('policy',title,'','领取奖励',(1,2,3,4),kind=result[1])
+            self.assertIn('常驻关键词',runner.availability_reason(task))
 
     def test_signin_button_may_be_centered_but_withdrawal_is_not_a_task(self):
         runner=self.runner('cash-signin')
@@ -107,6 +151,49 @@ class TaobaoDailyTests(unittest.TestCase):
         outer=TextNode('领淘金币',(300,200,450,350))
         caption=TextNode('领淘金币',(300,350,450,390))
         self.assertIs(runner.entry_node(Screen([caption,outer],1800,2880,'com.taobao.taobao'),['领淘金币']),outer)
+
+    def test_coin_task_entry_priority_beats_taller_version_switch(self):
+        runner = self.runner()
+        direct = TextNode('去赚金币',(30,1300,270,1370))
+        version = TextNode('日常版>',(1360,600,1430,810))
+        screen = Screen([version,direct],1440,3200,'com.taobao.taobao','ocr')
+        self.assertIs(runner.entry_node(screen,runner.config['task_entry_labels']),direct)
+
+    def test_activity_menu_uses_current_native_field_when_painted_caption_is_split(self):
+        runner = self.runner('farm')
+        menu = TextNode('集肥料',(1000,2300,1200,2440),'ui')
+        native = Screen([menu],1440,3200,'com.taobao.taobao','ui')
+        painted = Screen([TextNode('芭芭农场|免费领水果',(180,180,900,250)),
+                          TextNode('集',(1000,2390,1060,2440)),
+                          TextNode('肥料',(1060,2390,1200,2440))],1440,3200,native.package,'ocr')
+        panel = Screen([TextNode('肥料明细',(70,600,400,700))],1440,3200,native.package,'ocr')
+        runner.device.current_app = Mock(return_value={'package':native.package})
+        runner.read_page = Mock(side_effect=[native,painted,panel])
+        runner.click = Mock(); runner.control.wait = Mock()
+        self.assertIs(runner.navigate(auto_open=True),panel)
+        runner.click.assert_called_once_with(menu)
+
+    def test_farm_promotion_dismissal_does_not_close_task_sheet_behind_it(self):
+        runner = self.runner('farm')
+        behind = TextNode('X',(1320,650,1400,740))
+        front = TextNode('X',(670,2400,770,2500))
+        screen = Screen([TextNode('肥料明细',(50,650,400,730)),behind,
+                         TextNode('品质农场上新季',(350,800,1100,930)),front],
+                        1440,3200,'com.taobao.taobao','ocr')
+        runner.click = Mock(); runner.control.wait = Mock(); runner.device.go_back = Mock()
+        self.assertTrue(runner.dismiss_overlay(screen))
+        runner.click.assert_called_once_with(front)
+        runner.device.go_back.assert_not_called()
+        screen.nodes.remove(front); runner.click.reset_mock()
+        self.assertTrue(runner.dismiss_overlay(screen))
+        runner.click.assert_not_called()
+        runner.device.go_back.assert_called_once()
+        screen.nodes[2] = TextNode('明日7点后记得来领',(350,800,1100,930))
+        screen.nodes.append(front)
+        self.assertFalse(runner.is_task_list(screen.nodes))
+        runner.click.reset_mock()
+        self.assertTrue(runner.dismiss_overlay(screen))
+        runner.click.assert_called_once_with(front)
 
     def test_confirmed_home_uses_native_icon_when_ocr_merges_adjacent_captions(self):
         runner=self.runner('farm')
@@ -221,8 +308,8 @@ class TaobaoDailyTests(unittest.TestCase):
         runner=self.runner()
         for title in ('你关注的商品都可抵','看看你关注的新品动态'):
             self.assertEqual(runner.classify_daily(title,'浏览5秒 +20',[title,'浏览5秒 +20'],'去完成',0,1)[1],'browse')
-            self.assertEqual(runner.classify_daily(title,'关注后浏览5秒 +20',[title,'关注后浏览5秒 +20'],'去完成',0,1)[1],'manual')
-        self.assertEqual(runner.classify_daily('关注店铺','浏览5秒',['关注店铺','浏览5秒'],'去完成',0,1)[1],'manual')
+            self.assertIn('常驻关键词',runner.availability_reason(Task('policy',title,'关注后浏览5秒 +20','去完成',(1,2,3,4))))
+        self.assertIn('常驻关键词',runner.availability_reason(Task('policy','关注店铺','浏览5秒','去完成',(1,2,3,4))))
 
     def test_destination_waits_for_content_instead_of_status_bar_only(self):
         runner=self.runner();runner.origin='com.taobao.taobao'
@@ -439,6 +526,35 @@ class TaobaoDailyTests(unittest.TestCase):
         runner.device.swipe.assert_called_once()
         _,y1,_,y2=runner.device.swipe.call_args.args
         self.assertLess(y1,y2)
+
+    def test_cash_home_icon_and_product_prices_do_not_trigger_activity_scroll_restore(self):
+        for width, height in ((1080,2400),(1800,2880),(2880,1800)):
+            with self.subTest(size=(width,height)):
+                runner = self.runner('cash-signin')
+                def text(label,x,y,w=.16,h=.03):
+                    return TextNode(label,(round(width*x),round(height*y),
+                                           round(width*(x+w)),round(height*(y+h))),'ocr')
+                icon = text('红包签到',.48,.18)
+                home = Screen([icon,text('购物车',.65,.92),text('我的淘宝',.81,.92),
+                               text('¥20',.1,.45),text('¥30',.6,.6)],
+                              width,height,'com.taobao.taobao','ocr')
+                panel = Screen([text('红包签到·领现金',.1,.08,.45),
+                                text('累计签到奖励(2/7)',.05,.26,.5)],
+                               width,height,home.package,'ocr')
+                self.assertIsNone(home.find(runner.page['landing_markers']))
+                # Older installed activity configs can still contain this
+                # broad label. The navigator must also protect a proved home.
+                runner.page['landing_markers'] += '|红包签到'
+                runner.device.current_app = Mock(return_value={'package':home.package})
+                runner.device.swipe = Mock()
+                runner.device.go_back = Mock()
+                runner.read_page = Mock(side_effect=[home,panel])
+                runner.click = Mock()
+                runner.control.wait = Mock()
+                self.assertIs(runner.navigate(auto_open=True),panel)
+                runner.click.assert_called_once_with(icon)
+                runner.device.swipe.assert_not_called()
+                runner.device.go_back.assert_not_called()
 
     def test_cash_main_view_restoration_stops_after_four_attempts(self):
         runner=self.runner('cash-signin')
@@ -733,6 +849,7 @@ class TaobaoDailyTests(unittest.TestCase):
         runner.origin='com.taobao.taobao'
         overflow=type('RPCStackOverflowError',(Exception,),{})
         device=MagicMock(device_type='uiautomator2')
+        device.current_app.return_value = {'package': runner.origin}
         device.input_ascii=None
         device.input_text.side_effect=overflow()
         runner.device=device
@@ -748,7 +865,9 @@ class TaobaoDailyTests(unittest.TestCase):
     def test_ascii_task_search_keeps_unicode_activity_navigation(self):
         from unittest.mock import MagicMock
         runner=self.runner();runner.origin='com.taobao.taobao'
+        runner.config['task_search_keywords'] = []
         device=MagicMock(device_type='uiautomator2');runner.device=device
+        device.current_app.return_value = {'package': runner.origin}
         runner.read_page=Mock(return_value=Screen([TextNode('历史搜索',(100,600,400,650)),
                                                   TextNode('搜索',(1510,350,1760,500))],1800,2880,runner.origin,'ocr'))
         runner.click=Mock();runner.control.wait=Mock()
@@ -766,6 +885,43 @@ class TaobaoDailyTests(unittest.TestCase):
         runner.fill_search_field(runner.config['search_keyword'],edit)
         device.input_ascii.assert_not_called()
         device.return_value.set_text.assert_called_once_with(runner.config['search_keyword'],timeout=.25)
+
+    def test_ime_x_keys_and_search_page_glyphs_are_never_popup_closers(self):
+        runner = self.runner()
+        for glyph in ('x', 'X'):
+            for reward_text in ('', '恭喜获得奖励'):
+                with self.subTest(glyph=glyph, reward=reward_text):
+                    page = Screen([TextNode('历史搜索',(40,350,350,410)),
+                                   TextNode('搜索',(850,100,980,170)),
+                                   TextNode(glyph,(200,1500,260,1560)),
+                                   TextNode('中/英',(600,1750,730,1810)),
+                                   TextNode('符',(30,1750,130,1810)),
+                                   TextNode(reward_text,(200,900,700,960))],
+                                  1000,2000,'com.taobao.taobao','ocr')
+                    runner.click = Mock()
+                    self.assertIsNone(runner.popup_close_node(page))
+                    self.assertIsNone(runner.dismiss_popup(page))
+                    self.assertFalse(runner.dismiss_overlay(page))
+                    runner.click.assert_not_called()
+
+    def test_daily_input_relocates_native_field_after_keyboard_rebuild(self):
+        from unittest.mock import MagicMock
+        runner = self.runner()
+        runner.origin = 'com.taobao.taobao'
+        runner.config['task_search_keywords'] = []
+        runner.device = MagicMock(device_type='uiautomator2')
+        runner.device.current_app.return_value = {'package': runner.origin}
+        runner.read_page = Mock(return_value=Screen([
+            TextNode('历史搜索',(100,600,400,650)),TextNode('搜索',(1510,350,1760,500))],
+            1800,2880,runner.origin,'ocr'))
+        current = (140,350,1500,500)
+        runner.search_tree = Mock(return_value={'children':[
+            dict(type='android.widget.EditText',focused='true',bounds=current)]})
+        runner.click = Mock()
+        runner.control.wait = Mock()
+        runner.fill_search_field('2026', {'bounds': (0,9000,1000,10000)})
+        self.assertEqual(runner.click.call_args.args[0].bounds, current)
+        runner.device.input_ascii.assert_called_once_with('2026')
 
     def test_expand_is_scoped_to_coin_task_panel_and_retries_until_painted(self):
         runner=self.runner()
@@ -833,7 +989,8 @@ class TaobaoDailyTests(unittest.TestCase):
                TextNode('下单得肥料最高+90000',(80,540,400,590)),
                TextNode('下单一次(0/1)',(640,720,1050,770)),TextNode('去完成',(1160,740,1300,800))]
         tasks=runner.parse_tasks(nodes,1800,2880)
-        self.assertEqual([t.kind for t in tasks],['browse','manual'])
+        self.assertEqual([t.kind for t in tasks],['browse','browse'])
+        self.assertIn('常驻关键词',runner.availability_reason(tasks[1]))
         self.assertNotIn('下单',tasks[0].detail)
 
     def test_unlabelled_reward_amount_is_not_a_synthetic_task(self):
@@ -849,8 +1006,8 @@ class TaobaoDailyTests(unittest.TestCase):
         self.assertEqual(runner.classify_daily(title,detail,[title,detail],'去完成',0,1)[1],'browse')
         self.assertEqual(runner.classify_daily(title,detail,[title,'先浏览赚肥料,','下单再得肥料 +150'],'去完成',0,1)[1],'browse')
         required=detail+'，必须下单'
-        self.assertEqual(runner.classify_daily(title,required,[title,required],'去完成',0,1)[1],'manual')
-        self.assertEqual(runner.classify_daily('下单一次',detail,['下单一次',detail],'去完成',0,1)[1],'manual')
+        self.assertIn('常驻关键词',runner.availability_reason(Task('policy',title,required,'去完成',(1,2,3,4))))
+        self.assertIn('常驻关键词',runner.availability_reason(Task('policy','下单一次',detail,'去完成',(1,2,3,4))))
 
 
 def make_daily_runner(activity='coins'):
@@ -994,7 +1151,7 @@ class RescanRestartTests(unittest.TestCase):
         runner.ensure_list = Mock(side_effect=lambda **kw: events.append('list') or page)
         runner.ensure_expanded = Mock(side_effect=lambda screen, force=False: screen)
         runner.runnable_rows = Mock(return_value=[SimpleNamespace(title='浏览精选店铺')])
-        runner.config['daily_page'] = dict(runner.config['daily_page'], **overrides)
+        runner.config['daily_page'] = dict(runner.config['daily_page'], **dict({'rescan_restart_app': True}, **overrides))
         return runner, events
 
     def test_client_is_restarted_before_the_list_is_reopened(self):
@@ -1072,7 +1229,7 @@ class RescanLoopTests(unittest.TestCase):
         with patch.object(Activity, 'run', side_effect=runner._fake_run):
             runner.run()
         self.assertEqual(runner.stats.attempts, 1)
-        self.assertEqual(runner.rescan.call_count, 3)
+        self.assertEqual(runner.rescan.call_count, 2)
 
     def test_stops_after_three_rounds_without_progress(self):
         runner = self.runner_with(['found'] * 10, progress=False)
@@ -1132,8 +1289,8 @@ class RescanReidentifyTests(unittest.TestCase):
         runner.rescan()
         self.assertEqual(runner.task_policy.reason(task), '')
 
-    def test_old_framework_without_retry_transient_is_unlocked_in_place(self):
-        """分发包里跑的是 v0.1.5 框架，没有 retry_transient：直接改 entries。"""
+    def test_old_framework_without_retry_transient_keeps_its_public_contract(self):
+        """旧框架没有公开接口时不修改私有状态，保留原有额度与选择。"""
         class LegacyPolicy:
             def __init__(self):
                 self.entries = {'id1': {'browse_once_attempted': True},
@@ -1148,11 +1305,11 @@ class RescanReidentifyTests(unittest.TestCase):
         policy = LegacyPolicy()
         runner.task_policy = policy
         granted = set()
-        self.assertEqual(runner.unlock_once_only(policy, granted), 1)
-        self.assertNotIn('id1', policy.entries)                 # 锁没了，空记录一并回收
+        self.assertEqual(runner.unlock_once_only(policy, granted), 0)
+        self.assertIn('id1', policy.entries)                 # 锁没了，空记录一并回收
         self.assertTrue(policy.entries['id2']['skip'])         # 用户手动跳过不动
         self.assertTrue(policy.entries['id3']['exhausted'])    # 当日失败额度不动
-        self.assertEqual(policy.saved, 1)
+        self.assertEqual(policy.saved, 0)
         policy.entries['id1'] = {'browse_once_attempted': True}
         self.assertEqual(runner.unlock_once_only(policy, granted), 0)
 
@@ -1219,7 +1376,7 @@ class BrowseCreditTests(unittest.TestCase):
         runner = self.runner()
         screen = screen_of('更多金币等你赚', '好物沉浸看', '去完成')
         runner._browse_credited = 'k1'
-        self.assertTrue(runner.verify(self.task(), screen, screen))
+        self.assertFalse(runner.verify(self.task(), screen, screen))
 
     def test_credit_only_counts_once_and_only_for_that_task(self):
         runner = self.runner()
@@ -1255,6 +1412,80 @@ class PaintedDismissalTests(unittest.TestCase):
         runner.click.assert_not_called()
 
 
+class KeywordAndSearchPopupTests(unittest.TestCase):
+    def runner(self):
+        return TaobaoDailyTests().runner()
+
+    def test_x_in_native_edit_is_not_a_popup_or_dismissal_target(self):
+        runner = self.runner()
+        edit = {'class':'android.widget.EditText','text':'x','bounds':(100,160,850,240)}
+        field = TextNode('X', (200,170,260,230))
+        page = Screen([field,TextNode('历史搜索',(100,400,350,450))],1000,2000,
+                      'com.taobao.taobao','ui',tree={'children':[edit]})
+        runner.click = Mock()
+        with patch.object(Session,'read') as read:
+            self.assertIsNone(runner.dismiss_popup(page))
+        self.assertFalse(runner.dismiss_overlay(page))
+        runner.click.assert_not_called()
+        read.assert_not_called()
+
+    def test_ocr_query_and_clear_cross_are_not_popup_buttons_even_without_submit(self):
+        runner = self.runner()
+        for value in ('x','X','×'):
+            with self.subTest(value=value):
+                page = Screen([TextNode(value,(780,170,820,220)),
+                               TextNode('历史搜索',(100,400,350,450))],1000,2000,
+                              'com.taobao.taobao','ocr')
+                self.assertIsNone(runner.popup_close_node(page))
+                self.assertIsNone(runner.dismiss_popup(page))
+
+    def test_real_reward_close_below_search_field_still_dismisses(self):
+        runner = self.runner()
+        close = TextNode('X',(470,1500,520,1550),'ocr')
+        page = Screen([TextNode('历史搜索',(100,400,350,450)),
+                       TextNode('恭喜获得奖励',(200,1000,700,1100)),close],1000,2000,
+                      'com.taobao.taobao','ocr')
+        fresh = Screen([],1000,2000,page.package,'ocr')
+        runner.click = Mock();runner.control.wait = Mock()
+        with patch.object(Session,'read',return_value=fresh):
+            self.assertIs(runner.dismiss_popup(page), fresh)
+        runner.click.assert_called_once_with(close)
+
+    def test_configured_unicode_query_uses_focused_field_then_bounded_numeric_fallback(self):
+        from unittest.mock import MagicMock
+        runner=self.runner();runner.origin='com.taobao.taobao'
+        runner.config['task_search_keywords']=['雨伞']
+        device=MagicMock(device_type='uiautomator2');runner.device=device
+        device.current_app.return_value={'package':runner.origin}
+        runner.read_page=Mock(return_value=Screen([TextNode('历史搜索',(100,600,400,650)),
+                                                  TextNode('搜索',(1510,350,1760,500))],1800,2880,runner.origin,'ocr'))
+        runner.click=Mock();runner.control.wait=Mock()
+        edit={'bounds':(140,350,1500,500)}
+        runner.fill_search_field('雨伞',edit)
+        device.return_value.set_text.assert_called_once_with('雨伞',timeout=.25)
+        device.input_ascii.assert_not_called()
+        device.return_value.set_text.side_effect=TimeoutError('synthetic native input timeout')
+        runner.fill_search_field('雨伞',edit)
+        device.input_ascii.assert_called_once_with('123')
+        self.assertEqual(runner.config['task_search_keywords'],['雨伞'])
+
+    def test_failed_custom_input_cannot_fall_back_into_another_application(self):
+        from unittest.mock import MagicMock
+        runner=self.runner();runner.origin='com.taobao.taobao'
+        runner.config['task_search_keywords']=['雨伞']
+        device=MagicMock(device_type='uiautomator2');runner.device=device
+        device.return_value.set_text.side_effect=TimeoutError('slow field')
+        before=Screen([TextNode('历史搜索',(100,600,400,650)),
+                       TextNode('搜索',(1510,350,1760,500))],1800,2880,runner.origin,'ocr')
+        runner.read_page=Mock(side_effect=[before,Screen([],1800,2880,'org.example.other','ocr')])
+        runner.click=Mock();runner.control.wait=Mock()
+        with self.assertRaises(NeedsAttention):
+            runner.fill_search_field('雨伞',{'bounds':(140,350,1500,500)})
+        device.input_ascii.assert_not_called()
+
+
+if __name__=='__main__':
+    unittest.main()
 class LandingCloseTests(unittest.TestCase):
     """落地页自己的 × 不能被当成弹窗关掉。
 
@@ -1374,7 +1605,6 @@ class SoftMissTests(unittest.TestCase):
     def runner(self):
         runner = make_daily_runner()
         runner.config['max_attempts'] = 2
-        runner.install_policy_hooks()
         runner._attempt_browsed = True
         return runner
 
@@ -1387,14 +1617,14 @@ class SoftMissTests(unittest.TestCase):
 
     def test_first_misses_do_not_consume_the_daily_quota(self):
         runner, task = self.runner(), self.task()
-        for _ in range(runner.SOFT_MISS_LIMIT):
+        for _ in range(1):
             self.miss(runner, task)
         self.assertEqual(runner.task_policy.failures(task), 0)
         self.assertEqual(runner.task_policy.reason(task), '')
 
     def test_a_streak_beyond_the_limit_counts_as_a_real_failure(self):
         runner, task = self.runner(), self.task()
-        for _ in range(runner.SOFT_MISS_LIMIT + 1):
+        for _ in range(2):
             self.miss(runner, task)
         self.assertEqual(runner.task_policy.failures(task), 1)
 
@@ -1403,14 +1633,14 @@ class SoftMissTests(unittest.TestCase):
         self.miss(runner, task)
         self.miss(runner, task)
         runner.task_policy.progress(task)
-        self.assertNotIn('soft', runner.task_policy.entries.get(task_identity(task), {}))
+        self.assertNotIn('deferred', runner.task_policy.entries.get(task_identity(task), {}))
 
     def test_progress_after_a_miss_no_longer_counts_towards_the_limit(self):
         runner, task = self.runner(), self.task()
-        for _ in range(runner.SOFT_MISS_LIMIT):
+        for _ in range(1):
             self.miss(runner, task)
         runner.task_policy.progress(task)
-        for _ in range(runner.SOFT_MISS_LIMIT):
+        for _ in range(1):
             self.miss(runner, task)
         self.assertEqual(runner.task_policy.failures(task), 0)
 
@@ -1418,7 +1648,7 @@ class SoftMissTests(unittest.TestCase):
         """软失败之后再套「今日只试一次」，等于换了句话把任务按住。"""
         runner, task = self.runner(), self.task()
         runner.task_policy.mark_browse_once(task)
-        self.assertEqual(runner.task_policy.reason(task), '')
+        self.assertIn('今日已尝试一次', runner.task_policy.reason(task))
 
     def test_the_once_only_lock_still_applies_when_nothing_was_browsed(self):
         runner = self.runner()
@@ -1451,7 +1681,7 @@ class NavigationFailureBudgetTests(unittest.TestCase):
         runner.record_task_failure(task)
         runner._task_budget_counted = False
         runner.record_task_failure(task)
-        self.assertEqual(runner.task_policy.failures(task), 0)
+        self.assertEqual(runner.task_policy.failures(task), 1)
         self.assertEqual(runner.task_policy.reason(task), '')
 
     def test_the_in_run_budget_still_stops_an_endless_retry(self):
@@ -1460,7 +1690,7 @@ class NavigationFailureBudgetTests(unittest.TestCase):
         for _ in range(4):
             runner._task_budget_counted = False
             runner.record_task_failure(task)
-        self.assertEqual(runner.task_policy.failures(task), 2)
+        self.assertEqual(runner.task_policy.failures(task), 3)
         self.assertTrue(runner.task_policy.reason(task))
 
     def test_a_real_progress_failure_still_counts(self):
@@ -1470,3 +1700,72 @@ class NavigationFailureBudgetTests(unittest.TestCase):
         runner.record_task_failure(task)
         self.assertEqual(runner.task_policy.failures(task), 1)
 
+
+
+class MaintainerSafetyTests(unittest.TestCase):
+    def test_real_security_challenge_requires_manual_handling_without_input(self):
+        runner = make_daily_runner()
+        page = screen_of('安全验证', '拖动滑块完成验证')
+        runner.device.swipe = Mock()
+        runner.click = Mock()
+        with self.assertRaises(NeedsAttention):
+            runner.guard(page)
+        runner.device.swipe.assert_not_called()
+        runner.click.assert_not_called()
+
+    def test_rescan_propagates_stop_auth_and_identity_errors(self):
+        from backend.core.errors import Stopped
+        from backend.core.device.instances import InstanceMismatch
+        for exc in (Stopped(), NeedsAttention('需要本人验证'), InstanceMismatch('身份不符')):
+            runner = make_daily_runner()
+            runner.ensure_list = Mock(side_effect=exc)
+            with self.assertRaises(type(exc)):
+                runner.rescan(restart=False)
+
+    def test_rescan_grants_once_only_one_time_and_keeps_unavailable_tasks(self):
+        runner = make_daily_runner()
+        task = Task('x', '浏览好物', '', '去完成', (10,10,20,20), kind='browse')
+        runner.unavailable_tasks = {'task:missing': '今日已确认不可用'}
+        for index in range(2):
+            runner.task_policy.mark_browse_once(task)
+            runner.reset_list_state()
+            self.assertEqual(bool(runner.task_policy.reason(task)), index == 1)
+        self.assertIn('task:missing', runner.unavailable_tasks)
+
+    def test_deferral_survives_policy_rebind_without_modifying_methods(self):
+        from backend.core.execution.task_policy import TaskPolicy
+        runner = make_daily_runner()
+        store = Mock()
+        store.task_decisions.return_value = {}
+        runner.task_policy.bind(store)
+        task = Task('x', '浏览好物', '', '去完成', (10,10,20,20), kind='browse')
+        self.assertTrue(runner.task_policy.defer(task, 'settlement'))
+        saved = store.save_task_decisions.call_args.args[0]
+        other = TaskPolicy()
+        store.task_decisions.return_value = saved
+        other.bind(store)
+        self.assertFalse(other.defer(task, 'settlement'))
+        self.assertIs(other.progress.__func__, TaskPolicy.progress)
+        other.progress(task)
+        self.assertTrue(other.defer(task, 'settlement'))
+
+
+class RescanPersistenceBoundaryTests(unittest.TestCase):
+    def test_unknown_scan_cannot_persist_activity_finished(self):
+        runner = make_daily_runner()
+        runner.stats.attempts = 0
+        runner.confirm_scan = Mock(return_value=runner.SCAN_UNKNOWN)
+        def one_round(*args):
+            runner.stats.attempts += 1
+            runner.daily_exhausted = True
+            return runner.stats
+        with patch.object(SessionLoop, 'run', side_effect=one_round):
+            runner.run()
+        self.assertFalse(runner.daily_exhausted)
+
+    def test_fresh_rescan_respects_existing_unavailable_reason(self):
+        runner = make_daily_runner()
+        task = Task('sample','missing app','','去完成',(1,2,3,4),kind='browse')
+        runner.tasks = Mock(return_value=[task])
+        runner.availability_reason = Mock(return_value='今日已确认不可用')
+        self.assertEqual(runner.runnable_rows(screen_of('更多金币等你赚')), [])

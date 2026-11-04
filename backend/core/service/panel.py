@@ -1,10 +1,9 @@
-"""Loopback-only control panel; a single background worker owns the phone."""
+"""Loopback control panel; each workspace worker owns one selected device."""
 import copy
 from contextlib import nullcontext
 from dataclasses import asdict
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import io
 import json
 import logging
 import socket
@@ -20,7 +19,7 @@ from urllib.parse import urlsplit, parse_qs
 import webbrowser
 
 from backend.core.registry import create_runner as CampaignRunner, default_registry
-from backend.core.config.loader import load_config, read_config
+from backend.core.config.loader import load_config, framework_overrides
 from backend.core.config.schema import validate_config
 from backend.core.errors import NeedsAttention, Stopped
 from backend.core.execution.run_control import RunControl
@@ -31,13 +30,12 @@ from backend.core.service.static import static_response
 from backend.core.storage.daily_state import DailyState, local_day
 from backend.core.device.instances import AppInstance, InstanceMismatch
 from backend.core.service.notify import notify_security_attention
-from backend.core.runtime import data_dir, version, assets_dir
-from backend.core.service.branding import PUBLIC_ICON_FILES
+from backend.core.runtime import data_dir, version
 from backend.core.context import device_scoped
 from backend.core.service.pipeline import ActivityPipeline
+from backend.core.service.preview import PreviewWorker
 
 logger = logging.getLogger(__name__)
-from backend.core.runtime import ROOT
 
 
 class LocalHTTPServer(ThreadingHTTPServer):
@@ -94,8 +92,6 @@ class PanelLogHandler(logging.Handler):
             self.controller.log(record.levelname, record.getMessage())
 
 
-from backend.core.service.preview import PreviewWorker
-
 class Controller(ActivityPipeline, PreviewWorker):
     def __init__(self, config=None, registry=None, app=None, activity=None, persist_preferences=False):
         self.registry = registry or default_registry()
@@ -136,8 +132,7 @@ class Controller(ActivityPipeline, PreviewWorker):
     def _save_preferences(self, config):
         if self.persist_preferences:
             from backend.core.storage.preferences import save_preferences
-            keys = set(read_config(assets_dir() / 'backend/core/config/defaults.json'))
-            save_preferences(config={key: copy.deepcopy(value) for key, value in config.items() if key in keys})
+            save_preferences(config=framework_overrides(config))
 
     def log(self, level, message):
         with self.lock:
@@ -156,7 +151,8 @@ class Controller(ActivityPipeline, PreviewWorker):
 
     def snapshot(self):
         with self.lock:
-            return copy.deepcopy(self.state)
+            result = copy.deepcopy(self.state)
+        return result
 
 
     def _ensure_daily(self):
@@ -278,6 +274,10 @@ class Controller(ActivityPipeline, PreviewWorker):
                 if len(rows) != 1:
                     raise ValueError('任务已更新，请重新读取任务列表')
                 row = rows[0]
+                from backend.core.execution.task_policy import keyword_skip_reason
+                keyword_reason = keyword_skip_reason(row, self.state['config'].get('skip_task_keywords', []))
+                if action == 'task_execute' and keyword_reason:
+                    raise ValueError(keyword_reason)
                 if (not row.get('controllable') or row.get('status') == 'done'
                         or row.get('current', 0) >= row.get('total', 1)):
                     raise ValueError('该任务已完成或需要人工处理')
@@ -334,8 +334,8 @@ class Controller(ActivityPipeline, PreviewWorker):
                     self.control.paused.clear()
                     self.update(status='running', message='继续执行')
                 else:
-                    self.control.stopped.set()
-                    self.update(status='stopping', message='正在停止，当前设备调用返回后结束')
+                    self.control.stop()
+                    self.update(status='stopping', message='正在取消截图与操作，恢复设备设置后结束')
             else:
                 if self.thread and self.thread.is_alive():
                     raise ValueError('设备正在执行操作，请先停止当前任务')
@@ -483,8 +483,9 @@ class Controller(ActivityPipeline, PreviewWorker):
                 device = DeviceAdapter(kind, serial, **options)
                 info = device.current_app()
                 self.control.check()
-                self.on_image(device.screenshot())
-                width, height = device.display_size
+                initial_image = device.screenshot()
+                self.on_image(initial_image)
+                width, height = initial_image.size
                 self.device = device
                 device.preview_managed = True
                 self._ensure_daily()
@@ -535,11 +536,13 @@ class Controller(ActivityPipeline, PreviewWorker):
                 self._remember_instances(payload['instance_ids'])
                 self.update(status='ready', phase='ready', instance_queue=[], message='已选择实例，开始后才会打开对应应用')
             else:
-                if action == 'run':
-                    self._save_preferences(config)
-                    self._run_activity_pipeline(action, payload, config)
-                else:
-                    self._execute_current_activity(action, payload, config)
+                from backend.core.device.ocr import device_ocr_scope, engine_session
+                with engine_session(device_ocr_scope(self.device)):
+                    if action == 'run':
+                        self._save_preferences(config)
+                        self._run_activity_pipeline(action, payload, config)
+                    else:
+                        self._execute_current_activity(action, payload, config)
         except Stopped:
             self._finish_active_queue('stopped')
             self._finish_activity_pipeline('stopped')
@@ -552,7 +555,10 @@ class Controller(ActivityPipeline, PreviewWorker):
             self.log('WARNING', str(exc))
             self.update(status='needs_attention', phase='needs_attention', message=str(exc), remaining=0)
             if not exc.evidence_saved:
-                self.on_failure(dict(reason=str(exc), phase='needs_attention', kind=exc.kind))
+                evidence = dict(reason=str(exc), phase='needs_attention', kind=exc.kind)
+                if getattr(exc, 'capture_diagnostics', None) is not None:
+                    evidence['capture_diagnostics'] = exc.capture_diagnostics
+                self.on_failure(evidence)
             if exc.kind == 'security':
                 notify_security_attention()
         except Exception as exc:
@@ -745,6 +751,9 @@ def make_handler(controller, token):
                 return
             path = urlsplit(self.path).path
             origin = f'http://127.0.0.1:{self.server.server_port}'
+            if path == '/api/preferences' and hasattr(root, 'get_preferences'):
+                self.reply(200, root.get_preferences())
+                return
             if path in ('/api/plugins', '/api/plugins/branches') and hasattr(root, 'plugins_snapshot'):
                 try:
                     if path.endswith('/branches'):
@@ -861,6 +870,9 @@ def make_handler(controller, token):
                 if not isinstance(payload, dict):
                     raise ValueError('请求必须为 JSON 对象')
                 path = urlsplit(self.path).path
+                if path == '/api/preferences' and hasattr(root, 'update_preferences'):
+                    self.reply(200, root.update_preferences(payload))
+                    return
                 if path == '/api/plugins/open-folder' and hasattr(root, 'open_activity_folder'):
                     folder = root.open_activity_folder(f'http://127.0.0.1:{self.server.server_port}')
                     self.reply(200, {'ok': True, 'path': folder})
@@ -879,7 +891,7 @@ def make_handler(controller, token):
                     if hasattr(root, 'stop_all'):
                         root.stop_all()
                     else:
-                        controller.control.stopped.set()
+                        controller.control.stop()
                         controller._preview_stop.set()
                     self.reply(202, {'ok': True})
                     threading.Thread(target=self.server.shutdown, daemon=True).start()
@@ -919,8 +931,7 @@ def serve(port=8765, open_browser=True, config=None, port_file=None, app=None, a
     from backend.core.service.devices import DeviceHub
     from backend.core.storage.preferences import read_preferences
     saved = read_preferences().get('config', {})
-    shared_keys = set(read_config(assets_dir() / 'backend/core/config/defaults.json'))
-    saved = {key: value for key, value in saved.items() if key in shared_keys} if isinstance(saved, dict) else {}
+    saved = framework_overrides(saved) if isinstance(saved, dict) else {}
     # Revalidate stored values; corrupt preferences never prevent startup.
     try:
         initial = load_config(app=app, activity=activity, overrides={**(config or {}), **saved})

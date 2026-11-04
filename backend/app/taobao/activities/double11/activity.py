@@ -35,12 +35,7 @@ class Double11Activity(RescanPolicy, EntryPolicy, TaskActions, VerificationPolic
             # The H5 tree can retain old product captions and progress after a claim.
             # Keep native controls for navigation; verify list content from its paint.
             screen = super().read(force_ocr=True)
-        return screen
-
-    @staticmethod
-    def browse_observation_interval(scrolling):
-        # Keep gestures flowing between costly observations of animated pages.
-        return 3 if scrolling else 1
+        return self.refine_task_rows(screen)
 
     def task_assets(self, screen, center_y):
         header = screen.find('累计任务奖励', exact=True)
@@ -49,6 +44,13 @@ class Double11Activity(RescanPolicy, EntryPolicy, TaskActions, VerificationPolic
                 and left <= n.bounds[0] < screen.width * .55
                 and 0 < n.bounds[2]-n.bounds[0] < screen.width*.14
                 and abs(n.center[1] - center_y) < screen.height * .04]
+
+    @staticmethod
+    def rotating_task_caption(task):
+        import re
+        from backend.core.models import normalize
+        return bool(task.total > 1 and task.seconds > 0 and task.kind in ('browse', 'search', 'done')
+                    and re.fullmatch(r'好物.{0,5}[逛看]|搜一搜.+宝贝|(?:看看|逛逛|浏览).+', normalize(task.title)))
 
     @staticmethod
     def panel_loading(screen):

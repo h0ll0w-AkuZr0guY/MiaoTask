@@ -18,6 +18,7 @@ MiaoTask 采用 [Apache License 2.0](../LICENSE)，项目声明见 [NOTICE](../N
 | RapidOCR 与模型 | 保留发行包的 `LICENSE` 与 `MODEL_LICENSES.md`；模型权利归属与转换说明独立保留，不能只标注推理程序的许可 |
 | FlatBuffers 25.12.19 | 该 Python wheel 未带独立许可文件，补入[官方固定版本 LICENSE](https://github.com/google/flatbuffers/blob/v25.12.19/LICENSE)及 [Python 文件中的原始声明](https://github.com/google/flatbuffers/blob/v25.12.19/python/flatbuffers/__init__.py)，来源记录随源码 `docs/licenses/flatbuffers-25.12.19.txt` 维护，随包放入 `licenses/flatbuffers/` |
 | Android platform-tools | 保留官方发行包的 `NOTICE.txt`；缺失时拒绝构建 |
+| 可选CUDA扩展 | `runtime_plugins/cuda/python/` 内保留GPU ONNX Runtime与各NVIDIA发行包的许可证、第三方声明和dist-info元数据；版本见扩展manifest.json，不改变其各自许可 |
 
 随包文件用于保留声明，不能据此推断所有依赖具有相同许可证。当前构建器会收集构建环境中的声明，其中也可能包含构建工具的许可；实际程序和环境信息以构建清单为准。
 

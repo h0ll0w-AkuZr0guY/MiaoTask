@@ -6,7 +6,7 @@ import re
 
 class _MediaVolume:
     """Only the media stream; preserve the first readable value across fallbacks."""
-    prefixes = (('cmd', 'media_session', 'volume'), ('media', 'volume'))
+    prefixes = (('cmd', 'media_session', 'volume'), ('media', 'volume'), ('cmd', 'audio'))
 
     def __init__(self, execute, report):
         self.execute, self.report = execute, report
@@ -14,6 +14,19 @@ class _MediaVolume:
         self.preferred = None
 
     def read(self, prefix):
+        if prefix == ('cmd', 'audio'):
+            values = []
+            for command, label in (('get-stream-volume', 'getStreamVolume'),
+                                   ('get-min-volume', 'getStreamMinVolume'),
+                                   ('get-max-volume', 'getStreamMaxVolume')):
+                output = self.execute([*prefix, command, '3'])
+                found = re.search(r'AudioManager\.' + label + r'\(3\)\s*->\s*(\d+)\s*$', output)
+                if not found:
+                    raise ValueError('无法核定设备媒体音量')
+                values.append(int(found[1]))
+            if not 0 <= values[1] <= values[0] <= values[2] <= 10000:
+                raise ValueError('设备媒体音量范围异常')
+            return tuple(values)
         output = self.execute([*prefix, '--stream', '3', '--get'])
         found = re.search(r'volume\s+is\s+(\d+)\s+in\s+range\s*\[\s*(\d+)\s*\.\.\s*(\d+)\s*\]',
                           output, re.I)
@@ -25,7 +38,9 @@ class _MediaVolume:
         return value, low, high
 
     def set_verified(self, prefix, value):
-        self.execute([*prefix, '--stream', '3', '--set', str(value)])
+        command = ([*prefix, 'set-volume', '3', str(value)] if prefix == ('cmd', 'audio') else
+                   [*prefix, '--stream', '3', '--set', str(value)])
+        self.execute(command)
         current, _, _ = self.read(prefix)
         if current != value:
             raise ValueError('系统未应用目标媒体音量')
@@ -99,7 +114,8 @@ def device_comfort(device, config, notify=None):
                         wake()
                     except Exception as exc:
                         report('WARNING', '设备唤醒未生效，请手动解锁：' + str(exc))
-                set_value(['settings','get','system','screen_off_timeout'], ['settings','put','system','screen_off_timeout'], 2147483647)
+                timeout_ms = round(config.get('screen_timeout_minutes', 10) * 60_000)
+                set_value(['settings','get','system','screen_off_timeout'], ['settings','put','system','screen_off_timeout'], timeout_ms)
             if config.get('minimum_volume', False):
                 volume = _MediaVolume(execute, report)
                 restore.append(volume.restore)

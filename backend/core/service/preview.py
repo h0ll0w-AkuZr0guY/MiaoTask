@@ -42,6 +42,8 @@ class PreviewWorker:
                 device = self.device
             if device is None:
                 continue
+            if getattr(self, 'state', {}).get('status') in ('running', 'scanning', 'stopping'):
+                continue  # Task observations publish previews; never capture twice.
             io_lock = getattr(device, 'io_lock', None)
             if io_lock is None or not io_lock.acquire(blocking=False):
                 continue

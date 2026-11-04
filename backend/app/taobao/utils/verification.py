@@ -37,7 +37,7 @@ class VerificationPolicy:
         if task.total == 1 and old is not None and new is not None and new > old:
             return True
         if (task.total > 1 and task.current == task.total-1 and old is not None
-                and new is not None and new > old and after_task is not None
+                and new is not None and (new > old or explicit) and after_task is not None
                 and after_task.current == 0 and after_task.total == task.total):
             # The server can replace a finished batch immediately with a fresh
             # 0/N batch. This proves the last repetition, not the new batch done.
@@ -77,13 +77,4 @@ class VerificationPolicy:
                     if (min(shifts) > after.height * .04 and abs(shifts[0] - shifts[1]) < after.height * .025
                             and abs(found[following[0].key].bounds[1] - task.bounds[1]) < after.height * .04):
                         return True
-        if getattr(self, '_browse_credited', None) is not None:
-            credited = self._browse_credited
-            self._browse_credited = None
-            if credited == task.key:
-                # 浏览落地页上明确浮出了「已得 N 金币」：金币已经进账，只是任务
-                # 面板（WebView）的进度要过一两分钟才刷新。这时 after 上读到的
-                # 还是旧数字，按普通证据会判失败，失败又会锁上「今日只试一次」，
-                # 把本来还能做的任务整天丢掉。
-                return True
         return explicit and after_task is None and task.total == 1

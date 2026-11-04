@@ -1,4 +1,4 @@
-"""Bounded scroll variation with explicit, editable timing and geometry."""
+"""Bounded, configurable random scroll gestures."""
 import random
 
 

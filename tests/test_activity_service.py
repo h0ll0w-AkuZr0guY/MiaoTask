@@ -190,3 +190,41 @@ class ActivityDescriptionTests(unittest.TestCase):
         self.assertIn('积少成多',transfer)
         farm=next(text for a,b,text in described if (a,b)==('jd','dongdong_farm'))
         self.assertIn('东东农场',farm)
+
+
+class CatalogOpeningLatencyTests(unittest.TestCase):
+    def test_slow_remote_refresh_never_blocks_cached_opening_or_duplicates_worker(self):
+        from backend.core.service.activity_hub import ActivityCatalogHub
+        from backend.core.plugins.manager import PluginManager
+        from backend.core.plugins.repository import GitHubSourceProvider
+        from test_activity_repository import SourceFixture
+        import threading
+        import tempfile
+        entered, release = threading.Event(), threading.Event()
+        with tempfile.TemporaryDirectory() as folder:
+            fixture = SourceFixture(Path(folder))
+            provider = GitHubSourceProvider(fixture.fetch)
+            manager = PluginManager(Path(folder) / 'installed', source_provider=provider)
+            value, _ = manager.catalog()
+            def slow_catalog():
+                entered.set()
+                release.wait(3)
+                return value
+            provider.catalog = Mock(side_effect=slow_catalog)
+            hub = ActivityCatalogHub()
+            hub._init_activity_catalog()
+            hub.plugin_manager = manager
+            try:
+                first = hub.plugins_snapshot('', refresh=True)
+                self.assertTrue(first['catalog'])
+                self.assertTrue(entered.wait(1))
+                replies = []
+                reader = threading.Thread(target=lambda: replies.append(hub.plugins_snapshot('', refresh=True)))
+                reader.start(); reader.join(1)
+                self.assertFalse(reader.is_alive(), 'cached display waited for remote refresh')
+                self.assertTrue(replies[0]['catalog'])
+                self.assertTrue(replies[0]['refreshing'])
+                self.assertEqual(provider.catalog.call_count, 1)
+            finally:
+                release.set()
+                hub.catalog_refresh_thread.join(3)

@@ -7,6 +7,21 @@ from backend.core.device.instances import InstanceMismatch
 logger = logging.getLogger('backend.execution')
 
 class SessionLoop:
+    def _open_task_page(self, button):
+        """Share page-turn waiting and recovery across both list scan paths."""
+        self.update('scanning', message='打开下一批任务', current_task='', remaining=0)
+        self.control.check()
+        try:
+            self.click(button)
+            self.control.wait(1.2)
+            screen = self.read()
+            return screen if self.is_task_list(screen.nodes) else self.recover()
+        except (Stopped, NeedsAttention, InstanceMismatch):
+            raise
+        except Exception:
+            logger.exception('任务列表翻页异常')
+            return self.recover()
+
     def _swipe_for_more(self, screen):
         """One extra swipe to check whether the list still reveals new rows.
 
@@ -121,11 +136,11 @@ class SessionLoop:
         seen_pages = set()
         final_rescan = False
         verified_progress = self._verified_progress
-        scrolls, total_attempts, page_turns = 0, 0, 0
+        scrolls, page_turns = 0, 0
         # 换批后仍没有可执行任务时，连续空批次达到上限就收工，不再翻完剩余批次
         empty_batches, paged = 0, False
         empty_batch_stop = max(1, int(self.config.get('empty_batch_stop', 3)))
-        while total_attempts < self.config['max_tasks']:
+        while self.stats.attempts < self.config['max_tasks']:
             self.control.check()
             self.guard(screen)
             tasks = self.tasks(screen)
@@ -164,11 +179,10 @@ class SessionLoop:
                     break
             if candidates:
                 empty_batches, paged = 0, False
-                task = min(candidates, key=lambda t: (self.task_policy.failures(t),
+                task = min(candidates, key=lambda t: (self.task_policy.failures(t), self.task_policy.retry_needed(t),
                                                       {'claim': 0, 'browse': 1, 'visit': 2, 'search': 3}.get(t.kind, 4), t.bounds[1]))
                 if self.task_policy.reason(task):
                     continue
-                total_attempts += 1
                 self.stats.attempts += 1
                 self.records[task.key]['status'] = 'running'
                 self.update(tasks=list(self.records.values()))
@@ -181,6 +195,9 @@ class SessionLoop:
                     success = self.verify(task, before, after, explicit)
                     if not success:
                         # A single short refresh accommodates server-side settlement.
+                        refresh = getattr(type(self.reader), 'require_after', None)
+                        if callable(refresh):
+                            self.reader.require_after()
                         self.control.wait(1)
                         # Themis can retain a completed/removed row in its UI
                         # tree. Recheck the rendered page before retrying it.
@@ -229,13 +246,14 @@ class SessionLoop:
                     logger.info('已跳过 %s：%s', task.title, disabled_reason)
                 elif success:
                     self.task_policy.progress(task)
+                    updated = next((t for t in self.tasks(screen) if t.key == task.key), None)
                     if task.total == 1 or task.kind == 'claim':
                         verified_progress.add((task_identity(task), task.current))
                     if task.kind == 'claim':
                         self.stats.claims += 1
                     else:
-                        self.stats.completed += 1
-                    updated = next((t for t in self.tasks(screen) if t.key == task.key), None)
+                        from backend.core.execution.stats import completed_units
+                        self.stats.completed += completed_units(task, updated)
                     can_continue = updated and updated.current < updated.total and updated.kind not in ('done', 'claim')
                     self.records[task.key].update(status='pending' if can_continue else 'done',
                                                   enabled=bool(can_continue and not self.task_policy.reason(updated)),
@@ -266,21 +284,10 @@ class SessionLoop:
                 moved = self._swipe_for_more(screen)
                 if moved is not None:
                     # 滑动后露出了「更多任务」分页入口 → 本批已到底，直接翻批
-                    if self.next_list_page(moved) is not None and page_turns < self.config['max_scroll_pages']:
+                    next_page = self.next_list_page(moved)
+                    if next_page is not None and page_turns < self.config['max_scroll_pages']:
                         page_turns += 1
-                        self.update('scanning', message='打开下一批任务', current_task='', remaining=0)
-                        self.control.check()
-                        try:
-                            self.click(self.next_list_page(moved))
-                            self.control.wait(1.2)
-                            screen = self.read()
-                            if not self.is_task_list(screen.nodes):
-                                screen = self.recover()
-                        except (Stopped, NeedsAttention, InstanceMismatch):
-                            raise
-                        except Exception:
-                            logger.exception('任务列表翻页异常')
-                            screen = self.recover()
+                        screen = self._open_task_page(next_page)
                         paged = True
                         continue
                     if scrolls < self.config['max_scroll_pages']:
@@ -307,19 +314,7 @@ class SessionLoop:
                         continue
                     break
                 page_turns += 1
-                self.update('scanning', message='打开下一批任务', current_task='', remaining=0)
-                self.control.check()
-                try:
-                    self.click(next_page)
-                    self.control.wait(1.2)
-                    screen = self.read()
-                    if not self.is_task_list(screen.nodes):
-                        screen = self.recover()
-                except (Stopped, NeedsAttention, InstanceMismatch):
-                    raise
-                except Exception:
-                    logger.exception('任务列表翻页异常')
-                    screen = self.recover()
+                screen = self._open_task_page(next_page)
                 paged = True
                 continue
             seen_pages.add(signature)
@@ -340,7 +335,7 @@ class SessionLoop:
                 logger.exception('任务列表读取异常')
                 self.report_failure('任务列表读取异常', phase='scanning')
                 screen = self.recover(cold_start=True)
-        self.daily_exhausted = bool(self.records) and total_attempts < self.config['max_tasks'] and not any(
+        self.daily_exhausted = bool(self.records) and self.stats.attempts < self.config['max_tasks'] and not any(
             row.get('status') in ('pending', 'running', 'failed') for row in self.records.values())
         # 会话结束（无可执行任务或已达上限）：回到应用首页，避免停在活动页/抽奖页
         try:
@@ -349,7 +344,7 @@ class SessionLoop:
             raise
         except Exception:
             logger.exception('返回首页失败')
-        if total_attempts >= self.config['max_tasks']:
+        if self.stats.attempts >= self.config['max_tasks']:
             message = '达到本轮任务次数上限，可再次开始继续'
         elif not self.records:
             # 商业任务（办流量卡/充话费…）在解析层就被过滤了，不会进 records。

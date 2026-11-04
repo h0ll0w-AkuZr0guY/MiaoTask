@@ -130,13 +130,16 @@ class TaskActions:
 
         # 少数活动需要手动领取
         claim_label = self.config.get('claim_label', '领取')
-        claim = next((n for n in screen.nodes if claim_label in normalize(n.text)), None)
+        claim = (next((n for n in screen.nodes if claim_label in normalize(n.text)), None)
+                 if self.config.get('claim_rewards', True) else None)
+        receipt = False
         if claim:
             self.click(claim)
             self.control.wait(0.8)
             screen = self.read()
             if self._reward_popup(screen):
+                receipt = True
                 self.device.go_back()
                 self.control.wait(1.2)
                 screen = self.read()
-        return screen, bool(claim), False
+        return screen, receipt, False

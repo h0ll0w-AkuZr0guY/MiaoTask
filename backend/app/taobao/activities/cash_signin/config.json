@@ -18,7 +18,7 @@
       "button": "去领元宝"
     },
     "list_markers": "累计签到奖励|签到[·・]领现金|红包签到[·・]领现金",
-    "landing_markers": "红包签到|累计签到奖励|元宝",
+    "landing_markers": "红包签到[·・•]领现金|累计签到奖励|^再攒|^赚元宝$",
     "inline_claims": [
       {
         "title": "每日红包签到",

@@ -74,9 +74,10 @@ async function checkActivityGrouping(){
   e.get('activity-center-open').fire('click');await new Promise(resolve=>setImmediate(resolve));
   const groups=e.get('activity-center-list').children;
   assert.equal(groups.length,1);assert.equal(groups[0].children[1].children.length,5,'unlisted local activities use the same grid');
-  assert.equal(requests[0],'/api/plugins?refresh=1','opening must discover new branches/apps and activity revisions');
+  assert.equal(requests[0],'/api/plugins','opening renders local metadata before remote checks');
+  assert.equal(requests[1],'/api/plugins?refresh=1','opening schedules one background update');
   e.get('activity-center-refresh').fire('click');await new Promise(resolve=>setImmediate(resolve));
-  assert.equal(requests[1],'/api/plugins?refresh=1');
+  assert.equal(requests[2],'/api/plugins?refresh=1');
   assert.deepEqual(timers,[],'idle activity center must not poll or refresh remote metadata');
 }
 async function checkRankings(){

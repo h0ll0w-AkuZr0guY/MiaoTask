@@ -317,3 +317,24 @@ class ActivityBranchesTests(unittest.TestCase):
             provider.fetch = fixture.fetch
             manager.catalog(refresh=True)
             self.assertEqual(manager.last_error, '')
+
+
+class StaticCatalogPriorityTests(unittest.TestCase):
+    def test_pages_list_is_one_metadata_request_without_git_tree_or_source_downloads(self):
+        from backend.core.plugins.resource_mirror import RESOURCE_MIRRORS
+        with tempfile.TemporaryDirectory() as folder:
+            fixture = SourceFixture(Path(folder))
+            value = GitHubSourceProvider(fixture.fetch).catalog()
+            for entry in value['packages']:
+                entry.update(archive='packages/synthetic.zip', sha256='a' * 64)
+            calls = []
+            def fetch(url, maximum):
+                calls.append(url)
+                if not url.startswith(RESOURCE_MIRRORS[0]):
+                    raise AssertionError('listing should not query GitHub API or download source')
+                return json.dumps(value).encode()
+            provider = GitHubSourceProvider(fetch)
+            result = provider.catalog()
+            self.assertEqual(result['transport'], 'pages')
+            self.assertEqual(len(calls), 1)
+            self.assertTrue(calls[0].endswith('.json'))

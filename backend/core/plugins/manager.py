@@ -26,6 +26,7 @@ import zipfile
 from backend.core.plugins.contracts import (ALLOWED_SUFFIXES, CATALOG_URL, FRAMEWORK_API,
     MAX_ARCHIVE_BYTES, MAX_CATALOG_BYTES, MAX_EXPANDED_BYTES, MAX_FILES,
     OFFICIAL_REPOSITORY, PACKAGE_SCHEMA, module_id, package_version)
+from backend.core.plugins.networking import fetch_with_retry, network_hint, official_opener
 from backend.core.runtime import activities_dir
 
 _LOCK = threading.RLock()
@@ -107,8 +108,12 @@ def _bounded_read(response, maximum):
 
 def _download(url, maximum):
     official_asset_url(url)
+    return fetch_with_retry(lambda: _download_once(url, maximum))
+
+
+def _download_once(url, maximum):
     request = Request(url, headers={'User-Agent': 'MiaoTask-Activity-Installer', 'Accept': 'application/octet-stream'})
-    with build_opener(_OfficialRedirect()).open(request, timeout=20) as response:
+    with official_opener(_OfficialRedirect()).open(request, timeout=20) as response:
         _official_redirect_url(response.geturl())
         return _bounded_read(response, maximum)
 
@@ -313,8 +318,17 @@ class PluginManager:
                 raise ValueError('活动目录缺少兼容声明')
         return value
 
-    def catalog(self, refresh=False):
+    def catalog(self, refresh=False, cache_only=False):
         """Read cache by default; explicit refresh resolves official main once."""
+        if cache_only:
+            try:
+                value = self._validate_catalog(json.loads(self.cache_path.read_text(encoding='utf-8')),
+                                               local_origin=self.local_origin, source_only=self.source_provider is not None)
+                if self.source_provider and value.get('source_ref') != self.source_provider.source_ref:
+                    raise ValueError('缓存属于其他分支')
+                return value, True
+            except (OSError, ValueError):
+                return {'schema': 1, 'repository': OFFICIAL_REPOSITORY, 'packages': []}, True
         with _LOCK:
             cached = None
             if self.cache_path.is_file():
@@ -335,14 +349,16 @@ class PluginManager:
                     self.last_error = ''
                     return value, False
                 except Exception as exc:
-                    self.last_error = '无法更新官方活动目录：' + str(exc)
+                    self.last_error = '无法更新官方活动目录：' + str(exc) + network_hint(exc)
                     if cached is None:
                         return {'schema': 1, 'repository': OFFICIAL_REPOSITORY, 'packages': []}, False
             return cached, True
 
-    def snapshot(self, registry=None, refresh=False):
-        catalog, cached = self.catalog(refresh)
-        installed = self.installed()
+    def snapshot(self, registry=None, refresh=False, cache_only=False):
+        catalog, cached = self.catalog(refresh, cache_only=cache_only)
+        # The index is atomically replaced. A display-only read must not wait
+        # behind the network refresh's installation/source lock.
+        installed = [dict(item) for item in self._state()['packages']] if cache_only else self.installed()
         by_id = {(p['app'], p['activity']): p for p in installed}
         applications, packages = {}, []
         recoverable = {(row['app'],row['activity']): row for row in self.bundled_recovery.entries()}

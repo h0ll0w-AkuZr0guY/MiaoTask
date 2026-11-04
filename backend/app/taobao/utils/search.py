@@ -25,6 +25,35 @@ class SearchPolicy:
     def search_tree(self):
         return self.device.dump_hierarchy()
 
+    def is_search_input_node(self, screen, node):
+        """An edit's text/clear control must never become a popup dismissal."""
+        edits, _ = self.search_controls(screen.tree)
+        for edit in edits:
+            left, top, right, bottom = bounds_of(edit.get('bounds', edit.get('rect')))
+            if left <= node.center[0] <= right and top <= node.center[1] <= bottom:
+                return True
+        search_context = screen.find(r'^历史搜索$|^搜索发现$|^搜索有福利$|^猜你想搜$|^搜索推荐$')
+        if search_context and normalize(node.text) in ('x', 'X', '×', '✕', '✖'):
+            # Search suggestions, clear controls and IME X keys are ordinary
+            # page content. Only a positively identified reward modal can own
+            # a close glyph, and an on-screen keyboard still takes precedence.
+            keyboard = sum(bool(screen.find(pattern)) for pattern in (
+                r'^中[/／]?英$', r'^符(?:号)?$', r'^(?:确认|完成|回车)$',
+                r'(?i)^qwerty(?:uiop)?$', r'(?i)^asdfgh(?:jkl)?$')) >= 2 or sum(
+                    bool(re.fullmatch(r'[A-Za-z]', normalize(n.text)))
+                    and n.center[1] > screen.height * .45 for n in screen.nodes) >= 5
+            modal = screen.find(r'恭喜获得|恭喜抢到|奖励已到账|签到成功|领取成功')
+            if keyboard or not modal:
+                return True
+        buttons = self._submit_buttons(screen)
+        return any(node.center[0] < button.bounds[0]
+                   and abs(node.center[1]-button.center[1]) < max(
+                       node.bounds[3]-node.bounds[1], button.bounds[3]-button.bounds[1])
+                   for button in buttons) or bool(
+            screen.find(r'^历史搜索$|^搜索发现$|^搜索有福利$|^猜你想搜$')
+            and screen.height*.03 < node.center[1] < screen.height*.2
+            and screen.width*.1 < node.center[0] < screen.width*.92)
+
     def fill_search_field(self, query, edit):
         try:
             self.device.input_text(query)
@@ -103,7 +132,7 @@ class SearchPolicy:
         self.click(entry)
         deadline = self.control.now() + self.config['page_timeout']
         while self.control.now() < deadline:
-            self.control.wait(.35)
+            self.page_transition_wait()
             screen = self.read()
             self.guard(screen)
             if screen.package != self.origin:
@@ -122,16 +151,45 @@ class SearchPolicy:
             return bool(self.official_activity_entry(value)) if activity_search else self.search_results_ready(value)
 
         self.check_search_context(screen)
-        if result_ready(screen):
+        # The embedded landing page already contains a banner and product
+        # grid before a query is submitted. It is not evidence of a search.
+        if activity_search and result_ready(screen):
             return True
         tree = screen.tree if screen.tree is not None else self.search_tree()
         edits, _ = self.search_controls(tree)
         edit = self.search_edit(screen, edits)
+        ready_deadline = self.control.now() + self.config['page_timeout']
+        focused = False
+        while not edit and self.control.now() < ready_deadline:
+            # Embedded H5 fields may expose no EditText until focused. Locate
+            # the visible placeholder relative to the submit action first.
+            buttons = self._submit_buttons(screen)
+            field = next((n for n in screen.nodes
+                          if re.fullmatch(r'搜索宝贝|搜索商品|搜索栏|搜索框', normalize(n.text))
+                          and any(n.bounds[2] < b.bounds[0]
+                                  and abs(n.center[1] - b.center[1]) < max(
+                                      n.bounds[3] - n.bounds[1], b.bounds[3] - b.bounds[1])
+                                  for b in buttons)), None)
+            if field and not focused:
+                self.check_search_context(screen, live=True)
+                self.click(field)
+                focused = True
+            self.page_transition_wait()
+            screen = self.read(force_ocr=bool(self.config['ocr']))
+            self.guard(screen)
+            self.check_search_context(screen, live=True)
+            if self.is_task_list(screen.nodes):
+                break
+            edits, _ = self.search_controls(self.search_tree())
+            edit = self.search_edit(screen, edits)
         if not edit:
             logger.warning('没有可确认的输入框，不开始浏览计时')
             self.report_failure('搜索页没有可确认的输入框', phase='searching')
             return False
-        query = query if query is not None else self.config.get('task_search_keyword', '手机壳')
+        choose = getattr(self, 'next_search_keyword', None)
+        query = query if query is not None else (
+            choose() if not activity_search and callable(choose)
+            else self.config.get('task_search_keyword', '手机壳'))
         if normalize(edit.get('text', '')) != normalize(query):
             if self.device.device_type == 'hmdriver2':
                 self.click(TextNode('', bounds_of(edit.get('bounds', edit.get('rect')))))
@@ -139,10 +197,11 @@ class SearchPolicy:
             self.check_search_context(screen, live=True)
             # set_text replaces the field without installing/switching the IME.
             self.fill_search_field(query, edit)
-            self.control.wait(.2)
+            self.control.wait(.4)
         self.update('searching', message='提交搜索并确认活动入口' if activity_search else '提交搜索并确认商品结果页')
         deadline = self.control.now() + self.config['page_timeout']
         submitted, next_submit = 0, self.control.now()
+        ready_layout = None
         result = screen
         while self.control.now() < deadline:
             self.control.check()
@@ -157,8 +216,6 @@ class SearchPolicy:
                     result = self.read(force_ocr=bool(self.config['ocr']))
                     self.guard(result)
                     self.check_search_context(result)
-                    if result_ready(result):
-                        return True
                 buttons = native or self._submit_buttons(result)
                 self.check_search_context(result, live=True)
                 if submitted < 2 and buttons:
@@ -170,15 +227,28 @@ class SearchPolicy:
                     self.device.press('enter')
                     submitted = 2
                 submitted += 1
-                next_submit = self.control.now() + max(1, min(2, self.config['page_timeout'] / 4))
-            self.control.wait(.35)
+                ready_layout = None
+                # Give a successful tap time to hide the IME/load its results.
+                # A fast GPU must not fire all retries during one animation.
+                next_submit = self.control.now() + max(3, min(5, self.config['page_timeout'] / 3))
+                self.page_transition_wait()
+            else:
+                self.control.wait(.4 if getattr(self.reader, 'ocr_backend', None) == 'cuda' else 1)
+            observed_at = self.control.now()
             result = self.read(force_ocr=bool(self.config['ocr']))
             self.guard(result)
             self.check_search_context(result)
             self.check_destination(result)
             if result_ready(result):
+                if (getattr(self.reader, 'ocr_backend', None) == 'cuda'
+                        and self.control.now() - observed_at < .6):
+                    layout = self.destination_layout(result)
+                    if ready_layout != layout:
+                        ready_layout = layout
+                        continue
                 logger.info('已确认搜索结果中的官方活动入口' if activity_search else '已确认进入搜索结果页，开始浏览计时')
                 return True
+            ready_layout = None
             if self.is_task_list(result.nodes):
                 break
         self.report_failure('搜索提交后未识别到官方活动入口' if activity_search else '搜索提交后未识别到商品结果页', phase='searching')

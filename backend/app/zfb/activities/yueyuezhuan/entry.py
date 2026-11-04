@@ -1,16 +1,8 @@
-"""月月赚入口识别与菜单打开。
-
-真机验证到的导航路径（小米平板 / 支付宝 XRiverActivity）：
-    支付宝首页  --点「更多」-->  全部应用页(AppManageActivityV3)
-                --点「月月赚」-->  月月赚活动页(H5，但节点可读)
-
-首页和「全部应用」页都是原生控件；活动页虽是 H5，内容也暴露在无障碍树里。
-因此这里统一用**文字**定位，不依赖坐标。
-"""
+"""月月赚入口：优先原生搜索填字并打开官方活动，保留应用菜单备用路径。"""
 import logging
 import re
 
-from backend.core.models import TextNode, normalize
+from backend.core.models import TextNode, normalize, bounds_of
 from backend.core.errors import Stopped, NeedsAttention
 from backend.core.device.instances import InstanceMismatch
 
@@ -147,11 +139,7 @@ class EntryPolicy:
         return False
 
     def open_home_search(self, screen):
-        """Navigator 契约：是否支持从首页搜索框进入活动。
-
-        支付宝首页搜索的落地页不稳定（会跳到小程序/生活号聚合页），
-        这里显式返回 False，让 Navigator 继续走返回重试而不是进错页面。
-        """
+        """搜索已由ensure_list有界重试；常规导航不再重复发起同一搜索。"""
         return False
 
     def _accept_list(self, screen):
@@ -214,14 +202,15 @@ class EntryPolicy:
         有的拆成「搜索」+「搜索得红包」。只认精确的「搜索」会让一部分用户
         识别不到入口，从而退回首页「更多」去翻最近使用的小程序——那些人
         最近没点过月月赚，就直接打不开了。所以这里同时接受包含匹配，
-        并优先取文案恰好为「搜索」的最靠上的节点。
+        优先选择搜索框/搜索栏，避免右侧「搜索」直接提交首页推荐词。
         """
         hits = [n for n in screen.nodes
                 if '搜索' in _norm(n.text) and n.bounds[3] < screen.height * 0.25]
         if not hits:
             return None
+        fields = [n for n in hits if _norm(n.text) in ('搜索框', '搜索栏')]
         exact = [n for n in hits if _norm(n.text) == '搜索']
-        return min(exact or hits, key=lambda n: (n.bounds[1], n.bounds[0]))
+        return min(fields or exact or hits, key=lambda n: (n.bounds[1], n.bounds[0]))
 
     def _search_page_ready(self, screen):
         """必须已离开首页且能定位搜索输入条，才允许写入。"""
@@ -247,6 +236,38 @@ class EntryPolicy:
 
     def _search_box(self, screen):
         """搜索页的输入框：顶部那条很宽的控件。"""
+        # Native hints rotate (for example a promotional product name). Their
+        # text need not contain 搜索 or the activity keyword. Use the editable
+        # control's actual type and geometry before interpreting OCR captions.
+        pending, fields = [screen.tree], []
+        while pending:
+            item = pending.pop()
+            if isinstance(item, list):
+                pending.extend(item)
+            elif isinstance(item, dict):
+                attrs = item.get('attributes', item)
+                visible = attrs.get('visible-to-user', attrs.get('visible', True))
+                if visible in (False, 'false'):
+                    continue
+                kind = attrs.get('type', attrs.get('class', ''))
+                if 'EditText' in kind or 'TextInput' in kind:
+                    box = bounds_of(attrs.get('bounds', attrs.get('rect')))
+                    if (0 <= box[0] < box[2] <= screen.width and
+                            screen.height*.02 < box[1] < box[3] < screen.height*.18
+                            and box[2]-box[0] > screen.width*.4):
+                        resource = attrs.get('id', attrs.get('resource-id',''))
+                        if not any(resource.endswith('/'+name) or resource == name
+                                   for name in self.config.get('search_input_ids',['search_input_box'])):
+                            # Mini-apps have local search; do not type here.
+                            return None
+                        fields.append(TextNode(str(attrs.get('text') or '搜索框'),box))
+                for key in ('children','hierarchy'):
+                    if isinstance(item.get(key),(list,dict)):
+                        pending.append(item[key])
+        if len(fields) == 1:
+            return fields[0]
+        if len(fields) > 1:
+            return None
         hits = []
         for n in screen.nodes:
             w, h = n.bounds[2] - n.bounds[0], n.bounds[3] - n.bounds[1]
@@ -275,6 +296,10 @@ class EntryPolicy:
                 and screen.height * 0.07 < n.bounds[1] < screen.height * 0.45
                 and n.bounds[2] - n.bounds[0] < screen.width * 0.6
                 and 0 < n.bounds[3] - n.bounds[1] < screen.height * 0.2]
+        edit = self._search_box(screen)
+        if edit:
+            hits = [n for n in hits if not (edit.bounds[0] <= n.center[0] <= edit.bounds[2]
+                                            and edit.bounds[1] <= n.center[1] <= edit.bounds[3])]
         # 标题右侧同排有动作时优先点击动作，避免只聚焦不可点击标题。
         rows = [n for n in screen.nodes
                 if _norm(n.text) in ('去看看', '去完成', '去逛逛', '去浏览')
@@ -296,8 +321,9 @@ class EntryPolicy:
         self._search_direct_done = True
         try:
             # 0) 起点：退回到能点搜索的位置（首页，或已有搜索入口的页面）
-            for _ in range(3):
-                if self._search_entry_node(screen) is not None or self.homepage_visible(screen):
+            for _ in range(min(6,self.config.get('max_back_steps',6))):
+                self.guard(screen)
+                if self._search_page_ready(screen) or self.homepage_visible(screen):
                     break
                 self.device.go_back()
                 self.control.wait(1.5)
@@ -305,11 +331,12 @@ class EntryPolicy:
                 if not _is_alipay(screen.package):
                     return False     # 已经退出支付宝了，别再一路退到桌面
             # 1) 打开搜索页
-            self.update(message='打开支付宝搜索')
-            if not self._tap_home_search(screen):
-                return False
-            self.control.wait(1.5)
-            screen = self.read()
+            if not self._search_page_ready(screen):
+                self.update(message='打开支付宝搜索')
+                if not self._tap_home_search(screen):
+                    return False
+                self.control.wait(1.5)
+                screen = self.read()
             if not self._search_page_ready(screen):
                 # 没进搜索页：多半是首页搜索入口点空了，按布局再点一次
                 if self.homepage_visible(screen):
@@ -372,7 +399,8 @@ class EntryPolicy:
         if screen is not None and _is_alipay(screen.package):
             return screen
         try:
-            self.device.start_app(self.application.package)
+            package = getattr(self, 'origin', None) or self.application.package_for(self.device.device_type)
+            self.device.start_app(package)
         except (Stopped, NeedsAttention, InstanceMismatch):
             raise
         except Exception:
@@ -536,7 +564,8 @@ class EntryPolicy:
             if not _is_alipay(screen.package):
                 # 退出了支付宝，重新拉起（默认进首页）
                 try:
-                    self.device.start_app(self.application.package)
+                    package = getattr(self, 'origin', None) or self.application.package_for(self.device.device_type)
+                    self.device.start_app(package)
                 except (Stopped, NeedsAttention, InstanceMismatch):
                     raise
                 except Exception:

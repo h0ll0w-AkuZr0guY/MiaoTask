@@ -22,6 +22,12 @@ def read_config(path):
     return value
 
 
+def framework_overrides(config):
+    """Copy only shared settings across activities and into user preferences."""
+    keys = read_config(assets_dir() / 'backend/core/config/defaults.json')
+    return {key: copy.deepcopy(value) for key, value in config.items() if key in keys}
+
+
 def resource(directory, relative):
     base = Path(directory).resolve()
     path = (base / relative).resolve()
