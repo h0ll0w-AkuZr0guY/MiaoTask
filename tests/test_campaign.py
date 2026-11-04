@@ -2403,6 +2403,7 @@ class SerialBrowseProtocolTests(unittest.TestCase):
 
     def test_retry_stops_after_completion_and_does_not_recheck_during_initial_window(self):
         r,clock,destination=self.runner();task=r.tasks(task_screen())[0]
+        r.config['completion_return_ms'] = 0  # This assertion isolates browse/recheck timing.
         r.task_policy.fail(task,2)
         completed=Screen([node('任务已完成',800,200)],1440,3200,r.origin)
         calls=[]
