@@ -14,7 +14,7 @@ import logging
 import random
 import re
 
-from backend.core.errors import NeedsAttention
+from backend.core.errors import NeedsAttention, TaskUnavailable
 from backend.core.models import TextNode, normalize
 
 logger = logging.getLogger('backend.execution')
@@ -349,9 +349,18 @@ class TaskActions:
         if target is None:
             logger.info('任务面板里没有找到这一行，跳过本次：%s', task.title)
             return screen, False, False
+        if task.kind == 'claim':
+            # 领奖只认「这一行有没有变化」：点完立刻返回会把没领到的当成领到了。
+            screen, ok = self.claim_row(screen, task, target)
+            self._credited = self._credited or ok
+            return screen, self._credited, False
         self.click(target)
         self.control.wait(1.5)
         screen = self.read()
+        if not task.target_app and self.app_jump_dialog(screen):
+            # 这条任务要打开/下载京东之外的 App（JoyAI、应用市场…），不做。
+            self.escape_foreign(screen)
+            raise TaskUnavailable('这条任务需要打开或下载其他应用，不自动执行')
         if self.verify_blocked(screen):
             self.update('verifying', message='京东安全验证', remaining=0)
             screen = self.solve_quick_verify(screen)
@@ -364,9 +373,7 @@ class TaskActions:
         if task.target_app:
             screen = self._finish_cross_app(task, screen)
             return screen, self._credited, True
-        if task.kind == 'claim':
-            screen = self._finish_claim(screen)
-        elif task.kind == 'visit':
+        if task.kind == 'visit':
             screen = self._finish_water(screen)
         else:
             screen = self._finish_browse(task, screen)
@@ -389,6 +396,18 @@ class TaskActions:
             if text in ('仅打开一次', '仅此一次', '打开', '立即打开', '继续打开', '允许'):
                 return node
         return None
+
+    def app_jump_dialog(self, screen):
+        """系统级「京东想要打开 XX」跳转框（vivo 的 AppJumpPromptActivity 等）。
+
+        京东有一批任务其实是「去下载/打开别的 App」（去JoyAI抽20元就是这样）。
+        这类任务不在我们的站外白名单里，点下去只会弹系统框；取消掉，并且记成
+        不可用，免得每一轮都再弹一次。
+        """
+        package = (screen.package or '').lower()
+        if any(word in package for word in ('appfilter', 'packageinstaller', 'resolver')):
+            return True
+        return bool(re.search(r'想要打开|即将打开|是否打开.{0,12}(应用|APP)', _norm(screen.text)))
 
     def confirm_launch(self, screen, tries=2):
         """确认应用跳转框；京东有时直接拉起目标应用，没有这一框。"""
@@ -423,13 +442,167 @@ class TaskActions:
         self.control.wait(2.5)  # 站外任务的归因有延迟，回到面板后再给一点结算时间
         return self.read()
 
-    def _finish_claim(self, screen):
-        self.update('browsing', message='领取水滴奖励', remaining=0)
-        screen = self.wait_screen(lambda s: self.reward_seen(s) or self.panel_visible(s), timeout=5)
-        screen = self.dismiss_popups(screen)
-        if self.panel_visible(screen):
-            return screen
+    # ---- 领奖 ----
+    #
+    # 京东的「做任务」和「领奖励」是同一行的两个阶段：做完一遍，按钮变成
+    # 「去领奖/领奖励」，点掉之后这一行要么消失，要么换回「去完成」让你接着做
+    # 下一步（精选活动推荐 0/7 这种可重复任务）。所以凡是回到面板，都得顺手把
+    # 能领的先领掉，否则任务链就卡在这里。
+
+    def claim_row(self, screen, task, target=None):
+        """点一行「去领奖/领奖励」，直到这一行真的消失或换掉按钮。
+
+        真机事实（2026-11-04）：点下去 0.5s 内整行消失，抽屉不收、也不弹奖励浮层；
+        但结算有延迟，偶尔第一次点击只是让按钮变灰，所以必须按「行有没有变化」
+        再确认一次，不能点完就当成领到。
+        """
+        tries = max(1, int(self.config.get('claim_retry', 2)))
+        for attempt in range(tries):
+            if target is None:
+                screen, target = self.locate_row(screen, task)
+            if target is None:
+                return screen, True           # 行已经不在了，等于领到了
+            self.update('browsing', message='领取奖励：' + task.title, remaining=0)
+            self.click(target)
+            screen = self.wait_claim_settled(task, screen)
+            if self._claim_done(task, screen):
+                return screen, True
+            target = None
+            if attempt + 1 < tries:
+                logger.info('领奖没有生效，再点一次：%s', task.title)
+                self.control.wait(1.2)
+                screen = self.ensure_panel(screen)
+        return screen, False
+
+    def wait_claim_settled(self, task, screen, timeout=None):
+        """等这一行变成「已领」：行消失、按钮换掉，或弹了奖励浮层。"""
+        budget = float(self.config.get('claim_settle_timeout', 5))
+        deadline = self.control.now() + max(1.0, timeout if timeout is not None else budget)
+        while True:
+            screen = self.escape_foreign(screen)
+            if self.reward_seen(screen):
+                self._credited = True
+                screen = self.dismiss_popups(screen)
+            if not self.panel_visible(screen) and (
+                    self.farm_visible(screen) or self.homepage_visible(screen)
+                    or self.foreign_page(screen)):
+                # 有的领奖会把抽屉收起：重新打开，再看这一行还在不在
+                screen = self.ensure_panel(screen)
+            if self._claim_done(task, screen):
+                return screen
+            if self.control.now() >= deadline:
+                return screen
+            self.control.wait(.55)
+            screen = self.read()
+
+    def _claim_done(self, task, screen):
+        if not self.panel_visible(screen):
+            return False
+        rows = {row.title: row for row in self.tasks(screen)}
+        now = rows.get(task.title)
+        return now is None or now.kind != 'claim'
+
+    def sweep_claims(self, screen, deep=False):
+        """把面板上能领的奖励一次领完；deep 时往下滚着找。
+
+        主循环有它自己的节拍：一次只做一个任务，中间会重新进农场、重开抽屉，
+        视口往往被拉回顶部——藏在下面的「去领奖」根本没机会进入候选。这里按
+        人工习惯处理：先把当前这屏能领的全点掉，需要时把整个列表扫一遍。
+        """
+        limit = max(1, int(self.config.get('claim_sweep_limit', 20)))
+        max_scrolls = max(1, int(self.config.get('claim_sweep_scrolls', 6)))
+        claimed, scrolls, seen_titles = 0, 0, set()
+        self._swept_titles = set()
+        self._sweep_complete = False
+        screen = self.ensure_panel(screen)
+        if deep:
+            # 深扫要先回到列表顶部，否则上半截的行永远轮不到
+            screen = self._panel_scroll_to_top(screen, limit=4)
+        while claimed < limit:
+            rows = self.tasks(screen)
+            self._swept_titles.update(row.title for row in rows)
+            claims = [t for t in rows if t.kind == 'claim' and t.title not in seen_titles]
+            if not claims:
+                if not deep or scrolls >= max_scrolls:
+                    self._sweep_complete = not deep or scrolls < max_scrolls
+                    break
+                screen, moved = self._panel_scroll_once(screen)
+                scrolls += 1
+                if not moved:
+                    self._sweep_complete = True
+                    break
+                continue
+            task = claims[0]
+            seen_titles.add(task.title)
+            screen, ok = self.claim_row(screen, task)
+            if ok:
+                claimed += 1
+                self.stats.claims += 1
+                self._mark_claimed(task)
+        if claimed:
+            logger.info('本轮领到 %d 个奖励', claimed)
+        if deep and self._sweep_complete:
+            self._drop_stale_claims()
         return self.ensure_panel(screen)
+
+    def _drop_stale_claims(self):
+        """整屏扫过一遍后，把记录里已经不存在的领奖行收尾。
+
+        这些行是被领掉（或活动下线）之后从列表消失的，但记录不会自己删除，
+        界面上就会一直挂着「待处理」，看着像没领。它们其实已经没得领了。
+        """
+        titles = getattr(self, '_swept_titles', set())
+        for row in self.records.values():
+            if (row.get('kind') == 'claim' and row.get('status') in ('pending', 'failed')
+                    and row.get('title') not in titles):
+                row.update(status='done', enabled=False,
+                           reason='任务列表里已没有这一行（已领取或已失效）')
+
+    def _panel_rows(self, screen):
+        """当前这屏的任务行指纹：只用「标题+进度+类型」，不含坐标。
+
+        滚到底时抽屉会有回弹，坐标一直在抖；拿坐标当指纹会以为还有新内容，
+        白白把滚动次数耗光。
+        """
+        try:
+            return tuple(sorted((t.title, t.current, t.kind) for t in self.tasks(screen)))
+        except Exception:
+            return ()
+
+    def _panel_scroll_once(self, screen):
+        """抽屉往下滚一屏，返回 (屏幕, 是否还有新内容)。"""
+        before = self._panel_rows(screen)
+        self.browse_swipe(screen)
+        self.control.wait(.85)
+        screen = self.read()
+        if not self.panel_visible(screen):
+            screen = self.ensure_panel(screen)
+        after = self._panel_rows(screen)
+        return screen, (not before or not after or after != before)
+
+    def _panel_scroll_to_top(self, screen, limit=4):
+        for _ in range(max(1, limit)):
+            before = self._panel_rows(screen)
+            if not self.alt_swipe(screen):
+                break
+            self.control.wait(.5)
+            screen = self.read()
+            if not self.panel_visible(screen):
+                screen = self.ensure_panel(screen)
+            if self._panel_rows(screen) == before:
+                break
+        return screen
+
+    def _mark_claimed(self, task):
+        """直接领掉的奖励也要落到记录里，界面上不能一直挂着「待处理」。
+
+        记录可能因为行位置变化（同名行加坐标后缀）而分成几条，所以按标题对齐，
+        别只认当前这一条 key。
+        """
+        for row in self.records.values():
+            if row.get('kind') == 'claim' and row.get('title') == task.title:
+                row.update(status='done', current=max(row.get('current') or 0, task.total),
+                           enabled=False, reason='已领取奖励')
 
     def _finish_water(self, screen):
         self.update('browsing', message='浇水', remaining=0)
@@ -450,7 +623,9 @@ class TaskActions:
         screen = self.dismiss_popups(screen)
         screen = self.recover_farm_panel(screen)
         screen = self.ensure_panel(screen)
-        return self.dismiss_popups(screen)
+        screen = self.dismiss_popups(screen)
+        # 这一步做完，这一行通常已经变成「去领奖」：顺手领掉，才能接着做下一步。
+        return self.sweep_claims(screen)
 
     def _dwell(self, screen, seconds):
         """在落地页停留足够时长，中途做几次小幅滑动，尽量像真人浏览。"""

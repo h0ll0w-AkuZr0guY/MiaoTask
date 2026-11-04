@@ -28,6 +28,10 @@ class DongDongFarmActivity(EntryPolicy, TaskRows, TaskActions, VerificationPolic
 
     # 抽屉里能点出结果的按钮；一个都没有说明行还没渲染完
     _ROW_ACTIONS = frozenset({'去完成', '逛一逛', '去领奖', '去浇水', '去关注'})
+    # 只有真正执行（run）时才做签到/浇水/领奖；「识别」预览必须保持只读。
+    # 注意：这是类属性，不能放到 setup() 里重置——Activity.run() 会先 setup()
+    # 再进主循环，那样会把 run() 里刚设好的 True 又抹掉，整段农场日常都不执行。
+    _running = False
 
     @staticmethod
     def default_config():
@@ -35,12 +39,11 @@ class DongDongFarmActivity(EntryPolicy, TaskRows, TaskActions, VerificationPolic
 
     def setup(self):
         self._chores_done = False
+        self._claims_swept = False
         self._water_actions = 0
-        self._running = False
         self._credited = False
 
     def run(self, auto_open=False):
-        # 只有真正执行（run）时才做签到/浇水；面板的「识别」预览必须保持只读。
         self._running = True
         try:
             return super().run(auto_open)
@@ -64,7 +67,28 @@ class DongDongFarmActivity(EntryPolicy, TaskRows, TaskActions, VerificationPolic
             except Exception:
                 logger.exception('农场日常（签到/领水滴/浇水）失败，继续做任务')
             screen = self.ensure_panel(screen)
+        if self._running:
+            # 抽屉是长列表，主循环只会往下滑；停在底部时它回不到上面，就会
+            # 以为「没有可执行任务」直接收工。每次重新识别都先把列表拉回顶部。
+            screen = self._panel_scroll_to_top(screen, limit=6)
+        if self._running and not self._claims_swept:
+            # 每天第一次进来先把「去领奖」清干净。这些奖励不领，对应的任务行就
+            # 一直停在「去领奖」，后面的浏览任务也没法继续，整条任务链等于断了。
+            self._claims_swept = True
+            try:
+                screen = self.sweep_claims(screen, deep=True)
+            except Exception:
+                logger.exception('首次领奖扫描失败，继续做任务')
         return screen
+
+    def return_to_home(self, screen):
+        """收工前把面板里还没领的奖励再清一遍，然后收起抽屉。"""
+        if self._running:
+            try:
+                screen = self.sweep_claims(screen, deep=True)
+            except Exception:
+                logger.exception('收工前领奖扫描失败')
+        return super().return_to_home(screen)
 
     def guard(self, screen):
         self.assert_instance(screen)

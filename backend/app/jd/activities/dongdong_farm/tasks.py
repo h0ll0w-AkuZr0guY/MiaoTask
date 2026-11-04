@@ -127,6 +127,30 @@ class TaskRows:
         return match.group(1).strip(), int(match.group(2)), int(match.group(3)), node
 
     @staticmethod
+    def _claim_title(texts, action, width, height):
+        """领奖行的兜底识别：标题没有「(x/y)」时，取按钮左边最近的正文当标题。
+
+        京东有一批「领奖励」行只写「抢20元外卖金券」不带进度，按进度匹配会把整行
+        丢掉——这类行恰恰是已经做完、只等着领钱的那批，绝不能漏。
+        只对领奖按钮启用，避免把说明文字误当成新任务。
+        """
+        best = None
+        for node, text in texts:
+            if node is action or text in ALL_ACTIONS or TITLE_PROGRESS.match(text):
+                continue
+            if node.bounds[2] > action.bounds[0]:
+                continue
+            dy = abs(node.center[1] - action.center[1])
+            if dy > height * .05:
+                continue
+            if best is None or (dy, -node.bounds[2]) < best[0]:
+                best = ((dy, -node.bounds[2]), text, node)
+        if best is None:
+            return '', 0, 1, None
+        _, text, node = best
+        return text, 0, 1, node
+
+    @staticmethod
     def _row_detail(texts, title_node, top, width, height):
         """标题正下方的说明行：给出「浏览6秒」这类真实停留时长。"""
         limit = title_node.bounds[3] + height * .05
@@ -158,6 +182,8 @@ class TaskRows:
             if text not in ALL_ACTIONS:
                 continue
             title, current, total, title_node = self._row_title(texts, node, top, width, height)
+            if not title and text in CLAIM_ACTIONS:
+                title, current, total, title_node = self._claim_title(texts, node, width, height)
             if not title or title_node is None:
                 continue
             detail = self._row_detail(texts, title_node, top, width, height)
@@ -170,7 +196,9 @@ class TaskRows:
                 key = title + '#claim'
             elif text in WATER_ACTIONS:
                 key = title + '#water'
-                if water_used >= water_cap:
+                if current >= total:
+                    kind, action, reason = 'done', 'browse', ''
+                elif water_used >= water_cap:
                     kind, action, reason = 'manual', 'manual', '本轮浇水次数已达上限'
                 else:
                     kind, action, reason = 'visit', 'browse', ''
@@ -179,11 +207,23 @@ class TaskRows:
                 reason = self._skip_reason(title)
                 if not reason and text in OTHER_ACTIONS:
                     reason = '需要下单或开通，不自动执行'
-                if not reason:
+                if reason:
+                    kind, action = 'manual', 'manual'
+                elif current >= total:
+                    # (1/1) 的行上还挂着「继续逛」：任务其实已经做完了，再点也
+                    # 不会有新进度，只会把当天的失败次数耗光，把整条任务锁成
+                    # 「今日失败已达上限」。这种行按已完成处理，不再点。
+                    kind, action = 'done', 'browse'
+                else:
+                    kind, action = 'browse', 'browse'
                     target_app, target_packages = self._external_target(title)
-                kind, action = ('manual', 'manual') if reason else ('browse', 'browse')
+
             if key in seen:
-                continue
+                # 同一屏出现同名行（京东把同一条任务拆成两条投放）：按纵坐标区分，
+                # 不能整行丢掉——丢掉的往往就是还没领的那一条。
+                key = '%s@%d' % (key, node.bounds[1])
+                if key in seen:
+                    continue
             seen.add(key)
             tasks.append(Task(
                 key=key, title=title, detail=detail, action=action, bounds=node.bounds,

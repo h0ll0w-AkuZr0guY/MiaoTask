@@ -266,7 +266,12 @@ class EntryPolicy:
 
     @staticmethod
     def view_signature(screen):
-        return tuple(sorted((_norm(node.text), node.bounds[1])
+        """只看「有哪些行」，不看坐标。
+
+        抽屉滚到底会回弹，行的 y 一直在抖；带上坐标会让主循环以为还有新内容，
+        于是一路往下滑、再也回不到上面那些真正能做的任务。
+        """
+        return tuple(sorted(re.sub(r'\s+', '', _norm(node.text))
                             for node in screen.nodes
                             if re.search(r'\(\d+/\d+\)', _norm(node.text))))
 

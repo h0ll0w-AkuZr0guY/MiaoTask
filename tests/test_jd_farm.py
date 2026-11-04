@@ -110,15 +110,18 @@ class PanelParsingTests(unittest.TestCase):
         self.assertEqual(by_title['逛PLUS会员中心'].kind, 'browse')
 
     def test_reward_and_continue_buttons_are_recognised(self):
-        """京东的领奖按钮还叫「领奖励」，可重复的浏览行是「继续逛」。"""
+        """领奖按钮还叫「领奖励」；(1/1) 上的「继续逛」是已做完，不能再点。"""
         screen = panel_screen(
             ('读一本小说最高赚20(1/1)', '读6s书得奖励+10g', '领奖励'),
             ('逛家电家居领京豆(1/1)', '浏览6秒，奖励+10g', '继续逛'),
+            ('精选活动推荐(1/7)', '浏览6秒，奖励+10g', '继续逛'),
         )
         tasks = {task.title: task for task in
                  self.runner.parse_tasks(screen.nodes, screen.width, screen.height)}
         self.assertEqual(tasks['读一本小说最高赚20'].kind, 'claim')
-        self.assertEqual(tasks['逛家电家居领京豆'].kind, 'browse')
+        # 进度已经满了，再点「继续逛」不会有新进度，只会把失败次数耗光
+        self.assertEqual(tasks['逛家电家居领京豆'].kind, 'done')
+        self.assertEqual(tasks['精选活动推荐'].kind, 'browse')
 
     def test_watering_row_is_a_visit_and_stops_at_the_run_cap(self):
         screen = panel_screen(('每日累计浇水20次(1/20)', '完成任务，奖励+40g', '去浇水'))
@@ -176,6 +179,105 @@ class NavigationTests(unittest.TestCase):
         kuaishou = Screen([TextNode('返回', (33, 120, 153, 240))], 1080, 2400,
                           'com.kuaishou.nebula')
         self.assertFalse(self.runner.foreign_page(kuaishou))
+
+
+class ClaimSweepTests(unittest.TestCase):
+    """领奖必须一次领干净：漏一条，对应的任务行就卡在「去领奖」不动。"""
+
+    class FakeControl:
+        def __init__(self):
+            self.t = 0.0
+
+        def check(self):
+            pass
+
+        def wait(self, seconds=0):
+            self.t += max(0.0, seconds or 0)
+            return self.t
+
+        def now(self):
+            return self.t
+
+    def setUp(self):
+        self.runner = make_runner()
+
+    def screen(self, *rows):
+        return panel_screen(*rows)
+
+    def play(self, screens):
+        """让 read() 依次返回给定屏幕（末尾重复），并记录点击。"""
+        queue = list(screens)
+        self.runner.read = lambda force_ocr=False: queue.pop(0) if len(queue) > 1 else queue[0]
+        self.runner.control = self.FakeControl()
+        self.runner.clicked = []
+        self.runner.click = lambda node: self.runner.clicked.append(node)
+
+    def test_claim_row_without_progress_is_still_parsed(self):
+        """「抢20元外卖金券」这类行不带 (x/y)，也必须认成待领奖。"""
+        screen = self.screen(
+            ('抢20元外卖金券', '已完成，点击领取', '领奖励'),
+            ('去百度APP领现金(1/1)', '浏览6秒，奖励+50g', '去领奖'),
+        )
+        tasks = {t.title: t for t in
+                 self.runner.parse_tasks(screen.nodes, screen.width, screen.height)}
+        self.assertEqual(tasks['抢20元外卖金券'].kind, 'claim')
+        self.assertEqual(tasks['去百度APP领现金'].kind, 'claim')
+
+    def test_same_title_rows_are_not_collapsed(self):
+        screen = panel_screen(
+            ('抢20元外卖金券(1/1)', '已完成，点击领取', '领奖励'),
+            ('抢20元外卖金券(1/1)', '已完成，点击领取', '领奖励'),
+        )
+        tasks = self.runner.parse_tasks(screen.nodes, screen.width, screen.height)
+        self.assertEqual(len(tasks), 2)
+
+    def test_sweep_claims_every_visible_reward(self):
+        first = self.screen(
+            ('抢20元外卖金券(1/1)', '已完成，点击领取', '领奖励'),
+            ('读小说最高赚20(1/1)', '读6s书得奖励+10g', '去领奖'),
+            ('养猪猪抽1888现金(0/1)', '浏览6秒，奖励+20g', '去完成'),
+        )
+        second = self.screen(
+            ('读小说最高赚20(1/1)', '读6s书得奖励+10g', '去领奖'),
+            ('养猪猪抽1888现金(0/1)', '浏览6秒，奖励+20g', '去完成'),
+        )
+        third = self.screen(
+            ('养猪猪抽1888现金(0/1)', '浏览6秒，奖励+20g', '去完成'),
+        )
+        self.play([first, second, third])
+        screen = self.runner.sweep_claims(first)
+        self.assertEqual(len(self.runner.clicked), 2)
+        self.assertEqual(self.runner.stats.claims, 2)
+        self.assertEqual([t.title for t in self.runner.tasks(screen)],
+                         ['养猪猪抽1888现金'])
+
+    def test_claim_that_does_not_change_is_retried_once(self):
+        stuck = self.screen(('抢20元外卖金券(1/1)', '已完成，点击领取', '领奖励'))
+        self.play([stuck])
+        task = self.runner.parse_tasks(stuck.nodes, 1080, 2400)[0]
+        screen, ok = self.runner.claim_row(stuck, task)
+        self.assertFalse(ok)
+        self.assertEqual(len(self.runner.clicked), 2)   # claim_retry 的两次
+        self.assertEqual(self.runner.stats.claims, 0)
+
+    def test_running_flag_is_not_reset_by_setup(self):
+        """setup() 在 run() 之后被调用；它把 _running 抹掉会让签到/浇水整段不执行。"""
+        runner = make_runner()
+        runner.setup()
+        self.assertFalse(runner._running)
+        runner._running = True
+        runner.setup()
+        self.assertTrue(runner._running)
+
+    def test_claim_records_that_left_the_panel_are_closed(self):
+        self.runner.records = {
+            'gone#claim': dict(kind='claim', title='抢20元外卖金券', status='pending', current=1),
+            'live#claim': dict(kind='claim', title='养猪猪抽1888现金', status='pending', current=1),
+        }
+        self.runner._swept_titles = {'养猪猪抽1888现金'}
+        self.runner._drop_stale_claims()
+        self.assertEqual(self.runner.records['gone#claim']['status'], 'done')
+        self.assertEqual(self.runner.records['live#claim']['status'], 'pending')
 
 
 class FarmVerificationTests(unittest.TestCase):
