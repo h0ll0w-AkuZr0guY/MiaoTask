@@ -13,7 +13,8 @@ const clockText=seconds=>{seconds=Math.max(0,Math.floor(seconds||0));return `${S
 function el(tag, cls, text) {const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;}
 function toast(text){$('toast').textContent=text;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,6000);}
 const numericSettings = {
-  default_browse_seconds:'browse-seconds', browse_recheck_rounds:'browse-recheck-rounds',
+  default_browse_seconds:'browse-seconds', completion_return_ms:'completion-return-ms',
+  browse_recheck_rounds:'browse-recheck-rounds',
   screenshot_quality:'screenshot-quality',
   screen_timeout_minutes:'screen-timeout-minutes', max_attempts:'max-attempts', max_tasks:'max-tasks'
 };
