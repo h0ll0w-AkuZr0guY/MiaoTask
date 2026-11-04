@@ -1574,10 +1574,21 @@ class RunnerTests(unittest.TestCase):
 
     def test_risk_page_requires_human(self):
         r = self.runner()
-        for label in ['请完成安全验证', '请输入验证码', '立即登录', '确认支付']:
+        for label in ['请完成安全验证', '请输入验证码', '立即登录', '确认支付',
+                      '亲，请拖动下方滑块完成验证']:
             with self.assertRaises(NeedsAttention):
                 r.guard(Screen([node(label, 0, 0)], 1440, 3200, r.origin))
         r.guard(Screen([node('逛一逛支付宝农场', 0, 0)], 1440, 3200, r.origin))
+
+    def test_product_slider_title_is_not_a_security_challenge(self):
+        # 浏览任务落地页的商品标题“精密滑块｜超重负荷”会撞上核心词表的裸词
+        # “滑块”，但页面上没有拖动/验证码等任何要人动手的证据，不能整轮停。
+        r = self.runner()
+        feed = Screen([node('当前页面下单再得2000能量', 40, 120),
+                       node('精密滑块｜超重负荷｜直线运行', 20, 900),
+                       node('直线光轴镀铬空心活塞杆轴承', 700, 640)],
+                      1440, 3200, r.origin)
+        r.guard(feed)
 
     def test_stop_is_responsive_while_paused(self):
         control = RunControl()

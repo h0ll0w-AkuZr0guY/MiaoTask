@@ -61,7 +61,7 @@ HARD_STOP_RE = re.compile(r'将满足描述的所有图片拖放到指定区域|
                           r'拖动.{0,10}(?:验证|拼图)|请拖动|请依次点击|按顺序点击|点击下图中|'
                           r'请完成下列验证|滑块验证|拖动滑块|按住滑块|拼图验证|'
                           r'人机验证|行为验证|安全验证|验证码|'
-                          r'短信登录|验证码登录|登录即同意|请先登录|授权登录|欢迎登录|'
+                          r'短信登录|验证码登录|登录即同意|请先登录|立即登录|授权登录|欢迎登录|'
                           r'其他方式登录|扫一扫快速登录|确认付款|支付密码|确认支付|'
                           r'操作过于频繁|账号存在风险|访问被拒绝|安全中心|身份核验')
 # 直播间页面自带的固定话术：用它判断“当前停在视频流里”，比看任务标题可靠
@@ -79,6 +79,60 @@ POPUP_HINT_RE = re.compile(r'恭喜|抢到|获得|奖励|红包|优惠券|折扣
                            r'开通|绑定|升级|活动规则|邀请|已领取|翻倍|提醒|弹窗|'
                            r'完成任务|限本直播间|领取并使用')
 
+
+
+def sanitize_product_slider(screen):
+    """把商品名里的“滑块”从验证词表里摘出去。
+
+    导购横幅、商品标题里的“导轨滑块 / 窗帘滑块 / 精密滑块”会被核心 guard
+    判定当成“拖动滑块验证”，结果整轮停在一个根本没有验证的页面上。
+    真正的验证页一定还有拖动、拼图、验证码这类话；这些词都不在时，
+    把 滑块 换成同义的商品词再交给判定。
+    """
+    try:
+        text = normalize(screen.text)
+    except Exception:
+        return screen
+    if '滑块' not in text or CHALLENGE_RE.search(text):
+        return screen
+    nodes, changed = [], False
+    for node in screen.nodes:
+        raw = normalize(node.text)
+        if '滑块' not in raw:
+            nodes.append(node)
+            continue
+        changed = True
+        fresh = raw.replace('滑块', '滑轨')
+        try:
+            nodes.append(TextNode(fresh, node.bounds, node.source))
+        except TypeError:
+            nodes.append(TextNode(fresh, node.bounds))
+    if not changed:
+        return screen
+    fresh_text = text.replace('滑块', '滑轨')
+    try:
+        return replace(screen, nodes=nodes, text=fresh_text)
+    except Exception:
+        pass
+    try:
+        clone = copy.copy(screen)
+    except Exception:
+        return screen
+    try:
+        clone.nodes = nodes
+    except Exception:
+        try:
+            object.__setattr__(clone, 'nodes', nodes)
+        except Exception:
+            return screen
+    try:
+        clone.text = fresh_text
+    except Exception:
+        try:
+            object.__setattr__(clone, 'text', fresh_text)
+        except Exception:
+            pass
+    return clone
 
 
 class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, VerificationPolicy, Activity):
@@ -555,56 +609,8 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
         return screen
 
     def sanitized(self, screen):
-        """把商品名里的“滑块”从验证词表里摘出去。
-
-        导购横幅、商品标题里的“导轨滑块 / 窗帘滑块”会被判定当成“拖动滑块验证”，
-        结果整轮停在一个根本没有验证的页面上。真正的验证页一定还有拖动、拼图、
-        验证码这类话；这些词都不在时，把 滑块 换成同义的商品词再交给判定。
-        """
-        try:
-            text = normalize(screen.text)
-        except Exception:
-            return screen
-        if '滑块' not in text or CHALLENGE_RE.search(text):
-            return screen
-        nodes, changed = [], False
-        for node in screen.nodes:
-            raw = normalize(node.text)
-            if '滑块' not in raw:
-                nodes.append(node)
-                continue
-            changed = True
-            fresh = raw.replace('滑块', '滑轨')
-            try:
-                nodes.append(TextNode(fresh, node.bounds, node.source))
-            except TypeError:
-                nodes.append(TextNode(fresh, node.bounds))
-        if not changed:
-            return screen
-        fresh_text = text.replace('滑块', '滑轨')
-        try:
-            return replace(screen, nodes=nodes, text=fresh_text)
-        except Exception:
-            pass
-        try:
-            clone = copy.copy(screen)
-        except Exception:
-            return screen
-        try:
-            clone.nodes = nodes
-        except Exception:
-            try:
-                object.__setattr__(clone, 'nodes', nodes)
-            except Exception:
-                return screen
-        try:
-            clone.text = fresh_text
-        except Exception:
-            try:
-                object.__setattr__(clone, 'text', fresh_text)
-            except Exception:
-                pass
-        return clone
+        """把商品名里的“滑块”从验证词表里摘出去（详见模块级同名逻辑）。"""
+        return sanitize_product_slider(screen)
 
     def retreat(self, screen):
         """疑似被拦住时先退一层：退出去后判定不成立，就说明只是撞了词表。
