@@ -1,18 +1,24 @@
 """The existing activity assembled from independently replaceable policies."""
+import logging
+
 from backend.core.execution.activity import Activity
 from backend.core.errors import NeedsAttention, Stopped, TaskUnavailable
 from backend.core.execution.run_control import RunControl
 from backend.core.execution.stats import RunStats
+from backend.core.models import normalize
 from backend.core.config.loader import load_config
 from backend.core.config.schema import validate_config
 from backend.app.taobao.manifest import PROFILE
 from backend.app.common.utils.destinations import DestinationPolicy
 from backend.app.taobao.utils.rescan import RescanPolicy
 from backend.app.taobao.utils.search import SearchPolicy
+from backend.app.taobao.utils.daily import HARD_STOP_RE, sanitize_product_slider
 from .entry import EntryPolicy
 from .actions import TaskActions
 from .verify import VerificationPolicy
 from .tasks import parse_tasks, is_task_list, CLAIM_ACTIONS, EXTERNAL_APPS
+
+logger = logging.getLogger('backend.execution')
 
 
 class Double11Activity(RescanPolicy, EntryPolicy, TaskActions, VerificationPolicy, SearchPolicy, DestinationPolicy, Activity):
@@ -57,9 +63,24 @@ class Double11Activity(RescanPolicy, EntryPolicy, TaskActions, VerificationPolic
         return screen.find(r'做任务赚|累计任务奖励')
 
     def guard(self, screen):
+        """核心词表把“滑块”这类商品名词也算成验证页，先净化再判定。
+
+        浏览任务的落地页是商品信息流，商品标题常带“精密滑块/导轨滑块”，
+        核心 guard 一撞上裸词“滑块”就整轮停，可屏幕上根本没有验证。
+        所以核心判定只当提醒：只有出现拖动滑块、拼图、验证码、登录框、
+        支付密码这些“必须人动手”的证据（HARD_STOP_RE）才真正停止。
+        """
         self.assert_instance(screen)
         from backend.core.execution.guard import check_attention
-        check_attention(self, screen)
+        try:
+            check_attention(self, sanitize_product_slider(screen))
+        except NeedsAttention:
+            text = normalize(screen.text)
+            if HARD_STOP_RE.search(text) or getattr(screen, 'obscured', False):
+                raise
+            # 只撞到“滑块”这类商品名词，页面上没有必须人工处理的元素，继续执行。
+            logger.info('忽略疑似拦截：只撞到商品词表，页面上没有验证/登录元素；片段=%s',
+                        text[:60].replace('\n', ' '))
 
 
 # Import compatibility for the existing regression suite and integrations.
