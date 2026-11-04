@@ -204,6 +204,26 @@ class GeometryTests(unittest.TestCase):
         windows='  Display: mDisplayId=0\n mCurrentFocus=launcher\n  Display: mDisplayId=7\n mCurrentFocus=app\n'
         self.assertNotIn('mCurrentFocus=app',focused_window_dump(windows,0))
 
+    def test_named_primary_display_without_local_port_maps_unique_id(self):
+        # Some MTK ROMs print the primary device name only and record fields
+        # between mDisplayId and mPrimaryDisplayDevice, so the compact fast
+        # path never matches. The physical id still comes from the device
+        # inventory by name, or from the logical display's own uniqueId.
+        block=('  Logical Displays: size=1\n'
+               '  Display 0:\n'
+               '    mDisplayId=0\n'
+               '    mIsEnabled=true\n'
+               '    mLayerStack=0\n'
+               '    mPrimaryDisplayDevice=内置屏幕\n'
+               '    mBaseDisplayInfo=DisplayInfo{"内置屏幕", displayId 0, uniqueId "local:4627039422300187648"}\n')
+        self.assertEqual(capture_display(block,0),'4627039422300187648')
+        inventory='  DisplayDeviceInfo{"内置屏幕": uniqueId="local:4627039422300187648", 1080 x 2460}\n'
+        self.assertEqual(capture_display(inventory+block,0),'4627039422300187648')
+        self.assertEqual(capture_display(block+'  Display: mDisplayId=3\n  mCurrentFocus=app\n',0),
+                         '4627039422300187648')
+        with self.assertRaises(RuntimeError):
+            capture_display('Display 0:\n mDisplayId=0\n mPrimaryDisplayDevice=未知屏幕\n mLayerStack=0\n',0)
+
     def test_wide_ocr_tiles_cover_edges_without_stretching(self):
         image=Image.new('RGB',(1920,1080));tiles=ocr_tiles(image)
         self.assertEqual(tiles[0][1],0)
