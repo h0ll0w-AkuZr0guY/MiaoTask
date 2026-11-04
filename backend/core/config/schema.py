@@ -29,6 +29,9 @@ def validate_config(config):
     rounds = config.setdefault('browse_recheck_rounds', 3)
     if isinstance(rounds, bool) or not isinstance(rounds, int) or not 0 <= rounds <= 10:
         raise ValueError('browse_recheck_rounds 必须为0～10的整数')
+    delay = config.setdefault('completion_return_ms', 1000)
+    if isinstance(delay, bool) or not isinstance(delay, int) or not 0 <= delay <= 10000:
+        raise ValueError('completion_return_ms 必须为0～10000的整数')
     quality = config.setdefault('screenshot_quality', 70)
     if isinstance(quality, bool) or not isinstance(quality, int) or not 30 <= quality <= 95:
         raise ValueError('screenshot_quality 必须为30～95的整数')

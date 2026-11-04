@@ -549,3 +549,5 @@ controller.dispatch('run', {'auto_open': True})
 `TaskActions.page_transition_wait()` 在任务点击、主页搜索聚焦及搜索提交后等待1.2秒再采集，不计入浏览时长。CPU及未知/回退后端接受首张就绪画面，不强制增加识别；实际CUDA且观察耗时不足0.6秒时，`execute` 与 `SearchPolicy.handle_search` 间隔0.4秒复核 `destination_layout(screen)`，比较包名、尺寸及顶部搜索/任务控件的相对位置，忽略状态栏和商品动画。明显加载提示、空画面或移动中的控件继续留在既有page_timeout内；搜索再次提交间隔至少3秒，避免动画期间连发。安全和实例检查每帧保留。
 
 `SearchPolicy.is_search_input_node` 保护搜索框清除控件及输入法X键，不将其作为弹窗关闭；有键盘时奖励提示也不能解除该保护。原生输入框重新定位后再填写，不使用上一页面的旧bounds，不更换输入法。
+
+完成反馈后的等待使用 `Session.settle_completion(deadline=...)`，默认随机0～1000毫秒、0关闭，等待不超过剩余浏览预算并可暂停/停止；由活动显式调用，不对所有动作统一插入等待。屏幕映射优先当前逻辑块自身的物理ID，设备清单同名歧义时拒绝猜测。
