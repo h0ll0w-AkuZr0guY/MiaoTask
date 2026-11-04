@@ -21,11 +21,36 @@ from backend.core.registry import Registry
 from scripts.check_public_files import audit_file
 
 
+def activity_source_changes(root):
+    """Ignore only unstaged CRLF/LF conversions; archive committed bytes."""
+    raw = subprocess.check_output(['git', 'status', '--porcelain', '-z'], cwd=root)
+    originals = {}
+    text_suffixes = {'.py', '.json', '.js', '.css', '.html', '.md', '.yml', '.yaml', '.txt', '.spec', '.bat'}
+    for record in raw.split(b'\0'):
+        if not record:
+            continue
+        if record[:3] != b' M ':
+            return raw.decode('utf-8', errors='replace'), {}
+        relative = record[3:].decode('utf-8')
+        path = Path(root) / relative
+        if path.suffix not in text_suffixes or path.is_symlink() or not path.is_file():
+            return raw.decode('utf-8', errors='replace'), {}
+        committed = subprocess.check_output(['git', 'show', 'HEAD:' + relative], cwd=root)
+        actual = path.read_bytes()
+        if b'\0' in actual or actual.replace(b'\r\n', b'\n') != committed.replace(b'\r\n', b'\n'):
+            return raw.decode('utf-8', errors='replace'), {}
+        originals[relative] = committed
+    return '', originals
+
+
 def build_packages(root, output, tag, version=None, *, require_clean=True, local_source=False):
     root, output = Path(root).resolve(), Path(output).resolve()
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}', tag):
         raise ValueError('活动发布标签无效')
     status = '' if local_source else subprocess.check_output(['git', 'status', '--porcelain'], cwd=root, text=True)
+    originals = {}
+    if require_clean and not local_source and status.strip():
+        status, originals = activity_source_changes(root)
     if require_clean and status.strip():
         raise ValueError('活动发布前必须提交干净源码；本地预览可显式使用 --allow-dirty')
     commit = '' if local_source else subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
@@ -60,7 +85,7 @@ def build_packages(root, output, tag, version=None, *, require_clean=True, local
                 path = root / name
                 if path.is_symlink():
                     raise ValueError('活动源码不允许符号链接：' + name)
-                content = path.read_bytes()
+                content = originals[name] if name in originals else path.read_bytes()
                 if audit_file(name, content):
                     raise ValueError('活动源码未通过公开文件检查：' + name)
                 payload[name] = content

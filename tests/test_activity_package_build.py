@@ -86,3 +86,29 @@ class ActivitySiteTests(unittest.TestCase):
             other=ResourceMirror(source_ref='feature/开发',fetch=lambda url,limit:(output/url.split('/activities/',1)[1]).read_bytes())
             self.assertEqual(other.catalog()['source_ref'],'feature/开发')
             self.assertEqual(other.catalog(commit=catalog['source_commit'])['source_ref'],'feature/开发')
+
+
+class ActivityLineEndingTests(unittest.TestCase):
+    def test_only_unstaged_line_endings_are_accepted_with_original_payload(self):
+        from scripts.package_activities import activity_source_changes
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            (root/'.gitattributes').write_text('*.py -text\n',encoding='utf-8')
+            file=root/'sample.py'; original=b'value = 1\n';file.write_bytes(original)
+            for args in (['init','-q'],['add','.'],['-c','user.name=Fixture','-c','user.email=test@example.invalid','commit','-qm','fixture']):
+                subprocess.run(['git',*args],cwd=root,check=True,capture_output=True)
+            file.write_bytes(b'value = 1\r\n')
+            status, preserved=activity_source_changes(root)
+            self.assertEqual(status,'');self.assertEqual(preserved['sample.py'],original)
+            file.write_bytes(b'value = 2\r\n')
+            self.assertTrue(activity_source_changes(root)[0])
+            file.write_bytes(original)
+            (root/'untracked.py').write_bytes(b'new = 1\n')
+            self.assertTrue(activity_source_changes(root)[0])
+            (root/'untracked.py').unlink()
+            file.write_bytes(b'value = 2\n')
+            subprocess.run(['git','add','sample.py'],cwd=root,check=True,capture_output=True)
+            file.write_bytes(original)
+            self.assertTrue(activity_source_changes(root)[0])
+            file.unlink()
+            self.assertTrue(activity_source_changes(root)[0])
