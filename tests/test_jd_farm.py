@@ -534,5 +534,16 @@ class CatalogLoopTests(unittest.TestCase):
                           '领完后按钮变成「去完成」，不能再当成领奖按钮补点')
 
 
+class VerificationBoundaryTests(unittest.TestCase):
+    def test_security_challenge_never_drags_even_with_legacy_option(self):
+        from backend.core.errors import NeedsAttention
+        runner = make_runner()
+        runner.config['quick_verify'] = True
+        runner.device.swipe = Mock()
+        with self.assertRaises(NeedsAttention):
+            runner.solve_quick_verify(panel_screen())
+        runner.device.swipe.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()

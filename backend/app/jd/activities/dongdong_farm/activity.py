@@ -322,7 +322,7 @@ class DongDongFarmActivity(EntryPolicy, TaskRows, TaskActions, VerificationPolic
     def guard(self, screen):
         self.assert_instance(screen)
         if self.verify_blocked(screen):
-            # 京东风控页：先按人工方式过掉，过不掉交给 check_attention 停止本轮。
+            # 京东风控页：立即停止并交给本人处理。
             self.solve_quick_verify(screen)
             screen = self.read()
         from backend.core.execution.guard import check_attention
