@@ -82,8 +82,8 @@
             <div class="settings-switch"><label><input type="checkbox" id="ocr" checked><span>页面不可读时使用本地 OCR<small>手机截图在电脑本地识别</small></span></label></div>
             <div class="advanced-network">
               <label class="field-label" for="ocr-device">OCR 推理后端</label>
-              <select id="ocr-device"><option value="auto">自动（检测到 CUDA 用 GPU，否则 CPU）</option><option value="cpu">强制 CPU</option><option value="cuda">强制 CUDA（需 NVIDIA 显卡）</option></select>
-              <p class="field-hint" id="ocr-device-hint">保留下次 OCR 重建引擎时生效；自动模式默认 CPU。</p>
+              <select id="ocr-device"><option value="auto">自动（检测到 GPU 加速包就用，否则 CPU）</option><option value="cpu">强制 CPU</option><option value="cuda">强制 CUDA（需 NVIDIA 显卡）</option><option value="dml">强制 DirectML（AMD / Intel 显卡）</option></select>
+              <p class="field-hint" id="ocr-device-hint">GPU 加速包可用时，自动或对应后端会使用 GPU；保存后下次识别生效。</p>
               <label class="field-label" for="download-proxy">活动下载代理</label>
               <input type="text" id="download-proxy" autocomplete="off" spellcheck="false" placeholder="留空沿用系统代理；http://127.0.0.1:7890；off 强制直连">
               <p class="field-hint">仅用于活动中心访问 GitHub 下载活动，不影响设备连接。</p>

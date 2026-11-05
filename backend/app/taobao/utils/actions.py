@@ -167,7 +167,7 @@ class TaskActions:
                 ready_layout = None
                 self.pause(.7)
                 continue
-            if (getattr(self.reader, 'ocr_backend', None) == 'cuda'
+            if (getattr(self.reader, 'ocr_backend', None) in ('cuda', 'dml')
                     and self.control.now() - observed_at < .6):
                 # Only cheap, fast observations need a second painted frame.
                 # CPU (including CUDA fallback) accepts the first ready frame
@@ -546,7 +546,7 @@ class TaskActions:
         retry_needed = getattr(self.task_policy, 'retry_needed', self.task_policy.failures)
         retry = task.kind in ('browse', 'search') and bool(retry_needed(task))
         first_check = (not cross and task.kind in ('browse', 'search')
-                       and getattr(self.reader, 'ocr_backend', None) == 'cuda')
+                       and getattr(self.reader, 'ocr_backend', None) in ('cuda', 'dml'))
 
         def browse_for(duration):
             deadline = min(self.control.now() + duration, hard_deadline)
@@ -565,7 +565,21 @@ class TaskActions:
             self.control.check()
 
         browse_for(seconds)
-        if not (retry or first_check) or self.control.now() >= hard_deadline:
+        if self.control.now() >= hard_deadline:
+            return False, cross
+        if not (retry or first_check):
+            if task.seconds:
+                # 写明了时长：到点就走，不为了确认再多读一次屏。
+                return False, cross
+            # 描述里根本没写时长（「发现精选好物」下方只有「浏览 +40」），这里的
+            # 秒数用的是默认值，到点后到底算不算做完只能看页面怎么说。CPU 推理
+            # 下原先只有失败过的任务才复查，第一次就这样被记成“进度未增加”，
+            # 接着把重试额度用光。只对这类“时长不明”的任务补一次确认。
+            screen = self.read(force_ocr=bool(self.config['ocr']))
+            self.guard(screen)
+            if self.browse_completed(screen):
+                self.settle_completion(deadline=hard_deadline)
+                return True, cross
             return False, cross
         # Fast CUDA inference checks the real countdown at the first deadline.
         # CPU retains sparse observation. Both use bounded serial supplements.

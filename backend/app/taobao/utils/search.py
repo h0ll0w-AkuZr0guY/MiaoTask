@@ -233,14 +233,14 @@ class SearchPolicy:
                 next_submit = self.control.now() + max(3, min(5, self.config['page_timeout'] / 3))
                 self.page_transition_wait()
             else:
-                self.control.wait(.4 if getattr(self.reader, 'ocr_backend', None) == 'cuda' else 1)
+                self.control.wait(.4 if getattr(self.reader, 'ocr_backend', None) in ('cuda', 'dml') else 1)
             observed_at = self.control.now()
             result = self.read(force_ocr=bool(self.config['ocr']))
             self.guard(result)
             self.check_search_context(result)
             self.check_destination(result)
             if result_ready(result):
-                if (getattr(self.reader, 'ocr_backend', None) == 'cuda'
+                if (getattr(self.reader, 'ocr_backend', None) in ('cuda', 'dml')
                         and self.control.now() - observed_at < .6):
                     layout = self.destination_layout(result)
                     if ready_layout != layout:

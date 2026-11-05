@@ -115,7 +115,8 @@ class ActivityCatalogHub:
         except Exception:
             pass
         return dict(preferences, ocr_providers=providers,
-                    cuda_available='CUDAExecutionProvider' in providers)
+                    cuda_available='CUDAExecutionProvider' in providers,
+                    dml_available='DmlExecutionProvider' in providers)
 
     def update_preferences(self, payload):
         from backend.core.preferences import save_preferences

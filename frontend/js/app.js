@@ -90,6 +90,12 @@ async function action(name, extra={}){
     const result=await response.json();if(!response.ok)throw new Error(result.error||'操作失败');if(name==='shutdown'){toast('助手已退出，可以关闭此页面');return;}if(name==='configure')toast('执行设置已应用');await poll();
   }catch(error){toast(error.message);}finally{requesting=false;}
 }
+function ocrHint(p){
+  const eps=p.ocr_providers||[];
+  if(eps.includes('DmlExecutionProvider'))return '已检测到 DirectML 执行器（AMD / Intel 显卡）；选择自动或强制 DirectML 即可用 GPU，保存后下次识别生效。';
+  if(eps.includes('CUDAExecutionProvider'))return '已检测到 CUDA 执行器（NVIDIA 显卡）；保存后下次识别重建引擎时生效。';
+  return '未检测到 GPU 加速包，GPU 选项会回退 CPU；保存后下次识别生效。';
+}
 let preferencesLoaded=false;
 async function loadPreferences(){
   if(preferencesLoaded)return;
@@ -97,9 +103,7 @@ async function loadPreferences(){
     const prefs=await MiaoAPI.request('/api/preferences',{timeout:8000});
     $('ocr-device').value=prefs.ocr_device||'auto';
     $('download-proxy').value=prefs.download_proxy||'';
-    $('ocr-device-hint').textContent=prefs.cuda_available
-      ?'已检测到 CUDA 执行器；保存后下次识别重建引擎时生效。'
-      :'未检测到 CUDA 执行器，强制 CUDA 会回退 CPU；保存后下次识别生效。';
+    $('ocr-device-hint').textContent=ocrHint(prefs);
     preferencesLoaded=true;
   }catch(_){$('ocr-device-hint').textContent='未能读取控制台偏好，暂不写入；请重新打开设置重试。';}
 }
@@ -109,9 +113,7 @@ async function savePreferences(){
   const response=await fetch(MiaoAPI.url('/api/preferences'),{method:'POST',headers:{'Content-Type':'application/json','X-Miao-Token':token},body:JSON.stringify(payload)});
   const result=await response.json();
   if(!response.ok)throw new Error(result.error||'偏好设置保存失败');
-  $('ocr-device-hint').textContent=result.cuda_available
-    ?'已检测到 CUDA 执行器；保存后下次识别重建引擎时生效。'
-    :'未检测到 CUDA 执行器，强制 CUDA 会回退 CPU；保存后下次识别生效。';
+  $('ocr-device-hint').textContent=ocrHint(result);
 }
 async function discover(){
   $('discover').disabled=true;

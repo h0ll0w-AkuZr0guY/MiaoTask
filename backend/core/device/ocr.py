@@ -11,9 +11,9 @@ import weakref
 
 logger = logging.getLogger(__name__)
 
-# auto：装了带 CUDA 的 onnxruntime-gpu 才启用；cpu/cuda 可显式指定。
+# auto：装了可用的 GPU 加速扩展才启用；cpu/cuda/dml 可显式指定。
 OCR_DEVICE_ENV = 'MIAO_OCR_DEVICE'
-_OCR_BACKENDS = ('auto', 'cpu', 'cuda')
+_OCR_BACKENDS = ('auto', 'cpu', 'cuda', 'dml')
 
 
 class ExactTextCache:
@@ -94,22 +94,27 @@ def device_ocr_scope(device):
 def resolve_ocr_backend(preference, providers):
     """Map the MIAO_OCR_DEVICE preference and available EPs to a backend.
 
-    Returns ``(backend, note)`` where backend is ``'cpu'`` or ``'cuda'`` and
-    note is ``None`` or ``'cuda-unavailable'`` when a forced CUDA request has
-    to fall back because CUDAExecutionProvider is missing.
+    Returns ``(backend, note)`` where backend is ``'cpu'``, ``'cuda'`` or
+    ``'dml'`` and note marks a forced GPU request that had to fall back.
     """
     requested = (preference or 'auto').strip().lower()
     if requested not in _OCR_BACKENDS:
         logger.warning('环境变量 %s=%r 无法识别，可选 %s，按 auto 处理',
                        OCR_DEVICE_ENV, preference, '/'.join(_OCR_BACKENDS))
         requested = 'auto'
-    cuda_ready = 'CUDAExecutionProvider' in (providers or ())
+    available = tuple(providers or ())
+    cuda_ready = 'CUDAExecutionProvider' in available
+    dml_ready = 'DmlExecutionProvider' in available
     if requested == 'cpu':
         return 'cpu', None
+    if requested == 'dml':
+        return ('dml', None) if dml_ready else ('cpu', 'dml-unavailable')
+    if requested == 'cuda':
+        return ('cuda', None) if cuda_ready else ('cpu', 'cuda-unavailable')
     if cuda_ready:
         return 'cuda', None
-    if requested == 'cuda':
-        return 'cpu', 'cuda-unavailable'
+    if dml_ready:
+        return 'dml', None
     return 'cpu', None
 
 
@@ -151,8 +156,14 @@ def ocr_engine_params(backend, threads=4):
         'EngineConfig.onnxruntime.inter_op_num_threads': 1,
         'Global.log_level': 'warning',
     }
-    if backend == 'cuda':
-        params['EngineConfig.onnxruntime.use_cuda'] = True
+    if backend in ('cuda', 'dml'):
+        if backend == 'cuda':
+            params['EngineConfig.onnxruntime.use_cuda'] = True
+        else:
+            params['EngineConfig.onnxruntime.use_dml'] = True
+            # Keep dml_ep_cfg at its default (None). Passing an explicit {} makes
+            # RapidOCR wrap it in an OmegaConf DictConfig, which ORT rejects and
+            # silently falls back to CPUExecutionProvider.
         # Dynamic-width PP-OCR recognition batches can fail inside cuDNN
         # ReduceMean on Windows. Single-crop GPU inference avoids that path;
         # retain the existing batch size for CPU and the exact-crop cache.
@@ -161,7 +172,7 @@ def ocr_engine_params(backend, threads=4):
 
 
 def engine_params(threads):
-    """Build RapidOCR parameters, enabling CUDA only when it is usable."""
+    """Build RapidOCR parameters, enabling a GPU backend only when it is usable."""
     from backend.core.device.runtime_plugin import activate_runtime_plugin
     activate_runtime_plugin()
     providers = ()
@@ -174,6 +185,9 @@ def engine_params(threads):
     if note == 'cuda-unavailable':
         logger.warning('已请求 GPU 识别（cuda），但当前 onnxruntime 不含 CUDAExecutionProvider；'
                        '需安装与本机 CUDA/cuDNN 版本匹配的 onnxruntime-gpu，已回退 CPU')
+    if note == 'dml-unavailable':
+        logger.warning('已请求 GPU 识别（dml），但当前 onnxruntime 不含 DmlExecutionProvider；'
+                       '需安装 DirectML 加速扩展（AMD / Intel 等 DX12 显卡），已回退 CPU')
     if backend == 'cuda':
         # pip 安装的 nvidia-* 运行库不在 Windows DLL 搜索路径中，先显式加载。
         _preload_cuda_dlls(onnxruntime)
@@ -214,6 +228,10 @@ def _sleeping_session(model):
     options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
     providers = session.get_providers()
     provider_options = session.get_provider_options()
+    if 'DmlExecutionProvider' in providers:
+        # DirectML does not support ORT's memory pattern optimization; the
+        # rebuilt session would otherwise fail or fall back to CPU.
+        options.enable_mem_pattern = False
     model.session.session = ort.InferenceSession(session._model_path, sess_options=options,
                                                 providers=providers,
                                                 provider_options=[provider_options.get(name, {})
@@ -242,8 +260,9 @@ def _create_engine(threads, backend=None):
             _sleeping_session(rec)
             engine.miao_providers = {'det': det.session.session.get_providers(),
                                      'rec': rec.session.session.get_providers()}
-            engine.miao_backend = ('cuda' if any('CUDAExecutionProvider' in providers
-                                   for providers in engine.miao_providers.values()) else 'cpu')
+            actual = {p for providers in engine.miao_providers.values() for p in providers}
+            engine.miao_backend = ('cuda' if 'CUDAExecutionProvider' in actual else
+                                   'dml' if 'DmlExecutionProvider' in actual else 'cpu')
             engine.text_rec = ExactTextCache(rec)
             logger.info('OCR实际模型执行器：%s', engine.miao_providers)
         return engine
@@ -251,9 +270,10 @@ def _create_engine(threads, backend=None):
     try:
         return build(params)
     except Exception:
-        if not params.get('EngineConfig.onnxruntime.use_cuda'):
+        if not (params.get('EngineConfig.onnxruntime.use_cuda')
+                or params.get('EngineConfig.onnxruntime.use_dml')):
             raise
-        logger.warning('CUDA模型初始化失败，改用CPU重试一次', exc_info=True)
+        logger.warning('GPU模型初始化失败，改用CPU重试一次', exc_info=True)
         return build(ocr_engine_params('cpu', threads))
 
 
@@ -271,9 +291,9 @@ class ManagedEngine:
         try:
             return self.engine(*args, **kwargs)
         except Exception:
-            if getattr(self.engine, 'miao_backend', None) != 'cuda':
+            if getattr(self.engine, 'miao_backend', None) not in ('cuda', 'dml'):
                 raise
-            logger.warning('CUDA推理失败，释放该引擎并回退CPU重试本帧一次', exc_info=True)
+            logger.warning('GPU推理失败，释放该引擎并回退CPU重试本帧一次', exc_info=True)
             self.engine = None
             self.engine = _create_engine(self.threads, backend='cpu')
             return self.engine(*args, **kwargs)

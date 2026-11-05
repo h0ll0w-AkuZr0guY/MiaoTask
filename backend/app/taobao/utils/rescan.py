@@ -265,6 +265,43 @@ class RescanPolicy:
         self._task_restart_used = False
         return True
 
+    def leave_list(self):
+        """把当前的任务列表收起来，好让 ``reopen_list`` 真的从入口重进一次。
+
+        不重启客户端时（默认配置就是这样），``navigate`` 一看到“已经在列表”
+        就直接返回，所谓“重新进入列表确认”其实只是把旧页面又读了一遍，
+        服务端这一分钟刷新出来的进度一条都拿不到，还能做的任务会被判成做完。
+        这里只负责退出去；重新打开仍交给 ``reopen_list``。
+        """
+        try:
+            screen = self.read_page(visual=True)
+        except (Stopped, NeedsAttention, InstanceMismatch):
+            raise
+        except Exception:
+            return False
+        if not self.still_on_list(screen):
+            return False
+        go_back = getattr(self.device, 'go_back', None)
+        if not callable(go_back):
+            return False
+        for _ in range(2):
+            try:
+                go_back()
+            except Exception:
+                logger.warning('补扫：收起任务列表失败，改用当前页面扫描', exc_info=True)
+                return False
+            self.pause(1.0)
+            try:
+                screen = self.read_page(visual=True)
+            except (Stopped, NeedsAttention, InstanceMismatch):
+                raise
+            except Exception:
+                return True
+            if not self.still_on_list(screen):
+                logger.info('补扫：已退出任务列表，重新从入口进入')
+                return True
+        return False
+
     def reopen_list(self):
         """回到任务列表并保证整张列表都画出来，返回当前屏幕。
 
@@ -280,17 +317,23 @@ class RescanPolicy:
     def scroll_list(self, screen):
         """把列表往下翻一屏。
 
-        步长可配：淘金币那种可下拉关闭的弹层一次滑太长会被当成“下拉关闭”，
-        双11 的面板更矮，所以拆成几段小步；日常系列沿用原来的单次 0.3 屏。
+        步长可配：淘金币那种可下拉关闭的弹层一次滑太长会被当成“下拉关闭”；
+        但反过来，一次滑太短又完全推不动列表。适配器的分段保护会把超过
+        480px 的滑动拆成几段 300px 上下的小段，拆完之后列表几乎不动，于是
+        “翻页没有新内容”被当成“已经到底”，下面几屏的任务一条都扫不到。
+        这里自己按 440px 一步走，既不会被拆，又能真的把列表推上去。
         """
         x = screen.width // 2
         top = round(screen.height * float(self.rescan_option('scroll_top', .72)))
         step = round(screen.height * float(self.rescan_option('scroll_step', .30)))
         times = max(1, int(self.rescan_option('scroll_times', 1)))
         wait = max(0.0, float(self.rescan_option('scroll_pause', .7)))
+        hop = max(120, min(440, step))
+        hops = max(1, int(round(step / hop)))
         for _ in range(times):
-            self.device.swipe(x, top, x, top - step, duration=.45)
-            self.pause(wait)
+            for _ in range(hops):
+                self.device.swipe(x, top, x, top - hop, duration=.45)
+                self.pause(wait)
 
     def rescan(self, pages=None, restart=True):
         """Return found, empty or unknown after a bounded scan; partial scans stay unknown."""
@@ -299,7 +342,10 @@ class RescanPolicy:
         if restart:
             # 重启失败不阻断：可能只是这台设备不允许 force-stop，用当前页面照样扫，
             # 结论仍然按 SCAN_UNKNOWN 严格判定，不会因此误判成“做完了”。
-            self.restart_client()
+            if not self.restart_client():
+                # 没重启客户端时，当前页还停在列表上；navigate 见到列表会直接
+                # 返回，等于没“重新进入”。先把它收起来，重开才拿得到新进度。
+                self.leave_list()
         # 新进程拉起之后、真正开始读列表之前，先把上一轮的任务清单与临时锁丢掉：
         # 不重新识别，扫描看到的就是旧结论，能把还能做的任务判成“已做过”。
         self.reset_list_state()
@@ -403,6 +449,11 @@ class RescanPolicy:
         self._records_snapshot = None
         limit = max(2, int(self.rescan_option('rescan_rounds', None)
                            or self.rescan_option('round_limit', None) or 3))
+        # 轮数上限不能是硬停：淘宝的任务是一批一批刷出来的，只要每一轮都真的
+        # 推得动，就说明列表里还有活可干，这时候按“到 3 轮就收工”停下，界面
+        # 上就会留下一条条还能做的任务（「发现精选好物」这类）。真正该停的是
+        # “连续几轮推不动”，所以给一个够大的保险上限兜底即可。
+        hard_limit = max(limit, int(self.rescan_option('rescan_hard_rounds', None) or 12))
         retries = max(1, int(self.rescan_option('rescan_retries', 2)))
         try:
             # 默认一批没东西就收工（empty_batch_stop=1），会把后面几批连同刚刷新
@@ -417,7 +468,7 @@ class RescanPolicy:
         # 默认在当前客户端补扫；只有明确完整扫描为空才能写入当天完成状态。
         confirmed_empty = False
         closing = '本轮任务已处理完毕'
-        while index < limit:
+        while index < hard_limit:
             if index > 0:
                 logger.info('补扫：第 %d 轮结束，重新读取列表确认是否还有任务', index)
                 verdict = self.confirm_scan(retries, restart=True)
@@ -461,8 +512,8 @@ class RescanPolicy:
                                    stalled)
                     closing = '连续几轮有任务却推不动，已停止；请检查是否有需要人工处理的任务'
                     break
-            if index >= limit:
-                logger.warning('补扫达到 %d 轮保险上限，停止；列表里可能还有任务', limit)
+            if index >= hard_limit:
+                logger.warning('补扫达到 %d 轮保险上限，停止；列表里可能还有任务', hard_limit)
                 closing = '补扫达到轮数上限已停止；列表里可能还有任务'
         self.daily_exhausted = confirmed_empty
         self.restore_list_state()

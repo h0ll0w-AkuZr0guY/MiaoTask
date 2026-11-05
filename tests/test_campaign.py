@@ -13,6 +13,7 @@ from backend.core.device.adapter import DeviceAdapter
 from backend.core.device.instances import AppInstance, InstanceMismatch
 from backend.core.device.screen import Screen, ScreenReader
 from backend.app.taobao.activities.double11.tasks import TextNode, is_task_list, normalize, parse_tasks
+from backend.app.taobao.utils.daily import sanitize_storefront
 from backend.core.execution.gestures import BrowseGestures
 from backend.core.service.tray import WindowsTray
 from backend.core.service import notify as notifications
@@ -1623,6 +1624,29 @@ class RunnerTests(unittest.TestCase):
                        node('直线光轴镀铬空心活塞杆轴承', 700, 640)],
                       1440, 3200, r.origin)
         r.guard(feed)
+
+    def test_product_poster_code_word_is_not_a_security_challenge(self):
+        # 搜索结果页的商品主图上印着“小红书薯币充值 需要验证码?不上号”，
+        # OCR 把这三个字读进来就命中裸词“验证码”，整轮停在一个根本没有
+        # 验证的搜索页上。真机 2026-11-05 12:02 的失败现场就是这个。
+        r = self.runner()
+        feed = Screen([node('浏览10秒可领 20 金币', 30, 120),
+                       node('100', 660, 200),
+                       node('小红书薯币充值', 60, 1760),
+                       node('需要验证码?不上号', 60, 1820),
+                       node('24小时自动秒充秒到！', 60, 1880)],
+                      1440, 3200, r.origin)
+        r.guard(feed)
+        self.assertNotIn('验证码', sanitize_storefront(feed).text)
+
+    def test_real_code_page_still_stops_after_sanitizing(self):
+        # 净化只摘货架文案：真验证页带着“输入/获取验证码”的动作词，必须仍然停。
+        r = self.runner()
+        for label in ['请输入验证码', '获取验证码', '验证码错误，请重新输入']:
+            page = Screen([node(label, 60, 1500)], 1440, 3200, r.origin)
+            self.assertIs(sanitize_storefront(page), page)
+            with self.assertRaises(NeedsAttention):
+                r.guard(page)
 
     def test_stop_is_responsive_while_paused(self):
         control = RunControl()

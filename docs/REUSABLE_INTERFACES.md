@@ -555,3 +555,5 @@ controller.dispatch('run', {'auto_open': True})
 任务成功核验并完成统计后，`SessionLoop._refresh_after_success()` 设置新帧门槛，开启 OCR 时以新截图读取任务列表；当前画面不是任务列表时调用 `recover()`，之后才用所得页面选择下一任务。关闭 OCR 时沿用读屏配置，不强制启动 OCR。流水线关闭全部实例时使用显式实例或该应用已确认的实例计划，不覆盖为主实例；开启全部实例仍执行设备发现的全部实例。
 
 实例选择补充：显式空列表属于无效请求，不触发主实例或全部实例兜底；同应用的后续活动复用本轮实例集合。成功后的列表刷新只在本轮仍有尝试额度时执行，普通读取异常沿用 recover_task 的恢复预算，停止、认证和实例错误继续传播；此框架变更不会由活动源码下载更新已有exe。
+
+DirectML扩展：偏好增加dml，单独目录runtime_plugins/dml、kind=dml、runtime_version声明实际ORT版本；平台/Python ABI仍必须一致，导入后核对版本与执行器。auto保留CUDA优先，显式dml才优先选DML；实际后端标记dml，初始化或推理失败回退CPU。CUDA v1.0的原目录和ORT校验保留。通用click越界仍抛异常，仅京东活动可忽略本次越界；无时长浏览的一次预算规则保留在core，日常活动自行覆盖。
