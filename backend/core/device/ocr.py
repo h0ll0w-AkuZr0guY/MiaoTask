@@ -260,9 +260,9 @@ def _create_engine(threads, backend=None):
             _sleeping_session(rec)
             engine.miao_providers = {'det': det.session.session.get_providers(),
                                      'rec': rec.session.session.get_providers()}
-            engine.miao_backend = ('cuda' if any(
-                'CUDAExecutionProvider' in providers or 'DmlExecutionProvider' in providers
-                for providers in engine.miao_providers.values()) else 'cpu')
+            actual = {p for providers in engine.miao_providers.values() for p in providers}
+            engine.miao_backend = ('cuda' if 'CUDAExecutionProvider' in actual else
+                                   'dml' if 'DmlExecutionProvider' in actual else 'cpu')
             engine.text_rec = ExactTextCache(rec)
             logger.info('OCR实际模型执行器：%s', engine.miao_providers)
         return engine
@@ -291,7 +291,7 @@ class ManagedEngine:
         try:
             return self.engine(*args, **kwargs)
         except Exception:
-            if getattr(self.engine, 'miao_backend', None) != 'cuda':
+            if getattr(self.engine, 'miao_backend', None) not in ('cuda', 'dml'):
                 raise
             logger.warning('GPU推理失败，释放该引擎并回退CPU重试本帧一次', exc_info=True)
             self.engine = None

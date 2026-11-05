@@ -167,7 +167,7 @@ class TaskActions:
                 ready_layout = None
                 self.pause(.7)
                 continue
-            if (getattr(self.reader, 'ocr_backend', None) == 'cuda'
+            if (getattr(self.reader, 'ocr_backend', None) in ('cuda', 'dml')
                     and self.control.now() - observed_at < .6):
                 # Only cheap, fast observations need a second painted frame.
                 # CPU (including CUDA fallback) accepts the first ready frame
@@ -546,7 +546,7 @@ class TaskActions:
         retry_needed = getattr(self.task_policy, 'retry_needed', self.task_policy.failures)
         retry = task.kind in ('browse', 'search') and bool(retry_needed(task))
         first_check = (not cross and task.kind in ('browse', 'search')
-                       and getattr(self.reader, 'ocr_backend', None) == 'cuda')
+                       and getattr(self.reader, 'ocr_backend', None) in ('cuda', 'dml'))
 
         def browse_for(duration):
             deadline = min(self.control.now() + duration, hard_deadline)

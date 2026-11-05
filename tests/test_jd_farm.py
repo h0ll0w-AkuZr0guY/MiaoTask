@@ -454,8 +454,7 @@ class OutOfBoundsClickTests(unittest.TestCase):
     def test_click_outside_content_bounds_is_skipped_not_fatal(self):
         """农场把顶部「返回」报到 x≈1098（屏宽 1080）：跳过这一帧，不是报废整轮。"""
         from types import SimpleNamespace
-        from backend.core.execution.session import Session
-        session = Session.__new__(Session)
+        session = make_runner()
         session.control = Mock()
         session.device = Mock()
         geometry = SimpleNamespace(contains=lambda x, y: 0 <= x < 1080 and 0 <= y < 2400)

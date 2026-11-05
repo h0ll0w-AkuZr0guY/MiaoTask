@@ -187,9 +187,10 @@ class DongDongFarmActivity(EntryPolicy, TaskRows, TaskActions, VerificationPolic
         catalog, after = self.scan_catalog(after)
         now = catalog.get(task.key) or next(
             (row for row in catalog.values() if row.title == task.title), None)
-        ok = bool(explicit or self._credited or now is None
-                  or now.current > task.current
-                  or (task.kind == 'claim' and now.kind != 'claim'))
+        ok = bool(explicit or self._credited
+                  or (now is not None and (now.current > task.current
+                      or (task.kind == 'claim' and now.kind != 'claim')))
+                  or (task.kind == 'claim' and now is None and catalog and self.panel_visible(after)))
         return after, ok, '' if ok else '进度未变化'
 
     def run(self, auto_open=False):
@@ -202,7 +203,7 @@ class DongDongFarmActivity(EntryPolicy, TaskRows, TaskActions, VerificationPolic
             with self.reader.observation_session(self.config, self.control):
                 screen = self.ensure_list(auto_open)
                 rounds = max(1, int(self.config.get('catalog_rounds', 8)))
-                budget = int(self.config.get('catalog_max_tasks', 80))
+                budget = int(self.config.get('max_tasks', 80))
                 recovered_once = False
                 for round_no in range(rounds):
                     self.control.check()
@@ -310,6 +311,14 @@ class DongDongFarmActivity(EntryPolicy, TaskRows, TaskActions, VerificationPolic
         """全量循环已经把能领的都领过了，收工时只收起抽屉。"""
         return super().return_to_home(screen)
 
+    def click(self, node):
+        geometry = getattr(self.reader.last_screen, 'geometry', None)
+        if geometry and not geometry.contains(*node.center):
+            self.control.check()
+            return False
+        super().click(node)
+        return True
+
     def guard(self, screen):
         self.assert_instance(screen)
         if self.verify_blocked(screen):
@@ -329,6 +338,8 @@ class DongDongFarmActivity(EntryPolicy, TaskRows, TaskActions, VerificationPolic
         found = _attention_reason(self, clean)
         if found is None:
             return
+        if found[1] == 'security' or getattr(screen, 'obscured', False) or re.search(r'确认付款|支付密码|确认支付', normalize(screen.text)):
+            check_attention(self, clean)
         if not self.in_app(screen):
             # 外部应用（快手广告页等）上的「登录」横幅与东东农场无关：逛完会回京东，
             # 没必要为此停下等人（也不能干等，页面不会自己变成京东）。
@@ -336,8 +347,8 @@ class DongDongFarmActivity(EntryPolicy, TaskRows, TaskActions, VerificationPolic
             return
         # 京东内的登录/授权提示多数是过渡帧或推广浮层，通常几秒内自己就关了。
         # 先给页面一段时间并反复读屏，能自己过去就继续；真过不去再停下来等人工。
-        for _ in range(max(0, int(self.config.get('attention_settle_rounds', 2)))):
-            self.control.wait(float(self.config.get('attention_settle_seconds', 4)))
+        for _ in range(min(10, max(0, int(self.config.get('attention_settle_rounds', 2))))):
+            self.control.wait(min(30, max(0, float(self.config.get('attention_settle_seconds', 4)))))
             screen = self.read()
             self.assert_instance(screen)
             clean = storefront_clear(screen)

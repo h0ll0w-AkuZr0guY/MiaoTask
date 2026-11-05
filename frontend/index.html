@@ -110,8 +110,8 @@
   <div class="activity-center-heading"><div><h2 id="add-device-title">设备连接</h2><p class="dialog-context" id="device-editor-context">新增或管理设备连接</p></div><button type="button" class="feature-button" id="add-device-close">关闭 ✕</button></div>
   <div class="device-editor-body">
           <section class="instance-settings" id="instance-panel" aria-label="应用分身设置">
-            <div hidden><div class="settings-panel-heading"><div><h3>应用分身</h3><p>需要多个账号时再开启，同一时间只执行一个实例。</p></div></div></div>
-            <div hidden><div class="instance-heading"><label for="app-instance">执行哪个应用实例</label><select id="app-instance" disabled><option value="">连接后读取应用与分身</option></select><button type="button" class="text-button" id="refresh-instances" disabled>↻ 刷新实例</button></div></div>
+            <div><div class="settings-panel-heading"><div><h3>应用分身</h3><p>需要多个账号时再开启，同一时间只执行一个实例。</p></div></div></div>
+            <div><div class="instance-heading"><label for="app-instance">执行哪个应用实例</label><select id="app-instance" disabled><option value="">连接后读取应用与分身</option></select><button type="button" class="text-button" id="refresh-instances" disabled>↻ 刷新实例</button></div></div>
             <p class="field-hint" id="instance-hint">按包名与用户空间区分实例，不读取账号信息。</p>
             <label class="queue-toggle"><input type="checkbox" id="sequence-instances">自动执行全部应用分身<span>按识别顺序串行执行，包含主应用；每个实例独立核验</span></label>
             <div id="instance-options" hidden></div><div id="instance-results" class="instance-results" aria-live="polite"></div>

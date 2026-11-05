@@ -200,3 +200,34 @@ class CUDAFailureRegressionTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class DirectMLCompatibilityTests(unittest.TestCase):
+    def test_dml_selection_preserves_cpu_and_cuda(self):
+        from backend.core.device.ocr import resolve_ocr_backend, ocr_engine_params
+        providers=['CPUExecutionProvider','DmlExecutionProvider','CUDAExecutionProvider']
+        self.assertEqual(resolve_ocr_backend('auto',providers)[0],'cuda')
+        self.assertEqual(resolve_ocr_backend('cpu',providers)[0],'cpu')
+        self.assertEqual(resolve_ocr_backend('dml',providers)[0],'dml')
+        self.assertEqual(resolve_ocr_backend('dml',['CPUExecutionProvider'])[0],'cpu')
+        params=ocr_engine_params('dml')
+        self.assertTrue(params['EngineConfig.onnxruntime.use_dml'])
+        self.assertNotIn('EngineConfig.onnxruntime.use_cuda',params)
+        self.assertNotIn('EngineConfig.onnxruntime.dml_ep_cfg',params)
+
+    def test_dml_manifest_is_separate_but_still_requires_abi(self):
+        from backend.core.device.runtime_plugin import validate_manifest
+        m=dict(schema=1,kind='dml',python='3.13',runtime_version='1.24.4',system='Windows',machine='amd64')
+        expected=dict(python_version='3.13',ort_version='1.31.0',system='Windows',machine='AMD64',folder='dml')
+        validate_manifest(m,**expected)
+        with self.assertRaises(ValueError):validate_manifest({**m,'python':'3.12'},**expected)
+        with self.assertRaises(ValueError):validate_manifest(m,**{**expected,'folder':'cuda'})
+
+    def test_dml_inference_failure_retries_cpu_once(self):
+        from backend.core.device import ocr
+        gpu=Mock(side_effect=RuntimeError('synthetic DML failure'));gpu.miao_backend='dml'
+        cpu=Mock(return_value='cpu result');cpu.miao_backend='cpu'
+        with patch.object(ocr,'_create_engine',return_value=cpu) as create:
+            managed=ocr.ManagedEngine(gpu,1)
+            self.assertEqual(managed('frame'),'cpu result')
+            create.assert_called_once_with(1,backend='cpu')

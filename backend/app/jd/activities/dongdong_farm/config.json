@@ -92,7 +92,7 @@
       0.168
     ]
   ],
-  "quick_verify": true,
+  "quick_verify": false,
   "quick_verify_labels": [
     "快速验证"
   ],
@@ -106,7 +106,8 @@
   "bundle_by_default": true,
   "catalog_pages": 8,
   "catalog_rounds": 8,
-  "catalog_max_tasks": 80,
   "catalog_max_attempts": 1,
-  "catalog_scan_timeout": 75
+  "catalog_scan_timeout": 75,
+  "attention_settle_rounds": 2,
+  "attention_settle_seconds": 4
 }

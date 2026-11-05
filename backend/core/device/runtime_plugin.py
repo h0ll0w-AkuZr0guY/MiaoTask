@@ -16,10 +16,10 @@ _DLL_HANDLES = []
 
 # DirectML overlays live in runtime_plugins/dml; the NVIDIA CUDA overlay keeps
 # its historical runtime_plugins/cuda directory so existing installs keep working.
-RUNTIME_FOLDERS = ('dml', 'cuda')
+RUNTIME_FOLDERS = ('cuda', 'dml')
 
 
-def validate_manifest(manifest, *, python_version, ort_version, system, machine, folder):
+def validate_manifest(manifest, *, python_version, ort_version, system, machine, folder='cuda'):
     """Reject incompatible overlays before importing their native extensions."""
     kind = manifest.get('kind')
     if kind not in RUNTIME_FOLDERS:
@@ -53,7 +53,10 @@ def activate_runtime_plugin():
         root = (Path(sys.executable).resolve().parent if getattr(sys, 'frozen', False)
                 else Path(__file__).resolve().parents[3])
         folder = None
-        for name in RUNTIME_FOLDERS:
+        from backend.core.device.ocr import preferred_ocr_device
+        requested = str(preferred_ocr_device()).lower()
+        candidates = ('dml',) if requested == 'dml' else ('cuda',) if requested == 'cuda' else RUNTIME_FOLDERS
+        for name in candidates:
             candidate = root / 'runtime_plugins' / name
             if (candidate / 'manifest.json').is_file():
                 folder = candidate
@@ -85,6 +88,11 @@ def activate_runtime_plugin():
             module = importlib.import_module('onnxruntime')
             if not Path(module.__file__).resolve().is_relative_to(packages.resolve()):
                 raise ValueError('GPU扩展未取得加载优先级，仍保留CPU运行时')
+            if manifest['kind'] == 'dml':
+                if module.__version__ != manifest['runtime_version']:
+                    raise ValueError('DirectML运行库版本与清单不一致')
+                if 'DmlExecutionProvider' not in module.get_available_providers():
+                    raise ValueError('扩展不包含DirectML执行器')
             _DLL_HANDLES.extend(handles)
             logger.info('已加载本地%s扩展：ORT %s', manifest['kind'], module.__version__)
         except Exception as exc:

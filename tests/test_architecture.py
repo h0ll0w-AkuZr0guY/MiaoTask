@@ -83,9 +83,6 @@ class MigrationContracts(unittest.TestCase):
         self.assertEqual(configured.pop('browse_check_interval'), 1)
         self.assertEqual(configured.pop('browse_recheck_rounds'), 3)
         self.assertEqual(configured.pop('completion_return_ms'), 1000)
-        # 登录/推广浮层先等它自己过去，再决定是否停下来（仅东东农场使用）
-        self.assertEqual(configured.pop('attention_settle_rounds'), 2)
-        self.assertEqual(configured.pop('attention_settle_seconds'), 4)
         self.assertEqual(configured.pop('task_search_keywords'), ['123','2026','100'])
         self.assertIn('头条', configured.pop('skip_task_keywords'))
         self.assertEqual(configured.pop('screenshot_quality'), 70)

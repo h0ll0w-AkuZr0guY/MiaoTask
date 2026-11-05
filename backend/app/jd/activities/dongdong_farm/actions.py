@@ -210,29 +210,7 @@ class TaskActions:
         return any(marker == text or marker in text for text in texts for marker in VERIFY_TEXTS)
 
     def solve_quick_verify(self, screen, tries=2):
-        """点「快速验证」并把滑块拖到底。失败就把页面交回人工（guard 会停止本轮）。"""
-        if not self.config.get('quick_verify', True):
-            logger.warning('页面要求京东安全验证，已按配置停止自动操作')
-            return screen
-        for attempt in range(tries):
-            track = self._find_exact(screen, ['滑动验证中', '拖动滑块', '向右滑动'])
-            if track is not None:
-                y = track.center[1]
-                start = int(screen.width * .19)
-                end = int(screen.width * .87)
-                logger.info('京东验证：拖动滑块到右端（第 %d 次）', attempt + 1)
-                self._human_drag(start, y, end, y)
-                screen = self.wait_screen(lambda s: not self.verify_blocked(s), timeout=6)
-                if not self.verify_blocked(screen):
-                    return screen
-                continue
-            node = self._find_exact(screen, self.config.get('quick_verify_labels', ['快速验证']))
-            if node is None:
-                break
-            self._tap(node)
-            screen = self.wait_screen(lambda s: self.verify_blocked(s) and (
-                self._find_exact(s, ['滑动验证中']) is not None), timeout=6)
-        return screen
+        raise NeedsAttention('页面要求京东安全验证，请本人处理后重新开始', kind='security')
 
     def _human_drag(self, x1, y1, x2, y2):
         """一段带轻微起伏的滑动：京东的滑块只认手势本身，不用精确拼图。"""
