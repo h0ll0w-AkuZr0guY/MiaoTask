@@ -114,8 +114,13 @@ class EntryPolicy:
         """
         if not (screen.package or '').startswith('com.jingdong.app.mall'):
             return False
-        return not (self.farm_visible(screen) or self.homepage_visible(screen)
-                    or self.panel_visible(screen) or self.sign_visible(screen))
+        if (self.farm_visible(screen) or self.homepage_visible(screen)
+                or self.panel_visible(screen) or self.sign_visible(screen)):
+            return False
+        # 农场本身是 Expo 容器页：点进去后的头一两帧只剩一个「返回」，控件树还没长出来。
+        # 这时如果判成「外站」，恢复流程会立刻去点返回，把刚进去的农场又退掉，
+        # 接着再点入口、再退回，循环到导航预算耗尽（真机 2026-11-05 08:35 现场）。
+        return len([text for text in _texts(screen) if text]) > 2
 
     @staticmethod
     def page_close_node(screen):
@@ -130,6 +135,11 @@ class EntryPolicy:
             width = node.bounds[2] - node.bounds[0]
             height = node.bounds[3] - node.bounds[1]
             if width > screen.width * .5 or height > screen.height * .1:
+                continue
+            if not (0 <= node.bounds[0] < node.bounds[2] <= screen.width
+                    and 0 <= node.bounds[1] < node.bounds[3] <= screen.height):
+                # 农场容器会把「返回」报到屏幕外（真机 x 约 1098~1218，屏宽 1080）。
+                # 点它会被框架的越界保护拦下，整轮直接以「目标位于系统栏」告吹。
                 continue
             if best is None or (node.center[0], node.bounds[1]) < (best.center[0], best.bounds[1]):
                 best = node
@@ -149,6 +159,11 @@ class EntryPolicy:
             width = node.bounds[2] - node.bounds[0]
             height = node.bounds[3] - node.bounds[1]
             if width > screen.width * .45 or height > screen.height * .12:
+                continue
+            x, y = node.center
+            if not (0 <= x < screen.width and 0 <= y < screen.height):
+                # 滚动收起顶部时图标会被搜索栏压到屏幕上沿外，点了也是白点
+                # （框架还会直接判越界中断整轮）。
                 continue
             return node
         return None
@@ -207,7 +222,7 @@ class EntryPolicy:
                 node = self.home_entry_node(screen)
                 if node is not None and clicks < 3 and self.control.now() - last_click > 1.2:
                     self.update(message='打开东东农场（第%d/3次）' % (clicks + 1))
-                    self.click(node)
+                    self._tap(node)
                     clicks += 1
                     last_click = self.control.now()
             self.control.wait(1.5)
@@ -215,7 +230,12 @@ class EntryPolicy:
         return screen
 
     def enter_task_panel(self, screen, expected_activity=False):
-        """点「点击前往做任务领水滴页面」并等抽屉出现。"""
+        """点「点击前往做任务领水滴页面」并等抽屉出现。
+
+        抽屉是 toggle：连点两下会「开→关」。Expo 页面打开抽屉要一两秒，
+        所以每点一次都必须等到位，确认没开才允许再点（真机 2026-11-05 现场：
+        0.7 秒的固定间隔让同一下被点了十几次，抽屉始终没留在屏幕上）。
+        """
         deadline = self.control.now() + self.config['page_timeout']
         last_click = self.control.now() - 10
         clicks = 0
@@ -227,10 +247,20 @@ class EntryPolicy:
             if self.control.now() >= deadline:
                 return screen
             node = self.task_panel_entry(screen)
-            if node is not None and clicks < 3 and self.control.now() - last_click >= 1.2:
-                self.click(node)
+            if node is not None and clicks < 3 and self.control.now() - last_click >= 2.2:
+                if not self._tap(node):
+                    # 点不动（控件在屏幕外、或刚被重新渲染掉）不能算一次尝试，
+                    # 否则三次额度瞬间花完，抽屉还没开就被判失败。
+                    self.control.wait(.6)
+                    screen = self.read()
+                    continue
                 clicks += 1
                 last_click = self.control.now()
+                screen = self.wait_screen(self.panel_visible, timeout=3.2, interval=.5)
+                if self.panel_visible(screen):
+                    self.origin = screen.package
+                    return screen
+                continue
             self.control.wait(.7)
             screen = self.read()
 
@@ -240,8 +270,7 @@ class EntryPolicy:
         node = self.task_panel_entry(screen)
         if node is None:
             return False
-        self.click(node)
-        return True
+        return self._tap(node)
 
     def open_home_search(self, screen):
         return False
@@ -325,7 +354,7 @@ class EntryPolicy:
             if self.panel_visible(screen):
                 for node in screen.nodes:
                     if _norm(node.text) == '关闭任务面板':
-                        self.click(node)
+                        self._tap(node)
                         self.control.wait(1.2)
                         return self.read()
         except Exception:

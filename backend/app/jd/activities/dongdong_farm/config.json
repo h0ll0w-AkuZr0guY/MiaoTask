@@ -34,7 +34,7 @@
   "claim_sweep_limit": 24,
   "claim_sweep_scrolls": 8,
   "claim_retry": 2,
-  "claim_settle_timeout": 5,
+  "claim_settle_timeout": 3,
   "water_labels": [
     "去浇水"
   ],
@@ -103,5 +103,10 @@
   "max_scroll_pages": 14,
   "empty_batch_stop": 1,
   "description": "京东东东农场（免费水果）：自动进农场 → 签到领水滴 → 领可领的水滴 → 浇水 → 打开「做任务 领水滴」。每次回到面板都先把「去领奖/领奖励」一次领完（可重复任务靠这一步才能接着做下一轮），再做浏览类任务：站内落地页（商品/PLUS/农场活动）停留浏览，站外任务（百度、快手极速版等）拉起对应 App 停留后返回京东。下单、邀请助力、通关小游戏、添加桌面小组件、话费充值等一律跳过。",
-  "bundle_by_default": true
+  "bundle_by_default": true,
+  "catalog_pages": 8,
+  "catalog_rounds": 8,
+  "catalog_max_tasks": 80,
+  "catalog_max_attempts": 1,
+  "catalog_scan_timeout": 75
 }
