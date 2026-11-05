@@ -148,7 +148,9 @@ class MigrationContracts(unittest.TestCase):
             registry = Registry(folder).discover()
             self.assertEqual(registry.catalog()[0]['activities'][0]['id'], 'sample-activity')
             runner = registry.instantiate(Mock(device_type='uiautomator2'), load_config(overrides={'max_tasks': 1}))
+            runner.read = Mock(return_value=runner.ensure_list())
             self.assertEqual(runner.run()['completed'], 1)
+            runner.read.assert_not_called()
 
     def test_registry_rejects_missing_and_path_traversal_ids(self):
         registry = default_registry()

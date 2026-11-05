@@ -1276,6 +1276,34 @@ class RunnerTests(unittest.TestCase):
         self.assertNotEqual(first.key, replacement.key)
         self.assertEqual(r.failures[(replacement.key, 0)], 0)
 
+    def test_after_success_refresh_requires_fresh_frame_and_recovers(self):
+        r = self.runner()
+        fresh = task_screen()
+        r.read = Mock(return_value=fresh)
+        r.guard = Mock()
+        r.is_task_list = Mock(return_value=False)
+        recovered = task_screen(1)
+        r.recover = Mock(return_value=recovered)
+        r.reader.require_after = Mock()
+        self.assertIs(r._refresh_after_success(), recovered)
+        r.reader.require_after.assert_called_once()
+        r.read.assert_called_once_with(force_ocr=True)
+        r.guard.assert_called_once_with(fresh)
+        r.recover.assert_called_once()
+
+    def test_success_refresh_retains_safety_and_bounds_recovery(self):
+        from backend.core.errors import Stopped
+        r = self.runner()
+        r.read = Mock(side_effect=TimeoutError('synthetic'))
+        task = r.tasks(task_screen())[0]
+        r.recover_task = Mock(return_value=task_screen())
+        self.assertIs(r._refresh_after_success(task), r.recover_task.return_value)
+        r.recover_task.assert_called_once_with(task)
+        r.recover_task.reset_mock()
+        r.read.side_effect = Stopped()
+        with self.assertRaises(Stopped): r._refresh_after_success(task)
+        r.recover_task.assert_not_called()
+
     def test_new_offer_is_executed_in_the_same_run(self):
         r = self.runner()
         r.config['skip_task_keywords'] = []  # exercise dynamic offers, independent of text policy
@@ -1286,9 +1314,10 @@ class RunnerTests(unittest.TestCase):
         done = self.offer_screen('去支付宝抽1000元红包', 1, 50)
         r.ensure_list = Mock(return_value=first)
         r.execute = Mock(side_effect=[(replacement, False, False), (done, False, True)])
-        r.read = Mock(return_value=done)
+        r.read = Mock(side_effect=lambda **kwargs: replacement if r.execute.call_count == 1 else done)
         result = r.run()
         self.assertEqual(result['completed'], 2)
+        self.assertEqual(sum(bool(call.kwargs.get('force_ocr')) for call in r.read.call_args_list), 2)
         self.assertEqual([call.args[0].title for call in r.execute.call_args_list],
                          ['领闪购红包下单直接省', '去支付宝抽1000元红包'])
 
@@ -1384,7 +1413,12 @@ class RunnerTests(unittest.TestCase):
         r.config.update(max_tasks=10)
         r.ensure_list = Mock(return_value=task_screen(0))
         advances = iter(range(1, 11))
-        r.execute = Mock(side_effect=lambda *args: (task_screen(next(advances)), False, False))
+        latest = [task_screen(0)]
+        def execute(*args):
+            latest[0] = task_screen(next(advances))
+            return latest[0], False, False
+        r.execute = Mock(side_effect=execute)
+        r.read = Mock(side_effect=lambda **kwargs: latest[0])
         result = r.run()
         self.assertEqual(result['completed'], 10)
         self.assertEqual(result['attempts'], 10)

@@ -97,6 +97,7 @@ class ActivityPipeline:
         self.update(activity_plan=plan, activity_pipeline=rows)
         shared_overrides = framework_overrides(config)
         first_identity = (self.state['app'], self.state['activity'])
+        instance_choices = {}
         for index, item in enumerate(plan):
             self.control.check()
             registration = self.registry.get(**item)
@@ -107,19 +108,20 @@ class ActivityPipeline:
             self.update(config=settings)
             self._activity_queue_status(index, 'running')
             current = dict(payload)
-            ids = payload.get('instance_ids') if index == 0 else None
-            if payload.get('all_instances', self.state.get('all_instances', False)):
+            ids = payload.get('instance_ids') if index == 0 else instance_choices.get(item['app'])
+            # 前端显式提交的 instance_ids（单选分身或勾选的执行队列）优先于
+            # 自动兜底；否则选择用户 11 这类分身后仍会被主应用兜底覆盖。
+            if ids is None and payload.get('all_instances', self.state.get('all_instances', False)):
                 ids = [row['id'] for row in self.state['app_instances']]
                 if not ids:
                     raise InstanceMismatch('未发现当前应用的可执行实例，请重新连接设备')
-            elif 'all_instances' in payload or 'all_instances' in self.state:
-                primary = next((row['id'] for row in self.state['app_instances'] if row.get('user_id') == 0), None)
-                ids = [primary or self.state['selected_instance'] or None]
+
             if ids is not None and (not isinstance(ids, list) or not 1 <= len(ids) <= 16 or
                                     any(not isinstance(value, str) or not value for value in ids) or
                                     len(set(ids)) != len(ids)):
                 raise ValueError('请选择有效且不重复的应用实例')
-            ids = ids or self._app_instance_plans.get(item['app']) or [self.state['selected_instance'] or None]
+            ids = ids if ids is not None else [self.state['selected_instance'] or None]
+            instance_choices[item['app']] = ids
             if self.state['app_instances']:
                 known = {row['id'] for row in self.state['app_instances']}
                 if any(value not in known for value in ids):

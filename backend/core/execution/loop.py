@@ -7,6 +7,23 @@ from backend.core.device.instances import InstanceMismatch
 logger = logging.getLogger('backend.execution')
 
 class SessionLoop:
+    def _refresh_after_success(self, task=None):
+        """Read once before another task; preserve safety and recovery budgets."""
+        self.control.check()
+        refresh = getattr(type(self.reader), 'require_after', None)
+        if callable(refresh):
+            self.reader.require_after()
+        try:
+            screen = self.read(force_ocr=bool(self.config['ocr']))
+            self.guard(screen)
+            if self.is_task_list(screen.nodes):
+                return screen
+        except (Stopped, NeedsAttention, InstanceMismatch):
+            raise
+        except Exception:
+            logger.debug('成功后列表刷新异常，使用已有有界恢复', exc_info=True)
+        return self.recover_task(task) if task is not None else self.recover()
+
     def _open_task_page(self, button):
         """Share page-turn waiting and recovery across both list scan paths."""
         self.update('scanning', message='打开下一批任务', current_task='', remaining=0)
@@ -276,6 +293,8 @@ class SessionLoop:
                     logger.warning('未核验成功：%s，当前进度 %d，尝试 %d/%d', task.title, task.current,
                                    daily_failures, self.config['max_attempts'])
                 self.update(tasks=list(self.records.values()), remaining=0)
+                if success and self.stats.attempts < self.config['max_tasks']:
+                    screen = self._refresh_after_success(task)
                 # Progress changed: the same viewport may have newly available tasks.
                 seen_pages.clear()
                 continue

@@ -84,7 +84,7 @@ async function action(name, extra={}){
     if(name==='connect'){connection={device_type:$('device-type').value,serial:$('serial').value.trim()};const target=await MiaoDevices.prepare();if(!state||state.workspace_id!==target||MiaoAPI.device!==target)throw new Error('设备已切换，请重新连接');$('serial').value=connection.serial;$('device-type').value=connection.device_type;}
     const payload={app:state?.app,activity:state?.activity,...extra,auto_open:true};
     if(['run','connect','configure'].includes(name))payload.config=config();
-    if(name==='run'){payload.all_instances=clonesEnabled;payload.activities=MiaoActivities.plan;if(!payload.activities.length)throw new Error('请先勾选至少一个活动');const queued=clonesEnabled&&$('sequence-instances').checked;if(payload.activities.length===1){payload.instance_ids=queued?queueOrder:[state.selected_instance];if(!payload.instance_ids.length||payload.instance_ids.some(id=>!id||!state.app_instances.some(item=>item.id===id)))throw new Error('所选应用实例已失效，请重新选择');}if(queued)payload.auto_open=true;}
+    if(name==='run'){payload.all_instances=clonesEnabled;payload.activities=MiaoActivities.plan;if(!payload.activities.length)throw new Error('请先勾选至少一个活动');const queued=clonesEnabled&&$('sequence-instances').checked;if(payload.activities[0]?.app===state.app){payload.instance_ids=queued?queueOrder:[state.selected_instance];if(!payload.instance_ids.length||payload.instance_ids.some(id=>!id||!state.app_instances.some(item=>item.id===id)))throw new Error('所选应用实例已失效，请重新选择');}if(queued)payload.auto_open=true;}
     if(name==='connect')Object.assign(payload,connection);
     const response=await fetch(MiaoAPI.url('/api/'+name),{method:'POST',headers:{'Content-Type':'application/json','X-Miao-Token':token},body:JSON.stringify(payload)});
     const result=await response.json();if(!response.ok)throw new Error(result.error||'操作失败');if(name==='shutdown'){toast('助手已退出，可以关闭此页面');return;}if(name==='configure')toast('执行设置已应用');await poll();
@@ -125,6 +125,9 @@ async function discover(){
 function renderInstances(busy){
   const instances=state.app_instances||[], hash=JSON.stringify(instances);
   $('toggle-instances').disabled=busy;$('instance-panel').hidden=false;$('toggle-instances').setAttribute('aria-expanded',String(clonesEnabled));$('toggle-instances').classList.toggle('is-open',clonesEnabled);
+  // 勾选「自动执行全部应用分身」后才列出可勾选的实例清单（含主应用），
+  // 取消勾选时隐藏，避免同时存在两套选择入口。
+  $('instance-options').hidden=!clonesEnabled;
   const target=instances.find(i=>i.id===state.selected_instance);
   const queue=state.instance_queue||[],position=queue.findIndex(i=>i.status==='running');
   $('instance-summary').textContent=(target?(busy?'执行中：':'已选：')+target.label:state.connected?'应用实例尚未确认':'连接后确认应用实例')+(busy&&queue.length>1?` · 队列${position+1}/${queue.length}`:'');
@@ -137,8 +140,12 @@ function renderInstances(busy){
   for(const item of state.instance_queue||[]){const line=el('div','instance-result '+item.status);line.append(el('span','',item.label),el('span','',`${labels[item.status]||item.status} · 核验 ${item.stats?.completed||0} 次`));results.append(line);}
 }
 function renderInstanceOptions(busy=false){
-  const list=$('instance-options');list.replaceChildren();const instances=state?.app_instances||[], ordered=[...queueOrder.map(id=>instances.find(i=>i.id===id)).filter(Boolean),...instances.filter(i=>!queueOrder.includes(i.id))];
-  for(const item of ordered){const row=el('div','instance-option'),label=el('label'),check=el('input');check.type='checkbox';check.checked=queueOrder.includes(item.id);check.disabled=busy;check.addEventListener('change',()=>{queueOrder=check.checked?[...queueOrder,item.id]:queueOrder.filter(id=>id!==item.id);renderInstanceOptions();});label.append(check,document.createTextNode(item.label));row.append(label);
+  const list=$('instance-options');list.replaceChildren();const instances=state?.app_instances||[];
+  // 清单可能被多个入口（下拉、全部开关、偏好恢复）修改而不重渲染，
+  // 先按当前实例清单去重并剔除已失效的 id，避免出现重复行。
+  queueOrder=[...new Set(queueOrder.filter(id=>instances.some(i=>i.id===id)))];
+  const ordered=[...queueOrder.map(id=>instances.find(i=>i.id===id)).filter(Boolean),...instances.filter(i=>!queueOrder.includes(i.id))];
+  for(const item of ordered){const row=el('div','instance-option'),label=el('label'),check=el('input');check.type='checkbox';check.checked=queueOrder.includes(item.id);check.disabled=busy;check.addEventListener('change',()=>{const has=queueOrder.includes(item.id);queueOrder=has?queueOrder.filter(id=>id!==item.id):[...queueOrder,item.id];check.checked=!has;renderInstanceOptions();});label.append(check,document.createTextNode(item.label));row.append(label);
     for(const [delta,text] of [[-1,'↑'],[1,'↓']]){const button=el('button','text-button',text);button.type='button';button.setAttribute('aria-label',`${item.label} ${delta<0?'提前':'延后'}`);const index=queueOrder.indexOf(item.id);button.dataset.blocked=String(index<0||index+delta<0||index+delta>=queueOrder.length);button.disabled=busy||button.dataset.blocked==='true';button.addEventListener('click',()=>{const next=index+delta;[queueOrder[index],queueOrder[next]]=[queueOrder[next],queueOrder[index]];renderInstanceOptions();});row.append(button);}list.append(row);
   }
 }
@@ -234,7 +241,7 @@ $('app-instance').addEventListener('change',()=>{if(!$('sequence-instances').che
 $('refresh-instances').addEventListener('click',()=>action('refresh_instances'));
 $('refresh-instances-visible').addEventListener('click',()=>action('refresh_instances'));
 $('choose-instance-visible').addEventListener('click',()=>document.querySelector('.device-tab.selected .device-edit')?.click());
-$('sequence-instances').addEventListener('change',async()=>{clonesEnabled=$('sequence-instances').checked;queueOrder=clonesEnabled?(state?.app_instances||[]).map(i=>i.id):[defaultInstanceId()].filter(Boolean);if(!clonesEnabled&&defaultInstanceId()&&state?.selected_instance!==defaultInstanceId())await action('select_instance',{instance_id:defaultInstanceId()});await action('configure',{all_instances:clonesEnabled});if(state)render();});
+$('sequence-instances').addEventListener('change',async()=>{clonesEnabled=$('sequence-instances').checked;queueOrder=clonesEnabled?(state?.app_instances||[]).map(i=>i.id):[defaultInstanceId()].filter(Boolean);renderInstanceOptions();if(!clonesEnabled&&defaultInstanceId()&&state?.selected_instance!==defaultInstanceId())await action('select_instance',{instance_id:defaultInstanceId()});await action('configure',{all_instances:clonesEnabled});if(state)render();});
 $('pause').addEventListener('click',()=>action(state?.status==='paused'?'resume':'pause'));
 $('save-settings').addEventListener('click',async()=>{
   try{await savePreferences();}catch(error){showSettings('advanced');toast(error.message);return;}

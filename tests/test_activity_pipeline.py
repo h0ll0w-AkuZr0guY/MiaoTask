@@ -176,6 +176,53 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue(config['compressed_screenshots'])
         self.assertNotEqual(config['search_keyword'], 'first-only')
 
+    def test_single_selection_is_not_replaced_by_primary(self):
+        controller = self.controller()
+        calls = []
+        with patch('backend.core.service.panel.CampaignRunner', self.runner_factory(calls)):
+            state = self.run_controller(controller, {'all_instances': False,
+                                         'instance_ids': ['org.example.alpha@999']})
+        self.assertEqual(state['status'], 'finished')
+        self.assertEqual([row['instance'] for row in calls], ['org.example.alpha@999'])
+
+    def test_all_instances_still_runs_primary_and_clone(self):
+        controller = self.controller()
+        calls = []
+        with patch('backend.core.service.panel.CampaignRunner', self.runner_factory(calls)):
+            state = self.run_controller(controller, {'all_instances': True})
+        self.assertEqual(state['status'], 'finished')
+        self.assertEqual([row['instance'] for row in calls],
+                         ['org.example.alpha@0', 'org.example.alpha@999'])
+
+    def test_single_selection_survives_same_app_pipeline(self):
+        controller = self.controller()
+        self.select(controller, ('alpha', 'first'), ('alpha', 'second'))
+        controller._select_instance('org.example.alpha@999')
+        controller._remember_instances(['org.example.alpha@999'])
+        calls = []
+        with patch('backend.core.service.panel.CampaignRunner', self.runner_factory(calls)):
+            state = self.run_controller(controller, {'all_instances': False})
+        self.assertEqual(state['status'], 'finished')
+        self.assertEqual([row['instance'] for row in calls], ['org.example.alpha@999'] * 2)
+
+    def test_empty_explicit_selection_never_falls_back_to_all(self):
+        controller = self.controller()
+        calls = []
+        with patch('backend.core.service.panel.CampaignRunner', self.runner_factory(calls)):
+            with self.assertRaises(ValueError):
+                self.run_controller(controller, {'all_instances': True, 'instance_ids': []})
+        self.assertEqual(calls, [])
+
+    def test_explicit_subset_survives_same_app_pipeline_when_all_enabled(self):
+        controller = self.controller()
+        self.select(controller, ('alpha', 'first'), ('alpha', 'second'))
+        calls = []
+        with patch('backend.core.service.panel.CampaignRunner', self.runner_factory(calls)):
+            state = self.run_controller(controller, {'all_instances': True,
+                'instance_ids': ['org.example.alpha@999']})
+        self.assertEqual(state['status'], 'finished')
+        self.assertEqual([row['instance'] for row in calls], ['org.example.alpha@999'] * 2)
+
     def test_clipboard_setting_applies_before_run_and_can_be_disabled(self):
         for enabled in (True, False):
             with self.subTest(enabled=enabled):
