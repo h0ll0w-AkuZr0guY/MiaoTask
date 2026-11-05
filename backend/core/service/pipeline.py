@@ -112,9 +112,6 @@ class ActivityPipeline:
                 ids = [row['id'] for row in self.state['app_instances']]
                 if not ids:
                     raise InstanceMismatch('未发现当前应用的可执行实例，请重新连接设备')
-            elif 'all_instances' in payload or 'all_instances' in self.state:
-                primary = next((row['id'] for row in self.state['app_instances'] if row.get('user_id') == 0), None)
-                ids = [primary or self.state['selected_instance'] or None]
             if ids is not None and (not isinstance(ids, list) or not 1 <= len(ids) <= 16 or
                                     any(not isinstance(value, str) or not value for value in ids) or
                                     len(set(ids)) != len(ids)):
