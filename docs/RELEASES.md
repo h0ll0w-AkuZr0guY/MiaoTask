@@ -2,6 +2,30 @@
 
 按新到旧维护用户可见变化。GitHub Release 正文从对应的 `## 版本号` 小节提取，发布状态以 [Releases](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/releases) 为准。
 
+## MiaoTask-v0.2.2
+
+活动补扫、分身选择与可选 DirectML 扩展适配。
+
+* 【新增】接入闲鱼币大富翁、京东东东农场活动；可在活动中心获取，按活动配置预装。活动仍受登录、人工验证及任务类型限制。
+* 【修复】保留手选应用实例与分身队列，核验成功后刷新任务列表，避免主应用兜底覆盖选择或继续使用旧任务。
+* 【优化】淘金币入口与弹窗关闭识别、任务列表重进及补扫；京东全量扫描、浏览后领奖和长列表恢复，减少漏做与无效重试。
+* 【新增】预留 DirectML 可选运行时接口及 CPU 回退，兼容 AMD / Intel 扩展接入。**本次尚未提供 AMD 扩展包，也未完成 AMD 实机验收**；基础 ZIP 继续使用 CPU，现有 NVIDIA CUDA 扩展保持兼容。
+* 【维护】京东提示等待仅留在活动配置，执行次数复用公共 `max_tasks`；越界控件容错限定京东，不改变其他活动的公共点击与浏览预算。安全认证继续由本人处理。
+
+下载 Windows x64 ZIP，完整解压后运行 `MiaoTask.exe`，保留 `_internal/` 与 `activities/`。升级前退出旧托盘服务，用户目录中的偏好与日记录保留。
+
+GPU 加速继续使用独立的 [CUDA 扩展 v1.0](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/releases/tag/MiaoTask-CUDA-v1.0)。退出助手后，将扩展中的 `runtime_plugins/` 放在 exe 旁；已安装的兼容扩展可直接迁移，无需重新下载。AMD 扩展待交付验收后另行发布，当前无需安装额外环境。
+
+感谢 @ashen0116（#45、#56）、@Chilzen-dyj（#52、#57）、@J202407（#53）、@ktkj98（#54）及其他贡献者；感谢 [MonsterNone/tmall-miao](https://github.com/MonsterNone/tmall-miao) 提供早期思路参考。[使用说明](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/blob/main/docs/USAGE.md) · [项目介绍](https://github.com/h0ll0w-AkuZr0guY/MiaoTask#readme)
+
+| 框架模块 | 主要修改 |
+| --- | --- |
+| `core/device/ocr.py`、`runtime_plugin.py` | 可选 DirectML、执行器如实报告、初始化及推理失败 CPU 回退；保留 CUDA 优先级与旧扩展清单兼容 |
+| `core/preferences.py`、`core/service/activity_hub.py`、`frontend` | DirectML 后端选项、能力提示；保留最新实例选择与分身队列交互 |
+| `core/execution/guard.py` | 提取可复用的提示原因判定，保留公共安全认证拦截及命中原因报告 |
+| `app/taobao/utils`、`app/jd/activities/dongdong_farm` | 活动入口、弹窗、补扫及核验；京东等待与越界处理留在活动层 |
+| `docs`、`tests` | 扩展安装边界、字段复用与兼容回归；AMD 实包验收单独进行 |
+
 ## MiaoTask-v0.2.1
 
 完成返回节奏与 MTK 屏幕兼容优化。
