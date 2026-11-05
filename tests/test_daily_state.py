@@ -520,9 +520,16 @@ class FrameworkPreferencesTests(unittest.TestCase):
         self.assertEqual((task.kind, task.seconds, task.skip_reason), ('browse', 15, ''))
         self.assertFalse(task.browse_once)
 
-    def test_untimed_browse_is_once_and_durable(self):
+    def test_untimed_browse_is_not_nailed_to_a_single_attempt(self):
+        """描述只写「浏览」不写秒数的任务，不该被锁成“今天只试一次”。
+
+        淘宝新版把这类任务的时长省掉了（「发现精选好物」下方只有「浏览 +40」）。
+        锁上之后第一次没推进就整天不再做，任务直接漏掉；做没做成本来由进度核验
+        决定，与时长无关。字段本身仍在，显式标记后的持久化与解锁行为不变。
+        """
         task = apply_browse_contract(self.task(detail='浏览页面领取'))
-        self.assertTrue(task.browse_once)
+        self.assertEqual((task.kind, task.seconds), ('browse', 0))
+        self.assertFalse(task.browse_once)
         with tempfile.TemporaryDirectory() as folder:
             state = DailyState(folder, 'synthetic', 'uiautomator2')
             policy = TaskPolicy()

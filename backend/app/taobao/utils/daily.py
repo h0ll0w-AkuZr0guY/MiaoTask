@@ -45,22 +45,29 @@ ACTIONABLE_DETAIL_RE = re.compile(
 APP_ICON_LABELS = ({name for name, _ in EXTERNAL_APPS}
                    | {'头条', '头条极速版', '今日头条', '西瓜视频', '抖音极速版', '快手极速版'})
 # 真正的验证页一定会出现这些动作词；只撞到“滑块”“验证”这类名词不算。
-CHALLENGE_RE = re.compile(r'拖动|拖放|拖到|按住|请完成验证|安全验证|验证码|人机|行为验证|'
-                          r'划一划|拼图|滑块验证|操作.{0,4}频繁|风控|存在风险|'
-                          r'访问被拒绝|安全中心|身份核验')
+# “验证码”同样不能单认：商品主图上印着“需要验证码?不上号”，一撞上就整轮停。
+CHALLENGE_RE = re.compile(r'拖动|拖放|拖到|按住|请完成验证|请完成.{0,6}验证|安全验证|'
+                          r'请输入验证码|输入验证码|获取验证码|重新获取验证码|填写验证码|'
+                          r'验证码错误|验证码不正确|验证码已发送|短信验证码|图形验证码|'
+                          r'人机|行为验证|划一划|拼图|滑块验证|向右.{0,6}滑(?:动|块).{0,10}(?:验证|拼图)|'
+                          r'操作.{0,4}频繁|风控|存在风险|访问被拒绝|安全中心|身份核验')
 # 核心 guard 的词表（见 backend/core/execution/guard.py）。它把“滑块”这种名词
 # 也算作验证页，直播间横幅上的“导轨滑块/窗轨滑块”因此天天误伤。
-CORE_STOP_RE = re.compile(r'滑块|拖动.{0,8}验证|安全验证|请完成验证|验证码|人机验证|'
-                          r'操作过于频繁|账号存在风险|访问被拒绝|'
+CORE_STOP_RE = re.compile(r'拖动.{0,10}(?:验证|拼图|滑块)|按住.{0,6}滑块|滑块.{0,6}验证|'
+                          r'安全验证|请完成验证|请输入验证码|输入验证码|获取验证码|验证码错误|'
+                          r'人机验证|操作过于频繁|账号存在风险|访问被拒绝|'
                           r'将满足描述的所有图片拖放到指定区域|短信登录|验证码登录|'
                           r'登录即同意|请先登录|立即登录|授权登录|欢迎登录|其他方式登录|'
                           r'扫一扫快速登录|确认付款|支付密码|确认支付')
 # 真拦截：页面上必须出现“要动手做一件人才能做的事”的证据，才停止整轮。
 # 只撞到“滑块/验证/登录”这类名词一律不算——这正是之前整轮被误停的原因。
 HARD_STOP_RE = re.compile(r'将满足描述的所有图片拖放到指定区域|拖放.{0,10}图片|'
-                          r'拖动.{0,10}(?:验证|拼图)|请拖动|请依次点击|按顺序点击|点击下图中|'
-                          r'请完成下列验证|滑块验证|拖动滑块|按住滑块|拼图验证|'
-                          r'人机验证|行为验证|安全验证|验证码|'
+                          r'拖动.{0,10}(?:验证|拼图|滑块)|请拖动|请依次点击|按顺序点击|点击下图中|'
+                          r'请完成下列验证|请完成.{0,6}验证|滑块验证|拖动滑块|按住滑块|拼图验证|'
+                          r'向右.{0,6}滑(?:动|块).{0,10}(?:验证|拼图)|'
+                          r'(?:输入|填写|获取|发送|重新获取|校验|核对)[^。；;]{0,6}验证码|'
+                          r'验证码[^。；;]{0,6}(?:错误|不正确|已发送|失效)|'
+                          r'人机验证|行为验证|安全验证|'
                           r'短信登录|验证码登录|登录即同意|请先登录|立即登录|授权登录|欢迎登录|'
                           r'其他方式登录|扫一扫快速登录|确认付款|支付密码|确认支付|'
                           r'操作过于频繁|账号存在风险|访问被拒绝|安全中心|身份核验')
@@ -73,6 +80,9 @@ POPUP_CLOSE_RE = re.compile(r'^(?:×|✕|✖|╳|㐅|X|x|关闭|关闭弹窗|关
                             r'我知道了|知道了|知道啦|以后再说|稍后再说|稍后|'
                             r'暂不开启|暂不需要|暂不|不感兴趣|跳过|下次再说|不再提醒|'
                             r'点此关闭|点击关闭|收起)$')
+# 只有一个符号的关闭按钮要额外确认位置，否则正文里的乘号、工具栏图标都会被
+# 当成浮层的 ×（真机：淘金币首页的音效图标就被读成 X，定位阶段一直在点它）。
+X_CLOSE_RE = re.compile(r'^(?:×|✕|✖|╳|㐅|X|x)$')
 # 弹窗的典型内容：抽到券、抢到红包、任务完成、入会提醒……出现这些字且页面上
 # 有关闭按钮时，基本可以确定是浮层挡在页面上。
 POPUP_HINT_RE = re.compile(r'恭喜|抢到|获得|奖励|红包|优惠券|折扣券|入会|权益|'
@@ -81,37 +91,43 @@ POPUP_HINT_RE = re.compile(r'恭喜|抢到|获得|奖励|红包|优惠券|折扣
 
 
 
-def sanitize_product_slider(screen):
-    """把商品名里的“滑块”从验证词表里摘出去。
+def sanitize_storefront(screen):
+    """把商品名、主图、教程图里的“滑块 / 验证码”从安全词表里摘出去。
 
-    导购横幅、商品标题里的“导轨滑块 / 窗帘滑块 / 精密滑块”会被核心 guard
-    判定当成“拖动滑块验证”，结果整轮停在一个根本没有验证的页面上。
-    真正的验证页一定还有拖动、拼图、验证码这类话；这些词都不在时，
-    把 滑块 换成同义的商品词再交给判定。
+    搜索结果和导购页上「HG系列导轨滑块」「需要验证码?不上号」天天出现，
+    核心 guard 一撞上就整轮停，屏幕上却根本没有验证。真验证页一定还有
+    拖动、按住、拼图、输入验证码这些动作词；这些词都不在时，把名词换成
+    同义的商品词再交给判定。
     """
     try:
         text = normalize(screen.text)
     except Exception:
         return screen
-    if '滑块' not in text or CHALLENGE_RE.search(text):
+    pairs = [('滑块', '滑轨'), ('验证码', '校验值')]
+    hit = [old for old, _ in pairs if old in text]
+    if not hit or CHALLENGE_RE.search(text):
         return screen
     nodes, changed = [], False
     for node in screen.nodes:
         raw = normalize(node.text)
-        if '滑块' not in raw:
+        if not any(old in raw for old in hit):
             nodes.append(node)
             continue
         changed = True
-        fresh = raw.replace('滑块', '滑轨')
+        fresh = raw
+        for old, new in pairs:
+            fresh = fresh.replace(old, new)
         try:
             nodes.append(TextNode(fresh, node.bounds, node.source))
         except TypeError:
             nodes.append(TextNode(fresh, node.bounds))
     if not changed:
         return screen
-    fresh_text = text.replace('滑块', '滑轨')
+    fresh_text = text
+    for old, new in pairs:
+        fresh_text = fresh_text.replace(old, new)
     try:
-        return replace(screen, nodes=nodes, text=fresh_text)
+        return replace(screen, nodes=nodes)
     except Exception:
         pass
     try:
@@ -135,6 +151,10 @@ def sanitize_product_slider(screen):
     return clone
 
 
+# 旧名字保留：双11活动与回归用例都按这个名字导入。
+sanitize_product_slider = sanitize_storefront
+
+
 class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, VerificationPolicy, Activity):
     application = PROFILE
     claim_actions = DAILY_CLAIMS
@@ -142,10 +162,37 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
     # 点「展开」的重试上限。展开有动画，一次读完常常还是折叠帧，所以要重试；
     # 但不能无限点——同一个位置上反复点会把列表收起，也白耗时间。
     EXPAND_TRIES = 3
+    # 一次定位里最多关几次浮层。真机上淘金币首页的音效图标会被读成 X，不设上限
+    # 就会一直点它，直到硬超时；设上限后最多浪费几次，接着就能去点「去赚金币」。
+    DISMISS_LIMIT = 3
+
+    # 描述里只写「浏览」，不写秒数。淘宝新版把「发现精选好物」这类任务的时长
+    # 省掉了，页面上只剩「浏览 +40」；旧逻辑看到“有浏览要求、没有时长”，就当成
+    # 没法判断做没做成，只允许今天试一次——一次没推进就整天不再做，任务直接漏。
+    # 做没做成是进度核验的事，与时长无关，这里把那个锁摘掉。
+    PLAIN_BROWSE_RE = re.compile(r'浏览|停留|观看')
+    # 描述本身就是做法说明、且不含任何要人动手的敏感动作时，标题里的名词
+    # （「看看你**关注**的新品动态」）不该被公共词表整条拦掉。
+    REQUIRED_ACTION_RE = re.compile(
+        r'支付|下单|购买|付款|充值|开通|订阅|加购|收藏|关注|授权|登录|登陆|实名|'
+        r'下载|安装|拍照|拍摄|发布|评价|邀请|助力|组队|分享|抽奖|夺宝|答题|考试|'
+        r'提现|兑换|游戏')
 
     @property
     def page(self):
         return self.config['daily_page']
+
+    def tasks(self, screen):
+        """把「只写浏览、没写时长」的任务从“今日只试一次”里解出来。
+
+        活动包是外置的、核心代码打包在程序里，改不了 ``browse_contract`` 时，
+        这一层才是实际生效的兼容点：只摘锁，不改标题、时长与其它判定。
+        """
+        rows = super().tasks(screen)
+        for task in rows:
+            if getattr(task, 'browse_once', False) and task.kind == 'browse':
+                task.browse_once = False
+        return rows
 
     def installed_app(self, packages):
         """Cache the device package list for this run; a task must not be opened
@@ -176,6 +223,11 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
             return self.config['visit_seconds'], 'visit', '', target, packages
         # Text-based exclusions belong only to the editable shared word list.
         # This parser identifies actions; it must not silently reintroduce removed words.
+        if re.search(r'^完成(?:下方|以下|全部)任务|^任务全部完成', title):
+            # 「完成下方任务得额外金币」是列表顶部那条累计进度条，不是任务：
+            # 它没有自己的入口，点「去完成」只是在原地打转。当成任务做，会连续
+            # 往返好几次都推进不了，还把这一批的尝试额度全耗在它身上。
+            return 0, 'manual', '累计进度条，不作为独立任务', '', ()
         if action in DONE_ACTIONS or (total and current >= total and action not in DAILY_CLAIMS):
             return 0, 'done', '今日已完成', '', ()
         seconds, kind, reason, target, packages = classify(title, detail, texts, action, current, total)
@@ -444,6 +496,7 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
                        and abs(r.center[1]-node.center[1]) < height*.03 for r in rewards)
 
         titles = [n for n in nodes if titled(n)
+                  and normalize(n.text) not in self.BACKGROUND_TITLES
                   and n.bounds[0] >= left_limit
                   and len(normalize(n.text)) < 50 and n.bounds[3]-n.bounds[1] < height*.05]
         tasks=[]
@@ -517,11 +570,34 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
         return any(re.search(self.page['list_markers'], normalize(n.text))
                    and len(normalize(n.text)) < 90 for n in nodes)
 
+    # 淘金币首页（赛车 / 车库那一屏）下方也嵌着一段「今日速赚」，它和任务弹层
+    # 共用同一批标题词；但弹层背后本来就露着首页内容，控件树会把“我的车库”
+    # 「部件升级进度」一起读进来。所以这里只用于识别“压根没进过任务页”的情形，
+    # 不能当成“不在任务列表”的判据，否则真正的弹层也会被判掉。
+    HOME_MARKERS = re.compile(r'我的车库|部件升级进度|升级赛车拿钱')
+
+    def on_home_page(self, screen):
+        """整屏都是首页区块（没有任务弹层）时才算停在首页。"""
+        try:
+            text = normalize(screen.text)
+        except Exception:
+            return False
+        if not self.HOME_MARKERS.search(text):
+            return False
+        # 弹层自带「收起更多任务」/「今日速赚 为你找到最简单的任务」这类结构。
+        return not re.search(r'收起更多任务|为你找到最简单的任务|更多金币等你赚', text)
+
+    # 弹层背后露出来的首页入口/区块名会被行解析当成任务标题，它们没有自己的
+    # 任务入口，点开只会把整轮带到首页去。
+    BACKGROUND_TITLES = frozenset({'商业化入口', '我的车库', '部件升级进度',
+                                   '大家都在问', '回日常版', '赚更多金币', '去赚金币'})
+
     def entry_node(self, screen, labels):
         preferred = self.page.get('preferred_entries', [])
         matches = [(preferred.index(label) if label in preferred else len(preferred), n)
                    for label in labels for n in screen.nodes
-                   if re.fullmatch(r'(?:去|进入|回)?'+re.escape(label)+r'[>〉按钮]*', normalize(n.text))
+                   if re.fullmatch(r'(?:去|进入|回)?'+re.escape(label)
+                                   +r'[>〉按钮·。.,，、|｜/\-]{0,3}', normalize(n.text))
                    and 0 <= n.bounds[0] < n.bounds[2] <= screen.width
                    and 0 <= n.bounds[1] < n.bounds[3] <= screen.height
                    and (screen.geometry is None or screen.geometry.contains(*n.center))
@@ -531,6 +607,29 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
         # "日常版" label must not outrank the direct "去赚金币" task entrance.
         return min(matches, key=lambda item: (item[0], item[1].source != 'ui',
                    -(item[1].bounds[3]-item[1].bounds[1])))[1] if matches else None
+
+    def native_entry(self, screen, labels):
+        """OCR 读不到入口时，回控件树再找一遍。
+
+        「去赚金币」这类按钮的文字是画在图片上的，OCR 偶尔整块丢字或认错。
+        控件树里它是原始文案，用它的中心点比对着截图猜稳得多；坐标只在两屏
+        尺寸一致、且落点在可点区域时才采用。
+        """
+        try:
+            native = super().read(force_ocr=False)
+        except Exception:
+            return None
+        if native is None or native.package != screen.package:
+            return None
+        if (native.width, native.height) != (screen.width, screen.height):
+            return None
+        node = self.entry_node(native, labels)
+        if node is None:
+            return None
+        if screen.geometry is not None and not screen.geometry.contains(*node.center):
+            return None
+        logger.info('画面没认出入口，用控件树兜底：%s', normalize(node.text))
+        return node
 
     def official_activity_entry(self, screen):
         if screen.find(r'^历史搜索$|^搜索发现$|^猜你想搜$'):
@@ -651,6 +750,20 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
                             r'去查看|已领取|已完成|立即领取|领取|去玩)$', normalize(n.text))]
         return len(rows) >= 2
 
+    def dismiss_budget_used(self):
+        """定位/恢复阶段的关浮层额度用完了没有。
+
+        只在这两个阶段计数：逛任务时关掉推广浮层是正常动作，不该把定位的
+        额度提前花光，反过来定位阶段也不能在一个假 X 上无限点。
+        """
+        if getattr(self, '_phase', '') not in ('locating', 'returning'):
+            return False
+        return getattr(self, '_dismiss_count', 0) >= self.DISMISS_LIMIT
+
+    def count_dismiss(self):
+        if getattr(self, '_phase', '') in ('locating', 'returning'):
+            self._dismiss_count = getattr(self, '_dismiss_count', 0) + 1
+
     def popup_close_node(self, screen):
         """找“关掉这层浮层”的按钮；没有就返回 None。"""
         for node in screen.nodes:
@@ -664,8 +777,53 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
                 continue
             if node.center[1] < screen.height*.05:
                 continue
+            if X_CLOSE_RE.match(text) and not self.lonely_close(screen, node):
+                # 正文里的乘号（「运动户外×抵扣券」）、工具栏上的音效图标都能被
+                # 读成一个 X。浮层的关闭按钮一定是落单的，左右紧挨着文字就不是它。
+                continue
+            if self.close_is_dead(screen, node):
+                continue
             return node
         return None
+
+    def lonely_close(self, screen, node):
+        """这个 X 是不是「自己一个」——浮层关闭按钮最稳的特征。
+
+        淘金币首页的工具栏（音效、更多）和商品卡里的乘号都会被打成一个 X，
+        而它们左右都压着别的字。只有同一个横带里前后都没有文字的那个才是
+        浮层右上角的关闭按钮。
+        """
+        left, top, right, bottom = node.bounds
+        center = (top+bottom)/2
+        margin = screen.width*.05
+        for other in screen.nodes:
+            if other is node or not normalize(other.text):
+                continue
+            if abs((other.bounds[1]+other.bounds[3])/2-center) > screen.height*.035:
+                continue
+            if other.bounds[2] > left-margin and other.bounds[0] < right+margin:
+                return False
+        return True
+
+    def close_key(self, screen, node):
+        return (normalize(node.text), round(node.center[0]/max(1, screen.width), 2),
+                round(node.center[1]/max(1, screen.height), 2))
+
+    def close_is_dead(self, screen, node):
+        return self.close_key(screen, node) in getattr(self, '_dead_closes', ())
+
+    def mark_close_dead(self, screen, node):
+        """点过却没有任何变化的「关闭」：本轮别再点它。"""
+        dead = getattr(self, '_dead_closes', None)
+        if dead is None:
+            dead = self._dead_closes = set()
+        dead.add(self.close_key(screen, node))
+
+    @staticmethod
+    def same_content(before, after):
+        """两屏的业务内容是否一样：金币数、能量值、倒计时这些数字不算变化。"""
+        clean = lambda screen: re.sub(r'[0-9]+', '', normalize(screen.text))
+        return clean(before) == clean(after)
 
     def can_auto_dismiss(self, screen):
         """这一屏的 × 到底该不该由我们点掉。
@@ -715,6 +873,10 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
         """
         if getattr(self, '_popup_busy', False):
             return None
+        if self.dismiss_budget_used():
+            # 这一轮定位已经关过几次浮层了：再点下去就是在同一个假 X 上打转，
+            # 而不是往前走。把定位的力气留给真正的入口（「去赚金币」）。
+            return None
         if screen.source == 'ui' and self.config['ocr'] and self.popup_close_node(screen):
             # The accessibility tree can expose a hidden tutorial's Skip over
             # an unrelated painted offer. Confirm the rendered dismiss control.
@@ -760,8 +922,15 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
             return None
         finally:
             self._popup_busy = False
+        self.count_dismiss()
         fresh = super().read(force_ocr=bool(self.config['ocr']))
-        if normalize(fresh.text) == text:
+        if self.same_content(screen, fresh):
+            # 点了「关闭」页面却没有任何变化：这个 X 不是浮层的关闭按钮
+            # （正文里的乘号、工具栏图标都会这样）。记下来，本轮不再点它，
+            # 免得定位预算全耗在同一个死位置上。
+            if close is not None:
+                self.mark_close_dead(screen, close)
+                logger.info('「%s」点了没有反应，不再当作关闭按钮', normalize(close.text)[:12])
             return None
         self._popup_epoch = getattr(self, '_popup_epoch', 0) + 1
         return fresh
@@ -804,7 +973,12 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
                 else:
                     self._retreat_screen = painted
                     return
-            if HARD_STOP_RE.search(text):
+            hit = HARD_STOP_RE.search(text)
+            if hit is not None:
+                # 这一支过去是静默 raise，真机上只看到“要求安全验证”，却不知道
+                # 撞的是哪个词，没法判断该不该放行。命中词一定要写进日志。
+                logger.warning('页面确有拦截元素「%s」，停止自动执行；片段=%s',
+                               hit.group(), text[:80].replace('\n', ' '))
                 raise
             if getattr(screen, 'obscured', False):
                 raise
@@ -1125,6 +1299,12 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
             anchor = min(n.center[1] for n in markers)
             closers = [n for n in closers if n.center[1] > anchor
                        and abs(n.center[0]-screen.width*.5) < screen.width*.25]
+        # 落单的符号才算关闭图标；点过却没反应的位置也不再点。
+        closers = [n for n in closers
+                   if (not X_CLOSE_RE.match(normalize(n.text)) or self.lonely_close(screen, n))
+                   and not self.close_is_dead(screen, n)]
+        if not promotion and self.dismiss_budget_used():
+            return False
         close = (min(closers, key=lambda n: abs(n.center[0]-screen.width*.5))
                  if promotion and closers else next(iter(closers),None))
         # Never accept a generic confirm/open/withdrawal action. Authentication
@@ -1135,13 +1315,15 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
         if close and close.bounds[3]-close.bounds[1] < screen.height*.12:
             self.click(close)
             self.pause(.4)
-            return True
+            self.count_dismiss()
+            return close
         if promotion:
             # Decorative close icons may not be readable. Dismiss the known
             # promotion with Back rather than clicking its coupon/withdraw CTA.
             self.control.check()
             self.device.go_back()
             self.pause(.4)
+            self.count_dismiss()
             return True
         return False
 
@@ -1158,26 +1340,27 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
         # Start the full queue at its top, using only this page's paired rows.
         # Recovery intentionally keeps its viewport so verification can compare
         # the task just executed without reopening or scrolling the whole list.
+        #
+        # 回顶必须按固定步长翻，不能按“屏上任务行的跨度”推算：只剩一两行在屏上
+        # 时行距天然很小，旧判断会当成“已经到顶”直接收手，于是从中间那一屏开始
+        # 扫，下半张列表里的任务一条都进不了候选——用户看到的就是“还有任务没做”。
         seen = set()
-        for _ in range(min(4, self.config['max_scroll_pages'])):
+        x = round(screen.width / 2)
+        for _ in range(min(6, self.config['max_scroll_pages'])):
             self.control.check()
-            tasks = self.parse_tasks(screen.nodes, screen.width, screen.height)
-            signature = tuple((t.key,t.current,t.action) for t in tasks)
-            if len(tasks) < 2 or signature in seen:
+            signature = normalize(screen.text)[:400]
+            if signature in seen:
                 break
             seen.add(signature)
-            centers = sorted((t.bounds[1]+t.bounds[3])/2 for t in tasks)
-            span = centers[-1]-centers[0]
-            if span < screen.height*.12:
-                break
-            xs = sorted((t.bounds[0]+t.bounds[2])/2 for t in tasks)
-            x = round(xs[len(xs)//2])
-            self.device.swipe(x, round(centers[0]+span*.1),
-                              x, round(centers[-1]-span*.1), duration=.45)
-            self.pause(.5)
+            self.device.swipe(x, round(screen.height * .55),
+                              x, round(screen.height * .82), duration=.45)
+            self.pause(.6)
             fresh = self.read_page(visual=True)
             if not self.is_task_list(fresh.nodes):
                 return self.navigate(auto_open=True)
+            if normalize(fresh.text) == signature:
+                screen = fresh
+                break
             screen = fresh
         return screen
 
@@ -1185,9 +1368,51 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
         return self.navigate(auto_open=True, recovering=True)
 
     def availability_reason(self, task, check_installed=False):
+        """描述已经把做法写清楚时，标题里的名词不再当作任务要求。
+
+        「看看你关注的新品动态」描述是「浏览5秒+20」，公共词表却因为标题里有
+        “关注”整条跳过；“关注”在这里只是“你关注的新品”这个名词的一部分。
+        判据只有一条：描述里明确写着「浏览」，而且描述本身没有下单/支付/邀请
+        这类要人动手的词——说明它就是一条浏览任务，照做即可。
+        """
         if task.key in getattr(self, '_settled_claims', set()):
             return '本轮已核验领取，下一轮再检查'
-        return super().availability_reason(task, check_installed)
+        # 用户明确点过“今日跳过”的任务，任何自动放行都不能推翻。
+        choice = self.task_policy.reason(task)
+        if choice.startswith('已跳过：用户选择'):
+            return choice
+        reason = super().availability_reason(task, check_installed)
+        if not reason.startswith('已跳过：命中常驻关键词'):
+            return reason
+        detail = normalize(getattr(task, 'detail', '') or '')
+        if not self.PLAIN_BROWSE_RE.search(detail) or self.REQUIRED_ACTION_RE.search(detail):
+            return reason
+        if not self.title_nouns_only(normalize(task.title or '')):
+            return reason
+        logger.info('描述已写明是浏览任务，忽略标题里的关键词：%s / %s',
+                    normalize(task.title or ''), detail)
+        return ''
+
+    def title_nouns_only(self, title):
+        """标题里的敏感词是不是都只当名词用（“你**关注**的新品动态”）。
+
+        判定只看一处：词后面跟不跟「的」。跟「的」是修饰语，任务该怎么做由描述
+        决定；写成「关注店铺」「去关注」这种动作的，仍然按词表跳过。
+        """
+        for word in (self.config.get('skip_task_keywords') or ()):
+            word = normalize(word)
+            if not word:
+                continue
+            start = 0
+            while True:
+                index = title.find(word, start)
+                if index < 0:
+                    break
+                tail = title[index + len(word): index + len(word) + 1]
+                if tail != '的':
+                    return False
+                start = index + len(word)
+        return True
 
     def install_swipe_guard(self):
         """The coin panel is a dismissable sheet, not a plain page.
@@ -1317,6 +1542,9 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
         # useful while it can still change the page.
         self._stall = None
         self._stall_backs = 0
+        # 关浮层的次数按「一轮定位」计：逛任务时关掉的推广浮层不该占用定位
+        # 阶段的额度，反过来定位阶段也不能无限关。
+        self._dismiss_count = 0
         self.update('returning' if recovering else 'locating', message='进入'+self.config['name'])
         package = self.origin or self.application.package_for(self.device.device_type)
         self.origin = package
@@ -1398,11 +1626,11 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
                 taps['expanded'] = True
                 screen = self.ensure_expanded(screen)
                 continue
-            if self.is_task_list(screen.nodes):
+            if self.is_task_list(screen.nodes) and not self.on_home_page(screen):
                 # A WebView can leave hidden controls in the hierarchy. Confirm
                 # the painted task header before accepting the list.
                 painted = self.read_page(visual=True) if self.config['ocr'] and screen.source == 'ui' else screen
-                if self.is_task_list(painted.nodes):
+                if self.is_task_list(painted.nodes) and not self.on_home_page(painted):
                     if self.promotion_visible(painted):
                         if self.dismiss_overlay(painted):
                             screen = self.read_page()
@@ -1428,12 +1656,19 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
                 self.pause(.5)
                 screen = self.read_page()
                 continue
-            if self.dismiss_overlay(screen):
+            close = self.dismiss_overlay(screen)
+            if close:
                 # Covered entry taps do not consume the visible entry's retry budget.
                 taps.clear()
                 loading_until = self.control.now()+self.config['page_timeout']
                 deadline = min(hard_deadline, max(deadline, self.control.now()+self.config['page_timeout']))
+                before = screen
                 screen = self.read_page()
+                if not isinstance(close, bool) and self.same_content(before, screen):
+                    # 点「关闭」前后画面一模一样（数字不算变化），说明这个 X 不是
+                    # 浮层的按钮。记下来别再点，下一帧直接去找入口。
+                    self.mark_close_dead(before, close)
+                    logger.info('「%s」点了没有反应，不再当作关闭按钮', normalize(close.text)[:12])
                 continue
             node = self.official_activity_entry(screen) if screen.package == package else None
             landing = bool(screen.find(self.page['landing_markers']))
@@ -1442,6 +1677,11 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
                     screen = self.read_page(visual=True)
                     continue
                 node = self.entry_node(screen, self.config['task_entry_labels'])
+                if node is None and screen.source != 'ui':
+                    # 这一页的按钮常常只有图标、文字又是画上去的，OCR 很容易读丢
+                    # 「去赚金币」；控件树里有原始文案，用它兜底，别因为几个字没
+                    # 认出来就判成「入口变了」。
+                    node = self.native_entry(screen, self.config['task_entry_labels'])
                 if (node is None and native_frame is not None and not self.homepage_visible(screen)
                         and (native_frame.width,native_frame.height)==(screen.width,screen.height)):
                     native = self.entry_node(native_frame, self.config['task_entry_labels'])
@@ -1688,10 +1928,40 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
             return False
         return (new-old if increasing else old-new) >= int(amount[1])
 
+    # 核验读不到任务行时，最多再往下翻几屏去找。面板是长列表、Themis 只渲染
+    # 可视区，执行完回到顶部就看不到下面几行的进度。
+    ROW_SEARCH_PAGES = 5
+
+    def reveal_row(self, task, screen):
+        """把任务行重新滚进可视区，返回能读到它的屏幕。
+
+        执行完回到面板时列表常停在顶部，而这一行在下面几屏：读不到这一行，就会被
+        当成“进度没涨”，任务记成失败、白耗一次重试额度，最后整天不再做。
+        """
+        if any(t.key == task.key for t in self.tasks(screen)):
+            return screen
+        for _ in range(self.ROW_SEARCH_PAGES):
+            try:
+                self.scroll_list(screen)
+                screen = self.read()
+            except Exception:
+                logger.warning('核验：翻回任务行失败', exc_info=True)
+                return screen
+            if not self.is_task_list(screen.nodes):
+                return screen
+            if any(t.key == task.key for t in self.tasks(screen)):
+                return screen
+        return screen
+
     def verify(self, task, before, after, explicit=False):
         if not self.is_task_list(after.nodes):
             return False
         current = next((t for t in self.tasks(after) if t.key == task.key), None)
+        if current is None:
+            # 先把它找回来再判，别把“没渲染出来”当成“没做成”。
+            after = self.reveal_row(task, after)
+            current = next((t for t in self.tasks(after) if t.key == task.key), None)
+            logger.info('核验：%s 重新定位后%s该行', task.title, '找到' if current else '仍未找到')
         progress = bool(current and (current.current > task.current or current.kind == 'done'
                                      or task.kind != 'claim' and current.kind == 'claim'))
         if task.kind == 'claim':

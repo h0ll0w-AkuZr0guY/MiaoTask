@@ -44,6 +44,7 @@ def validate_config(config):
         'screen_timeout_minutes': (1, 1440),
         'max_back_steps': (1, 8), 'max_attempts': (1, 3),
         'max_tasks': (1, 300), 'max_scroll_pages': (1, 20),
+        'attention_settle_rounds': (0, 10), 'attention_settle_seconds': (0, 30),
     }
     for key, (low, high) in limits.items():
         value = config.get(key)

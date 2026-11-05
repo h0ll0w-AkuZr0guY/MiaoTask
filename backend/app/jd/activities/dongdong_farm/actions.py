@@ -47,6 +47,19 @@ class TaskActions:
                 return node
         return None
 
+    def _on_screen(self, node):
+        """控件中心是否落在这一帧的屏幕范围内。
+
+        农场是 Expo 容器，容器里有些控件（尤其是顶部的「返回」）会被报到屏幕外，
+        比如屏宽 1080 却给出 x=1098~1218。照原点会被框架的越界保护拦下，
+        抛「目标位于系统栏、屏幕裁切或不可操作区域」，整轮就此中断。
+        """
+        screen = getattr(self.reader, 'last_screen', None)
+        if screen is None:
+            return True
+        x, y = node.center
+        return 0 <= x < screen.width and 0 <= y < screen.height
+
     def _tap(self, node, fallback=True):
         """点一下；弹出系统级窗口时控件坐标会落到应用窗口外，退化成原始点击。
 
@@ -54,6 +67,10 @@ class TaskActions:
         控件树里的 bounds 常常超出当前应用窗口，框架的越界保护会直接抛异常。
         对这种整屏确认框，按坐标点等同于点按钮，所以兜底用 device.click。
         """
+        if not self._on_screen(node):
+            logger.info('跳过越界控件：%r 中心 %s，不在当前屏幕内',
+                        getattr(node, 'text', ''), node.center)
+            return False
         try:
             self.click(node)
             return True
@@ -212,7 +229,7 @@ class TaskActions:
             node = self._find_exact(screen, self.config.get('quick_verify_labels', ['快速验证']))
             if node is None:
                 break
-            self.click(node)
+            self._tap(node)
             screen = self.wait_screen(lambda s: self.verify_blocked(s) and (
                 self._find_exact(s, ['滑动验证中']) is not None), timeout=6)
         return screen
@@ -276,9 +293,11 @@ class TaskActions:
                     self.control.wait(1.0)
                     screen = self.read()
                     continue
-                self.click(entry)
-                self.control.wait(1.6)
-                screen = self._restore_panel_position(self.read())
+                self._tap(entry)
+                # 抽屉是 toggle，开合都要一两秒；点完必须等它真的在屏幕上，
+                # 固定 1.6 秒就接着下一轮会把刚开的抽屉又点回去。
+                screen = self.wait_screen(self.panel_visible, timeout=3.2, interval=.5)
+                screen = self._restore_panel_position(screen)
                 continue
             screen = self.recover_farm_panel(screen)
         return screen
@@ -326,9 +345,9 @@ class TaskActions:
                 entry = self.task_panel_entry(screen)
                 if entry is None:
                     return screen
-                self.click(entry)
-                self.control.wait(1.6)
-                screen = self._restore_panel_position(self.read())
+                self._tap(entry)
+                screen = self.wait_screen(self.panel_visible, timeout=3.2, interval=.5)
+                screen = self._restore_panel_position(screen)
                 continue
             if not self.in_app(screen):
                 screen = self.back_to_jd(screen)
@@ -346,41 +365,79 @@ class TaskActions:
 
     # ---- 行定位 ----
 
-    def _row_node(self, screen, task):
-        rows = self.tasks(screen)
+    def _row_node(self, screen, task, same_kind=True):
+        """按 key 或标题找这一行的按钮；默认要求类型一致。
+
+        领奖后按钮会变成「去完成」，若只按标题找就会点错行，所以 claim 任务
+        只能落在仍然是 claim 的按钮上。
+        """
+        try:
+            rows = self.parse_tasks(screen.nodes, screen.width, screen.height)
+        except Exception:
+            return None
         for row in rows:
-            if row.key == task.key:
+            if row.key == task.key and (not same_kind or row.kind == task.kind):
                 return TextNode('', row.bounds)
         for row in rows:
-            if row.title == task.title:
+            if row.title == task.title and (not same_kind or row.kind == task.kind):
                 return TextNode('', row.bounds)
         return None
 
     def locate_row(self, screen, task):
-        """在当前面板里找到目标行的按钮；找不到就滚动面板再找。"""
+        """在当前面板里找到目标行的按钮；找不到就回到顶部逐屏往下找。
+
+        抽屉有 5 屏 27 行，主循环每做完一条都会把视口拉回顶部，只在当前屏
+        附近找三屏是找不到下半段任务的。这里固定「回顶 → 逐屏下滑」定位，
+        让每一行都有机会被执行。
+        """
+        if not self.panel_visible(screen):
+            screen = self.ensure_panel(screen)
         node = self._row_node(screen, task)
         if node is not None:
             return screen, node
-        for _ in range(3):
-            self.browse_swipe(screen)
-            self.control.wait(1.1)
-            screen = self.read()
-            if not self.panel_visible(screen):
-                screen = self.ensure_panel(screen)
+        screen = self._panel_scroll_to_top(screen)
+        seen = set()
+        for _ in range(int(self.config.get('catalog_pages', 8))):
             node = self._row_node(screen, task)
             if node is not None:
                 return screen, node
+            fingerprint = self._panel_rows(screen)
+            if fingerprint in seen:
+                break
+            seen.add(fingerprint)
+            self.browse_swipe(screen)
+            self.control.wait(.9)
+            nxt = self.read()
+            if not self.panel_visible(nxt):
+                break
+            screen = nxt
         return screen, None
 
     # ---- 主执行 ----
 
     def execute(self, task, before):
+        """主循环入口：一帧坏坐标只丢掉这一条，不报废整轮。
+
+        新版本 core 的 Session.click 已经改成跳过越界控件，这里再兜一层是为了
+        打包版程序（core 在 exe 里，换不了文件）——旧版会直接抛 NeedsAttention，
+        主循环收到就整轮停下等人，代价远大于少做一条任务。
+        """
+        try:
+            return self._run_task(task, before)
+        except NeedsAttention as exc:
+            if '屏幕裁切' not in str(exc):
+                raise
+            logger.info('点击目标在屏幕外，跳过本次：%s', exc)
+            return self.read(), False, False
+
+    def _run_task(self, task, before, target=None):
         self._active_task = task
         self._credited = False
         self.update('opening', message='打开任务：' + task.title, remaining=0)
         self._remember_anchor(before, task)
         screen = self.ensure_panel(before)
-        screen, target = self.locate_row(screen, task)
+        if target is None:
+            screen, target = self.locate_row(screen, task)
         if target is None:
             logger.info('任务面板里没有找到这一行，跳过本次：%s', task.title)
             return screen, False, False
@@ -389,7 +446,7 @@ class TaskActions:
             screen, ok = self.claim_row(screen, task, target)
             self._credited = self._credited or ok
             return screen, self._credited, False
-        self.click(target)
+        self._tap(target)
         self.control.wait(1.5)
         screen = self.read()
         if not task.target_app and self.app_jump_dialog(screen):
@@ -484,36 +541,57 @@ class TaskActions:
     # 下一步（精选活动推荐 0/7 这种可重复任务）。所以凡是回到面板，都得顺手把
     # 能领的先领掉，否则任务链就卡在这里。
 
-    def claim_row(self, screen, task, target=None):
-        """点一行「去领奖/领奖励」，直到这一行真的消失或换掉按钮。
+    def _claim_node(self, screen, task):
+        """这一行「现在仍然是去领奖」才算可点。
 
-        真机事实（2026-11-04）：点下去 0.5s 内整行消失，抽屉不收、也不弹奖励浮层；
-        但结算有延迟，偶尔第一次点击只是让按钮变灰，所以必须按「行有没有变化」
-        再确认一次，不能点完就当成领到。
+        真机（2026-11-05 10:05）：点完「去领奖」后按钮 1 秒内变成「去完成」，
+        标题进度不变。旧逻辑按标题兜底会把这个新按钮当成领奖按钮再点一次，
+        等于又打开落地页，接着触发一整轮「返回 → 退回首页 → 重新进农场」，
+        日志里那一串「领奖没有生效 / 活动入口点击」就是这么来的。
         """
+        try:
+            rows = self.parse_tasks(screen.nodes, screen.width, screen.height)
+        except Exception:
+            return None
+        for row in rows:
+            if row.title == task.title and row.kind == 'claim':
+                return TextNode('', row.bounds)
+        return None
+
+    def claim_row(self, screen, task, target=None):
+        """点一行「去领奖/领奖励」；按钮一换掉就收手，绝不重复点。"""
         tries = max(1, int(self.config.get('claim_retry', 2)))
         for attempt in range(tries):
+            if attempt:
+                # 补点前重新确认这一行还是「去领奖」，否则说明上一次已经领成功。
+                screen = self.ensure_panel(screen)
+                target = self._claim_node(screen, task)
+                if target is None:
+                    logger.info('领奖已生效（按钮已换），不再补点：%s', task.title)
+                    return screen, True
             if target is None:
-                screen, target = self.locate_row(screen, task)
+                target = self._claim_node(screen, task)
             if target is None:
-                return screen, True           # 行已经不在了，等于领到了
+                return screen, True           # 行已经不在了 / 已经不是领奖状态
             self.update('browsing', message='领取奖励：' + task.title, remaining=0)
-            self.click(target)
+            self._tap(target)
             screen = self.wait_claim_settled(task, screen)
             if self._claim_done(task, screen):
                 return screen, True
             target = None
             if attempt + 1 < tries:
                 logger.info('领奖没有生效，再点一次：%s', task.title)
-                self.control.wait(1.2)
+                self.control.wait(.8)
                 screen = self.ensure_panel(screen)
         return screen, False
 
     def wait_claim_settled(self, task, screen, timeout=None):
         """等这一行变成「已领」：行消失、按钮换掉，或弹了奖励浮层。"""
-        budget = float(self.config.get('claim_settle_timeout', 5))
+        budget = float(self.config.get('claim_settle_timeout', 3))
         deadline = self.control.now() + max(1.0, timeout if timeout is not None else budget)
         while True:
+            if self._claim_done(task, screen):
+                return screen
             screen = self.escape_foreign(screen)
             if self.reward_seen(screen):
                 self._credited = True
@@ -605,7 +683,8 @@ class TaskActions:
         白白把滚动次数耗光。
         """
         try:
-            return tuple(sorted((t.title, t.current, t.kind) for t in self.tasks(screen)))
+            rows = self.parse_tasks(screen.nodes, screen.width, screen.height)
+            return tuple(sorted((t.title, t.current, t.kind) for t in rows))
         except Exception:
             return ()
 
@@ -659,11 +738,24 @@ class TaskActions:
         # 跨应用任务要先把人从外部应用带回来，否则后面的恢复会在别人的首页里打转。
         screen = self.back_to_jd(screen)
         screen = self.dismiss_popups(screen)
-        screen = self.recover_farm_panel(screen)
+        # 真机（2026-11-05 10:10）：落地页按一次返回就回到抽屉，进度当场刷新。
+        # 继续按返回会把抽屉一起关掉、退回京东首页，只能重新进农场、抽屉回顶，
+        # 于是核验时读不到这一行，任务被误判「进度未增加」，还白耗几十秒恢复。
+        if not self.panel_visible(screen):
+            if self.farm_visible(screen) or self.homepage_visible(screen):
+                screen = self.ensure_panel(screen)
+            else:
+                self.device.go_back()
+                self.control.wait(1.5)
+                screen = self.ensure_panel(self.read())
+        if not self.panel_visible(screen):
+            screen = self.recover_farm_panel(screen)
         screen = self.ensure_panel(screen)
-        screen = self.dismiss_popups(screen)
-        # 这一步做完，这一行通常已经变成「去领奖」：顺手领掉，才能接着做下一步。
-        return self.sweep_claims(screen)
+        # 全量循环每轮开头会把所有「去领奖」一次领完，这里不再每条都浅扫一遍，
+        # 避免刚领完的按钮被反复点、也省掉每条任务十几秒的额外恢复。
+        if getattr(self, '_auto_claim_sweep', True):
+            screen = self.sweep_claims(screen)
+        return screen
 
     def _dwell(self, screen, seconds):
         """在落地页停留足够时长，中途做几次小幅滑动，尽量像真人浏览。"""
@@ -700,7 +792,7 @@ class TaskActions:
             logger.info('农场首页没有签到入口，跳过签到')
             return screen
         self.update('scanning', message='农场日常：签到领水滴', current_task='', remaining=0)
-        self.click(entry)
+        self._tap(entry)
         screen = self.wait_screen(
             lambda s: any('连续签到' in text for text in self._texts(s)), timeout=10)
         if not any('连续签到' in text for text in self._texts(screen)):
@@ -711,11 +803,11 @@ class TaskActions:
             return self._leave_sign(screen)
         button = self._find_exact(screen, self.config.get('sign_button_labels', []))
         if button is not None:
-            self.click(button)
+            self._tap(button)
         else:
             # 签到大按钮画在 canvas 上，读不到控件时按实测位置点（原图 0.5W / 0.424H）
             center_x, center_y = screen.width // 2, int(screen.height * .424)
-            self.click(TextNode('', (center_x - 6, center_y - 6, center_x + 6, center_y + 6)))
+            self._tap(TextNode('', (center_x - 6, center_y - 6, center_x + 6, center_y + 6)))
         self.control.wait(1.8)
         screen = self.read()
         if self.reward_seen(screen):
@@ -744,7 +836,7 @@ class TaskActions:
             if node is None:
                 break
             self.update('browsing', message='领取水滴', remaining=0)
-            self.click(node)
+            self._tap(node)
             self.control.wait(1.6)
             screen = self.dismiss_popups(self.read())
             if not self.farm_visible(screen):
@@ -764,7 +856,7 @@ class TaskActions:
                 logger.info('水壶里的水滴不足 10g，停止浇水')
                 break
             self.update('browsing', message='浇水（本轮第 %d 次）' % (done + 1), remaining=0)
-            self.click(can)
+            self._tap(can)
             done += 1
             self._water_actions = int(getattr(self, '_water_actions', 0)) + 1
             self.control.wait(2.3)

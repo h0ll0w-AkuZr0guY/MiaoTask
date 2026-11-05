@@ -180,6 +180,35 @@ class NavigationTests(unittest.TestCase):
                           'com.kuaishou.nebula')
         self.assertFalse(self.runner.foreign_page(kuaishou))
 
+    def test_loading_farm_page_is_not_foreign(self):
+        """刚点进农场的那一两帧只有「返回」，判成外站会把农场立刻退掉。
+
+        真机 2026-11-05 08:35：点完入口 1 秒内就判外站、去点返回，接着再点入口，
+        最后整个导航预算耗尽，报「未能自动进入应用活动任务列表」。
+        """
+        loading = Screen([TextNode('返回', (33, 120, 153, 240))], 1080, 2400, PACKAGE)
+        self.assertFalse(self.runner.foreign_page(loading))
+
+    def test_offscreen_close_button_is_not_offered(self):
+        """农场容器会把「返回」报到屏幕外（屏宽 1080 却给 x=1098~1218）。
+
+        这个坐标拿去点会被框架的越界保护拦下，抛「目标位于系统栏、屏幕裁切
+        或不可操作区域」，整轮直接中断 —— 所以入口定位必须跳过它。
+        """
+        loading = Screen([
+            TextNode('返回', (1098, 114, 1218, 261)),
+            TextNode('东东农场', (0, 0, 1080, 2400)),
+        ], 1080, 2400, PACKAGE)
+        self.assertIsNone(self.runner.page_close_node(loading))
+        self.assertIsNone(self.runner.home_entry_node(loading))
+
+    def test_offscreen_node_is_never_tapped(self):
+        runner = self.runner
+        runner.device = Mock()
+        runner.reader = SimpleNamespace(last_screen=Screen([], 1080, 2400, PACKAGE))
+        self.assertFalse(runner._tap(TextNode('返回', (1098, 114, 1218, 261))))
+        runner.device.click.assert_not_called()
+
 
 class ClaimSweepTests(unittest.TestCase):
     """领奖必须一次领干净：漏一条，对应的任务行就卡在「去领奖」不动。"""
@@ -343,6 +372,167 @@ class FarmVerificationTests(unittest.TestCase):
     def test_leaving_the_panel_without_evidence_is_not_success(self):
         landing = Screen([TextNode('商品详情', (100, 300, 900, 360))], 1080, 2400, PACKAGE)
         self.assertFalse(self.runner.verify(self.task, self.before, landing))
+
+
+class AttentionSettleTests(unittest.TestCase):
+    """登录/授权浮层不该一出现就把整轮停下来等人。
+
+    真机事实：跨应用任务落到快手广告页时，页面自带「立即登录」横幅，京东这边
+    任务其实照做；以前这里判成「页面要求登录」，整轮就此结束且要人处理。
+    """
+
+    def setUp(self):
+        self.runner = make_runner()
+        self.runner.config['attention_settle_rounds'] = 2
+        self.runner.config['attention_settle_seconds'] = 0
+        self.runner.control.wait = lambda seconds=0: None
+
+    def test_external_app_login_banner_does_not_stop_the_run(self):
+        kuaishou = Screen([TextNode('立即登录', (10, 300, 200, 400))], 1080, 2400,
+                          'com.kuaishou.nebula')
+        self.runner.read = lambda force_ocr=False: kuaishou
+        self.runner.guard(kuaishou)
+
+    def test_page_that_settles_itself_continues(self):
+        login = Screen([TextNode('立即登录', (10, 300, 200, 400))], 1080, 2400, PACKAGE)
+        queue = [login, farm_home_screen()]
+        self.runner.read = lambda force_ocr=False: queue.pop(0) if queue else farm_home_screen()
+        self.runner.guard(login)
+
+    def test_real_login_page_still_stops_after_waiting(self):
+        from backend.core.errors import NeedsAttention
+        login = Screen([TextNode('短信登录', (10, 300, 200, 400))], 1080, 2400, PACKAGE)
+        self.runner.read = lambda force_ocr=False: login
+        with self.assertRaises(NeedsAttention):
+            self.runner.guard(login)
+
+    def test_old_core_without_attention_reason_still_skips_external_banner(self):
+        """桌面版把 core 打进 exe，可能没有 attention_reason：不能因此导入失败。"""
+        from unittest.mock import patch
+        from backend.app.jd.activities.dongdong_farm import activity as module
+        kuaishou = Screen([TextNode('立即登录', (10, 300, 200, 400))], 1080, 2400,
+                          'com.kuaishou.nebula')
+        self.runner.read = lambda force_ocr=False: kuaishou
+        with patch.object(module, '_attention_reason', None):
+            self.runner.guard(kuaishou)
+
+    def test_old_core_still_stops_on_real_login_page(self):
+        from unittest.mock import patch
+        from backend.core.errors import NeedsAttention
+        from backend.app.jd.activities.dongdong_farm import activity as module
+        login = Screen([TextNode('短信登录', (10, 300, 200, 400))], 1080, 2400, PACKAGE)
+        self.runner.read = lambda force_ocr=False: login
+        with patch.object(module, '_attention_reason', None):
+            with self.assertRaises(NeedsAttention):
+                self.runner.guard(login)
+
+    def test_storefront_words_do_not_stop_the_round_on_old_core(self):
+        """落地页商品名“导轨滑块”、主图“需要验证码?不上号”不是验证页。
+
+        旧版程序的核心词表把这两个裸词都算验证，整轮会停在一个没有验证的
+        商品页上；净化层的职责就是让旧 core 也能放行。
+        """
+        from unittest.mock import patch
+        from backend.app.jd.activities.dongdong_farm import activity as module
+        feed = Screen([TextNode('浏览6秒，奖励+10g', (10, 120, 700, 180)),
+                       TextNode('HG系列导轨滑块', (10, 900, 700, 960)),
+                       TextNode('需要验证码?不上号', (10, 1000, 700, 1060))],
+                      1080, 2400, PACKAGE)
+        self.runner.read = lambda force_ocr=False: feed
+        with patch.object(module, '_attention_reason', None):
+            self.runner.guard(feed)
+
+    def test_storefront_clear_keeps_real_challenge_untouched(self):
+        """净化只摘货架文案：拖动滑块、输入验证码这些页面必须原样交给判定。"""
+        from backend.app.jd.activities.dongdong_farm.activity import storefront_clear
+        for label in ('请按住滑块，拖动到最右边', '请输入验证码', '拖动下方滑块完成拼图'):
+            page = Screen([TextNode(label, (10, 900, 700, 960))], 1080, 2400, PACKAGE)
+            self.assertIs(storefront_clear(page), page)
+
+
+class OutOfBoundsClickTests(unittest.TestCase):
+    def test_click_outside_content_bounds_is_skipped_not_fatal(self):
+        """农场把顶部「返回」报到 x≈1098（屏宽 1080）：跳过这一帧，不是报废整轮。"""
+        from types import SimpleNamespace
+        from backend.core.execution.session import Session
+        session = Session.__new__(Session)
+        session.control = Mock()
+        session.device = Mock()
+        geometry = SimpleNamespace(contains=lambda x, y: 0 <= x < 1080 and 0 <= y < 2400)
+        session.reader = SimpleNamespace(last_screen=SimpleNamespace(geometry=geometry))
+        self.assertFalse(session.click(SimpleNamespace(center=(1158, 187), text='返回')))
+        session.device.click.assert_not_called()
+        self.assertTrue(session.click(SimpleNamespace(center=(540, 1200), text='去完成')))
+        session.device.click.assert_called_once_with(540, 1200)
+
+    def test_execute_skips_task_when_old_core_raises_out_of_bounds(self):
+        """打包版 core 换不了：越界抛出来也只丢这一条，不让整轮停下。"""
+        from backend.core.errors import NeedsAttention
+        runner = make_runner()
+        runner.read = lambda force_ocr=False: farm_home_screen()
+        runner._run_task = Mock(side_effect=NeedsAttention(
+            '目标位于系统栏、屏幕裁切或不可操作区域，请检查窗口布局'))
+        screen, explicit, cross = runner.execute(Mock(), farm_home_screen())
+        self.assertFalse(explicit)
+        self.assertFalse(cross)
+        self.assertIsInstance(screen, Screen)
+
+    def test_execute_still_raises_other_attention(self):
+        from backend.core.errors import NeedsAttention
+        runner = make_runner()
+        runner._run_task = Mock(side_effect=NeedsAttention('页面要求京东安全验证', kind='security'))
+        with self.assertRaises(NeedsAttention):
+            runner.execute(Mock(), farm_home_screen())
+
+
+class CatalogLoopTests(unittest.TestCase):
+    """新主循环：整张抽屉扫一遍，逐条滚过去做，而不是只盯当前一屏。"""
+
+    def setUp(self):
+        self.runner = make_runner()
+        self.runner.control.wait = lambda seconds=0: None
+        self.runner.browse_swipe = Mock()
+        self.runner._panel_scroll_to_top = lambda screen, limit=4: screen
+
+    def test_scan_catalog_merges_rows_from_several_screens(self):
+        first = panel_screen(
+            ('精选活动推荐(4/7)', '浏览6秒，奖励+10g', '去领奖'),
+            ('去快手极速版领金币(0/1)', '完成任务奖励+150g', '去完成'))
+        second = panel_screen(
+            ('逛PLUS会员中心(0/1)', '浏览6秒，奖励+10g', '逛一逛'),
+            ('去百度APP领现金(0/1)', '完成任务奖励+20g', '去完成'))
+        queue = [first, second, second]
+        self.runner.read = lambda force_ocr=False: queue.pop(0) if len(queue) > 1 else queue[0]
+        catalog, screen = self.runner.scan_catalog(first)
+        self.assertEqual(len(catalog), 4)
+        self.assertIn('逛PLUS会员中心#browse', catalog)
+        self.assertIn('去百度APP领现金#browse', catalog)
+
+    def test_actionable_filters_manual_done_and_exhausted_rows(self):
+        screen = panel_screen(
+            ('精选活动推荐(4/7)', '浏览6秒，奖励+10g', '去领奖'),
+            ('玩消消乐得红包(0/1)', '通过1关，奖励+10g', '去完成'),
+            ('双十一抽1888现金(1/1)', '浏览6秒，奖励+20g', '继续逛'))
+        tasks = self.runner.parse_tasks(screen.nodes, 1080, 2400)
+        by_title = {t.title: t for t in tasks}
+        self.assertTrue(self.runner._actionable(by_title['精选活动推荐'].key,
+                                                by_title['精选活动推荐']))
+        self.assertFalse(self.runner._actionable(by_title['玩消消乐得红包'].key,
+                                                 by_title['玩消消乐得红包']))
+        self.assertFalse(self.runner._actionable(by_title['双十一抽1888现金'].key,
+                                                 by_title['双十一抽1888现金']))
+        self.runner._own_failures[by_title['精选活动推荐'].key] = 2
+        self.assertFalse(self.runner._actionable(by_title['精选活动推荐'].key,
+                                                 by_title['精选活动推荐']))
+
+    def test_claim_node_never_returns_the_new_browse_button(self):
+        task = self.runner.parse_tasks(panel_screen(
+            ('精选活动推荐(4/7)', '浏览6秒，奖励+10g', '去领奖')).nodes, 1080, 2400)[0]
+        claim = panel_screen(('精选活动推荐(4/7)', '浏览6秒，奖励+10g', '去领奖'))
+        self.assertIsNotNone(self.runner._claim_node(claim, task))
+        settled = panel_screen(('精选活动推荐(4/7)', '浏览6秒，奖励+10g', '去完成'))
+        self.assertIsNone(self.runner._claim_node(settled, task),
+                          '领完后按钮变成「去完成」，不能再当成领奖按钮补点')
 
 
 if __name__ == '__main__':

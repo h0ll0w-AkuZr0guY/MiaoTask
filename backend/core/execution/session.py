@@ -123,12 +123,21 @@ class Session:
 
 
     def click(self, node):
+        """点一下控件；坐标不落在可点区域时这一帧跳过，交给下一帧重试。
+
+        越界曾经直接抛 NeedsAttention 把整轮停给用户，但真机上大量越界只是某一帧
+        的过渡值（京东 Expo 容器把顶部「返回」报到 x≈1098，屏宽才 1080），下一帧
+        就恢复正常。为一次坏坐标报废整轮代价太大，这里改成不点并返回 False：
+        既不会误触系统栏，也把「要不要重试」交给上层。
+        """
         self.control.check()
         geometry = getattr(self.reader.last_screen, 'geometry', None)
         if geometry and not geometry.contains(*node.center):
-            from backend.core.errors import NeedsAttention
-            raise NeedsAttention('目标位于系统栏、屏幕裁切或不可操作区域，请检查窗口布局')
+            logger.info('跳过越界控件：%r 中心 %s，不在可点区域内',
+                        getattr(node, 'text', ''), node.center)
+            return False
         self.device.click(*node.center)
+        return True
 
 
     def browse_swipe(self, screen):
