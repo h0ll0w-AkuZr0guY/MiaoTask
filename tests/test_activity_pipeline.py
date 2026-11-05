@@ -205,6 +205,24 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(state['status'], 'finished')
         self.assertEqual([row['instance'] for row in calls], ['org.example.alpha@999'] * 2)
 
+    def test_empty_explicit_selection_never_falls_back_to_all(self):
+        controller = self.controller()
+        calls = []
+        with patch('backend.core.service.panel.CampaignRunner', self.runner_factory(calls)):
+            with self.assertRaises(ValueError):
+                self.run_controller(controller, {'all_instances': True, 'instance_ids': []})
+        self.assertEqual(calls, [])
+
+    def test_explicit_subset_survives_same_app_pipeline_when_all_enabled(self):
+        controller = self.controller()
+        self.select(controller, ('alpha', 'first'), ('alpha', 'second'))
+        calls = []
+        with patch('backend.core.service.panel.CampaignRunner', self.runner_factory(calls)):
+            state = self.run_controller(controller, {'all_instances': True,
+                'instance_ids': ['org.example.alpha@999']})
+        self.assertEqual(state['status'], 'finished')
+        self.assertEqual([row['instance'] for row in calls], ['org.example.alpha@999'] * 2)
+
     def test_clipboard_setting_applies_before_run_and_can_be_disabled(self):
         for enabled in (True, False):
             with self.subTest(enabled=enabled):

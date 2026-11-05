@@ -1291,6 +1291,19 @@ class RunnerTests(unittest.TestCase):
         r.guard.assert_called_once_with(fresh)
         r.recover.assert_called_once()
 
+    def test_success_refresh_retains_safety_and_bounds_recovery(self):
+        from backend.core.errors import Stopped
+        r = self.runner()
+        r.read = Mock(side_effect=TimeoutError('synthetic'))
+        task = r.tasks(task_screen())[0]
+        r.recover_task = Mock(return_value=task_screen())
+        self.assertIs(r._refresh_after_success(task), r.recover_task.return_value)
+        r.recover_task.assert_called_once_with(task)
+        r.recover_task.reset_mock()
+        r.read.side_effect = Stopped()
+        with self.assertRaises(Stopped): r._refresh_after_success(task)
+        r.recover_task.assert_not_called()
+
     def test_new_offer_is_executed_in_the_same_run(self):
         r = self.runner()
         r.config['skip_task_keywords'] = []  # exercise dynamic offers, independent of text policy

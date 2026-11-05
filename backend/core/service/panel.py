@@ -401,7 +401,11 @@ class Controller(ActivityPipeline, PreviewWorker):
                     raise ValueError('auto_open 必须为布尔值')
                 if not defer_instances and action in ('run', 'scan', 'select_instance') and self.state['app_instances']:
                     known = {item['id'] for item in self.state['app_instances']}
-                    ids = payload.get('instance_ids', [payload.get('instance_id') or self.state['selected_instance']])
+                    fallback_ids = ([payload['instance_id']] if payload.get('instance_id') else
+                                    [row['id'] for row in self.state['app_instances']]
+                                    if action == 'run' and payload.get('all_instances', self.state.get('all_instances', False))
+                                    else [self.state['selected_instance']])
+                    ids = payload.get('instance_ids', fallback_ids)
                     if (not isinstance(ids, list) or not 1 <= len(ids) <= 16
                             or any(not isinstance(i, str) or i not in known for i in ids)
                             or len(ids) != len(set(ids))):
