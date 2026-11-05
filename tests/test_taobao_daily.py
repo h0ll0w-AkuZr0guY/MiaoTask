@@ -2,6 +2,7 @@ from backend.core.execution.loop import SessionLoop
 """Daily activities reuse the existing API across phone, tablet and landscape."""
 from pathlib import Path
 from types import SimpleNamespace
+import re
 import unittest
 from unittest.mock import Mock, patch
 
@@ -122,7 +123,9 @@ class TaobaoDailyTests(unittest.TestCase):
         self.assertIs(runner.ensure_list(auto_open=True),top)
         self.assertEqual(runner.device.swipe.call_count,2) # move then prove unchanged
         x,y1,_,y2 = runner.device.swipe.call_args.args
-        self.assertGreater(x,1800*.55)
+        # 滑动只要求落在列表列宽内、方向朝下（内容往上回）；具体 x 不必绑定
+        # 任务行的中心——屏上只剩一两行时那个中心会跑到按钮上。
+        self.assertTrue(0 < x < 1800)
         self.assertLess(y1,y2)
         runner.device.swipe.reset_mock()
         self.assertIs(runner.recover(),lower)
@@ -1134,6 +1137,9 @@ class RescanRestartTests(unittest.TestCase):
         def go_home(self):
             self.events.append('home')
 
+        def go_back(self):
+            self.events.append('back')
+
         def stop_app(self, package):
             if self.fail_on == 'stop':
                 raise RuntimeError('force-stop 不被允许')
@@ -1148,6 +1154,8 @@ class RescanRestartTests(unittest.TestCase):
         runner.origin = 'com.taobao.taobao'
         runner.device = self.Device(events)
         page = screen_of('更多金币等你赚', '浏览精选店铺', '去完成')
+        # leave_list 先看到列表、退出后看到活动首页，才算“真的离开了列表”。
+        runner.read_page = Mock(side_effect=[page, screen_of('去赚金币')])
         runner.ensure_list = Mock(side_effect=lambda **kw: events.append('list') or page)
         runner.ensure_expanded = Mock(side_effect=lambda screen, force=False: screen)
         runner.runnable_rows = Mock(return_value=[SimpleNamespace(title='浏览精选店铺')])
@@ -1162,9 +1170,15 @@ class RescanRestartTests(unittest.TestCase):
                                   ('start', 'com.taobao.taobao'), 'list'])
 
     def test_restart_can_be_switched_off(self):
+        """关掉客户端重启不等于不做“重新进入”：仍要先退出列表再重开。
+
+        新版本默认就是关着的，而 navigate 看到当前已在列表会直接返回，所谓
+        「重新进入列表确认没有可执行任务」会变成把旧页面再读一遍，服务端
+        这一分钟刷新出来的进度一条都拿不到——11-05 真机上就是这样收工的。
+        """
         runner, events = self.runner(rescan_restart_app=False)
         self.assertEqual(runner.rescan(), runner.SCAN_FOUND)
-        self.assertEqual(events, ['list'])
+        self.assertEqual(events, ['back', 'list'])
 
     def test_restart_budget_limits_repeated_cold_starts(self):
         runner, events = self.runner(rescan_restart_max=1)
@@ -1179,9 +1193,9 @@ class RescanRestartTests(unittest.TestCase):
     def test_restart_failure_still_scans_current_page(self):
         runner, events = self.runner()
         runner.device.fail_on = 'stop'
-        # 强停失败不能把整轮补扫搞崩：用当前页面继续扫，结论仍然严格判定
+        # 强停失败不能把整轮补扫搞崩：退出列表后重进，结论仍然严格判定
         self.assertEqual(runner.rescan(), runner.SCAN_FOUND)
-        self.assertEqual(events, ['home', 'list'])
+        self.assertEqual(events, ['home', 'back', 'list'])
 
     def test_run_resets_the_restart_budget(self):
         runner, events = self.runner(rescan_restart_max=1)
@@ -1206,6 +1220,9 @@ class RescanLoopTests(unittest.TestCase):
 
         def fake_run(auto_open=False):
             if progress:
+                # progress_mark() 只看“定案记录”，不看尝试次数；每轮真的做完
+                # 一条任务就要留下一条记录，否则会被当成“轮轮空转”。
+                runner.records[f'k{runner.stats.attempts}'] = {'status': 'done', 'title': 't'}
                 runner.stats.attempts += 1
             return None
         runner._fake_run = fake_run
@@ -1243,6 +1260,77 @@ class RescanLoopTests(unittest.TestCase):
         with patch.object(Activity, 'run', side_effect=runner._fake_run):
             runner.run()
         self.assertEqual(runner.stats.attempts, 1)
+
+    def test_keeps_going_past_the_round_budget_while_rounds_still_progress(self):
+        # 淘宝的任务是一批一批刷出来的：只要每轮都真的推得动，就说明列表里还有
+        # 活可干。按“到 3 轮就收工”硬停，界面上会留下一条条还能做的任务。
+        runner = self.runner_with(['found'] * 40, progress=True)
+        runner.config['daily_page'] = dict(runner.config['daily_page'], rescan_rounds=3)
+        with patch.object(Activity, 'run', side_effect=runner._fake_run):
+            runner.run()
+        self.assertGreaterEqual(runner.stats.attempts, 5)
+
+
+class PlainBrowseTaskTests(unittest.TestCase):
+    """描述里只写「浏览」、没写秒数的任务，必须照常做、照常重试。
+
+    淘宝新版把这些任务的时长省掉了（「发现精选好物」下方只有「浏览 +40」）。
+    早先的判定是“有浏览要求、没有时长 = 没法判断做没做成”，于是只允许今天试
+    一次：第一次没推进就整天不再做，任务直接漏掉。
+    """
+
+    @staticmethod
+    def row(title, detail, amount=None):
+        nodes = [TextNode(title, (60, 900, 620, 950)),
+                 TextNode(detail, (60, 955, 300, 995))]
+        if amount:
+            nodes.append(TextNode(amount, (330, 955, 420, 995)))
+        nodes.append(TextNode('去完成', (820, 915, 980, 975)))
+        return Screen(nodes, 1080, 2400, 'com.taobao.taobao')
+
+    def test_task_without_any_duration_is_not_locked_to_one_try(self):
+        runner = make_daily_runner()
+        rows = runner.tasks(self.row('发现精选好物 (4/6)', '浏览', '+40'))
+        self.assertEqual(len(rows), 1)
+        task = rows[0]
+        self.assertEqual(task.title, '发现精选好物')
+        self.assertEqual(task.kind, 'browse')
+        self.assertFalse(getattr(task, 'browse_once', False))
+
+    def test_task_with_a_stated_duration_keeps_its_seconds(self):
+        runner = make_daily_runner()
+        rows = runner.tasks(self.row('看看你关注的新品动态 (0/1)', '浏览5秒', '+20'))
+        self.assertEqual(rows[0].seconds, 5)
+        self.assertFalse(getattr(rows[0], 'browse_once', False))
+
+    def test_title_noun_does_not_skip_a_plain_browse_task(self):
+        # 标题里的“关注”只是“你关注的新品”这个名词的一部分，描述写的是浏览。
+        runner = make_daily_runner()
+        task = Task('a', '看看你关注的新品动态', '浏览5秒 +20', '去完成', (820, 915, 980, 975),
+                    0, 1, 5, 'browse')
+        self.assertEqual(runner.availability_reason(task), '')
+
+    def test_a_real_action_word_in_the_detail_still_skips(self):
+        runner = make_daily_runner()
+        for detail in ('下单得 +300', '完成带图评价得 +100', '浏览后下单再得 +50'):
+            with self.subTest(detail=detail):
+                task = Task('b', '买限时折扣好物得奖励', detail, '去完成', (820, 915, 980, 975),
+                            0, 1, 0, 'browse')
+                self.assertIn('命中常驻关键词', runner.availability_reason(task))
+
+    def test_action_style_title_still_skips_even_with_a_browse_detail(self):
+        # 「关注店铺」是真的要你去关注，跟「你关注的新品」这种名词不是一回事。
+        runner = make_daily_runner()
+        task = Task('d', '关注店铺', '浏览5秒', '去完成', (820, 915, 980, 975),
+                    0, 1, 5, 'browse')
+        self.assertIn('命中常驻关键词', runner.availability_reason(task))
+
+    def test_policy_choice_still_wins_over_the_browse_exception(self):
+        runner = make_daily_runner()
+        task = Task('c', '看看你关注的新品动态', '浏览5秒 +20', '去完成', (820, 915, 980, 975),
+                    0, 1, 5, 'browse')
+        runner.task_policy.choose(task_identity(task), skip=True)
+        self.assertIn('用户选择', runner.availability_reason(task))
 
 
 class RescanReidentifyTests(unittest.TestCase):
@@ -1713,6 +1801,49 @@ class MaintainerSafetyTests(unittest.TestCase):
         runner.device.swipe.assert_not_called()
         runner.click.assert_not_called()
 
+    def test_storefront_poster_code_word_is_not_a_security_challenge(self):
+        """搜索页商品主图印着“需要验证码?不上号”，不是安全验证。
+
+        真机 2026-11-05 12:02：「搜一搜你心仪的宝贝」做到 4/6 时整轮停止，
+        失败截图是一张商品图，图上就印着这句话（OCR 读到的，控件树里没有）。
+        桌面版把 core 打进 exe，词表换不掉，只能靠活动包先把它摘出去。
+        """
+        old_core = re.compile(r'滑块|拖动.{0,8}验证|安全验证|请完成验证|验证码|人机验证|'
+                              r'操作过于频繁|账号存在风险|访问被拒绝|'
+                              r'将满足描述的所有图片拖放到指定区域')
+        page = screen_of('浏览10秒可领 20金币', '小红书薯币充值', '需要验证码?不上号',
+                         '24小时自动秒充秒到！')
+        self.assertTrue(old_core.search(page.text))
+        runner = make_daily_runner()
+        with patch('backend.core.execution.guard._SECURITY', old_core):
+            runner.guard(page)
+
+    def test_old_core_still_stops_on_a_real_code_page(self):
+        """净化只摘货架文案：带“输入/获取”动作的真验证页必须仍然停。"""
+        old_core = re.compile(r'滑块|拖动.{0,8}验证|安全验证|请完成验证|验证码|人机验证|'
+                              r'操作过于频繁|账号存在风险|访问被拒绝|'
+                              r'将满足描述的所有图片拖放到指定区域')
+        runner = make_daily_runner()
+        with patch('backend.core.execution.guard._SECURITY', old_core):
+            for label in ('请输入验证码', '获取验证码', '验证码错误，请重新输入'):
+                with self.assertRaises(NeedsAttention):
+                    runner.guard(screen_of(label))
+
+    def test_horizontal_swipe_hint_is_not_a_challenge(self):
+        """商品页/内容页的“向右滑动查看”是引导语，不是滑块验证。
+
+        之前词表里只写了“向右滑动”，撞上详情页的引导语就整轮停；真验证页
+        一定还带着“验证/拼图”，所以现在要求两者共现。
+        """
+        runner = make_daily_runner()
+        for text in ('向右滑动查看', '向右滑动查看更多商品', '左右滑动切换'):
+            runner.guard(screen_of(text, '当前页下单再得 500 金币'))
+        with self.assertRaises(NeedsAttention):
+            runner.guard(screen_of('向右滑动验证'))
+        with self.assertRaises(NeedsAttention):
+            runner.guard(screen_of('亲，请拖动下方滑块完成验证', '通过验证以确保正常访问'))
+
+
     def test_rescan_propagates_stop_auth_and_identity_errors(self):
         from backend.core.errors import Stopped
         from backend.core.device.instances import InstanceMismatch
@@ -1769,3 +1900,110 @@ class RescanPersistenceBoundaryTests(unittest.TestCase):
         runner.tasks = Mock(return_value=[task])
         runner.availability_reason = Mock(return_value='今日已确认不可用')
         self.assertEqual(runner.runnable_rows(screen_of('更多金币等你赚')), [])
+
+
+class CoinLandingStrayCrossTests(unittest.TestCase):
+    """真机 2026-11-05 11:38：淘金币首页上「去赚金币」就在屏幕里，却报「未识别到
+    任务页」。现场是定位阶段一分钟里点了 8 次「关闭弹窗：X」——工具栏的音效图标
+    和商品标题里的乘号都被读成 X，定位预算全耗在它们身上，入口一次都没点到。"""
+
+    PACKAGE = 'com.taobao.taobao'
+
+    def runner(self):
+        return TaobaoDailyTests().runner()
+
+    def landing(self):
+        return Screen([
+            TextNode('升级赛车拿钱', (213, 894, 867, 1041), 'ocr'),
+            TextNode('回日常版', (1017, 453, 1080, 618), 'ocr'),
+            TextNode('去赚金币', (0, 894, 216, 1041), 'ocr'),
+            TextNode('关闭音效', (870, 138, 954, 222), 'ocr'),
+            TextNode('更多', (969, 138, 1053, 222), 'ocr'),
+            # 音效图标被 OCR 打成一个 X，右侧紧挨着「更多」
+            TextNode('X', (912, 150, 952, 210), 'ocr'),
+            # 商品标题「运动户外×抵扣券」中间的乘号，左右都是正文
+            TextNode('运动户外', (300, 1700, 520, 1760), 'ocr'),
+            TextNode('×', (540, 1700, 580, 1760), 'ocr'),
+            TextNode('抵扣券', (600, 1700, 900, 1760), 'ocr'),
+        ], 1080, 2400, self.PACKAGE, 'ocr')
+
+    def panel(self):
+        return Screen([TextNode('今日速赚210淘金币', (60, 250, 800, 330), 'ocr'),
+                       TextNode('更多金币等你赚', (100, 2000, 600, 2060), 'ocr'),
+                       TextNode('去完成', (900, 700, 1050, 780), 'ocr')],
+                      1080, 2400, self.PACKAGE, 'ocr')
+
+    def test_cross_inside_product_text_and_toolbar_icon_are_not_closers(self):
+        runner = self.runner()
+        page = self.landing()
+        self.assertTrue(page.find('升级赛车拿钱'))
+        self.assertIsNone(runner.popup_close_node(page))
+        runner.click = Mock()
+        self.assertIsNone(runner.dismiss_popup(page))
+        self.assertFalse(runner.dismiss_overlay(page))
+        runner.click.assert_not_called()
+
+    def test_navigation_walks_past_the_stray_cross_and_opens_the_entry(self):
+        runner = self.runner()
+        landing, panel = self.landing(), self.panel()
+        runner.device.current_app = Mock(return_value={'package': self.PACKAGE})
+        runner.read_page = Mock(side_effect=[landing, panel])
+        runner.click = Mock()
+        runner.control.wait = Mock()
+        self.assertIs(runner.navigate(auto_open=True), panel)
+        clicked = [call.args[0] for call in runner.click.call_args_list]
+        self.assertEqual([n.text for n in clicked], ['去赚金币'])
+
+    def test_close_that_changes_nothing_is_never_clicked_twice(self):
+        runner = self.runner()
+        close = TextNode('X', (900, 300, 960, 360), 'ocr')
+        page = Screen([TextNode('恭喜获得奖励', (200, 900, 800, 980), 'ocr'), close],
+                      1080, 2400, self.PACKAGE, 'ocr')
+        # 只有金币数字在跳，内容其实一点没变：同一个 X 不能一直点。
+        same = Screen([TextNode('恭喜获得奖励', (200, 900, 800, 980), 'ocr'),
+                       TextNode('X', (900, 300, 960, 360), 'ocr'),
+                       TextNode('22555', (40, 250, 200, 300), 'ocr')],
+                      1080, 2400, self.PACKAGE, 'ocr')
+        runner.click = Mock()
+        runner.control.wait = Mock()
+        from unittest.mock import patch as _patch
+        with _patch.object(Session, 'read', return_value=same):
+            self.assertIsNone(runner.dismiss_popup(page))
+            self.assertEqual(runner.click.call_count, 1)
+            self.assertIsNone(runner.dismiss_popup(page))
+        self.assertEqual(runner.click.call_count, 1)
+
+    def test_dismiss_budget_stops_the_loop_and_leaves_room_for_the_entry(self):
+        runner = self.runner()
+        page = Screen([TextNode('恭喜获得奖励', (200, 900, 800, 980), 'ocr'),
+                       TextNode('X', (900, 300, 960, 360), 'ocr')],
+                      1080, 2400, self.PACKAGE, 'ocr')
+        runner.click = Mock()
+        runner._dismiss_count = runner.DISMISS_LIMIT
+        self.assertIsNone(runner.dismiss_popup(page))
+        self.assertFalse(runner.dismiss_overlay(page))
+        runner.click.assert_not_called()
+
+    def test_entry_label_survives_trailing_ocr_symbols(self):
+        runner = self.runner()
+        for label in ('去赚金币', '去赚金币|', '去赚金币>', '去赚金币,'):
+            with self.subTest(label=label):
+                node = TextNode(label, (0, 894, 216, 1041), 'ocr')
+                screen = Screen([node], 1080, 2400, self.PACKAGE, 'ocr')
+                self.assertIs(runner.entry_node(screen, runner.config['task_entry_labels']), node)
+
+    def test_entry_falls_back_to_native_tree_when_ocr_drops_the_label(self):
+        runner = self.runner()
+        # 画面上只认出「升级赛车拿钱」，入口文字被 OCR 整块丢掉
+        landing = Screen([TextNode('升级赛车拿钱', (213, 894, 867, 1041), 'ocr')],
+                         1080, 2400, self.PACKAGE, 'ocr')
+        native = Screen([TextNode('去赚金币', (0, 894, 216, 1041), 'ui')],
+                        1080, 2400, self.PACKAGE, 'ui')
+        panel = self.panel()
+        runner.device.current_app = Mock(return_value={'package': self.PACKAGE})
+        runner.read_page = Mock(side_effect=[landing, panel])
+        runner.click = Mock()
+        runner.control.wait = Mock()
+        with patch.object(Session, 'read', return_value=native):
+            self.assertIs(runner.navigate(auto_open=True), panel)
+        self.assertEqual([c.args[0].text for c in runner.click.call_args_list], ['去赚金币'])
