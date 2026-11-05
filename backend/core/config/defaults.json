@@ -39,6 +39,8 @@
   "clear_clipboard": true,
   "browse_recheck_rounds": 3,
   "completion_return_ms": 1000,
+  "attention_settle_rounds": 2,
+  "attention_settle_seconds": 4,
   "task_search_keywords": [
     "123",
     "2026",

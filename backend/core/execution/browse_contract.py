@@ -24,5 +24,10 @@ def apply_browse_contract(task):
         if duration and int(duration[1]) > 0:
             task.seconds = int(duration[1])
         else:
-            task.browse_once = True
+            # 描述只写「浏览」不写秒数，是淘宝新版常见的省略写法（「发现精选好物」
+            # 下方只有「浏览 +40」），不代表“没法判断做没做成”。做没做成由进度
+            # 核验决定，跟时长无关；早先在这里挂 browse_once，等于给这类任务判了
+            # “今天只许试一次”，第一次没推进就整天不再做——任务直接漏掉。
+            # 时长交给执行侧的默认浏览时长兜底，重试次数交给 max_attempts。
+            task.browse_once = False
     return task
