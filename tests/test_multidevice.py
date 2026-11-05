@@ -35,6 +35,14 @@ class HubTests(unittest.TestCase):
             self.assertEqual(execute.call_args.args[1]['instance_ids'],['main','clone'])
             c._run_activity_pipeline('run',{'activities':plan,'all_instances':False},c.state['config'])
             self.assertEqual(execute.call_args.args[1]['instance_ids'],['main'])
+            # 显式提交的实例清单优先于自动兜底：单选分身不能被主应用覆盖，
+            # 勾选「全部分身」后手动排除的实例也不能被整表覆盖。
+            c._run_activity_pipeline('run',{'activities':plan,'all_instances':False,'instance_ids':['clone']},c.state['config'])
+            self.assertEqual(execute.call_args.args[1]['instance_ids'],['clone'])
+            c._run_activity_pipeline('run',{'activities':plan,'all_instances':True,'instance_ids':['clone']},c.state['config'])
+            self.assertEqual(execute.call_args.args[1]['instance_ids'],['clone'])
+            c._run_activity_pipeline('run',{'activities':plan,'all_instances':True,'instance_ids':['clone','main']},c.state['config'])
+            self.assertEqual(execute.call_args.args[1]['instance_ids'],['clone','main'])
         c.dispatch('configure',{'all_instances':True})
         self.assertTrue(c.snapshot()['all_instances'])
         with self.assertRaises(ValueError):c.dispatch('configure',{'all_instances':'true'})
