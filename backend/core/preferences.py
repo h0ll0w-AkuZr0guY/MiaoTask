@@ -12,7 +12,7 @@ import threading
 logger = logging.getLogger(__name__)
 
 PREFERENCES_FILE = 'preferences.json'
-OCR_CHOICES = ('auto', 'cpu', 'cuda')
+OCR_CHOICES = ('auto', 'cpu', 'cuda', 'dml')
 DEFAULTS = {
     # Empty string: follow system/HTTPS_PROXY; 'off' forces direct,
     # otherwise a validated http(s)://host:port proxy URL.
@@ -39,7 +39,7 @@ def _validate(values):
     result['download_proxy'] = proxy
     ocr_device = values.get('ocr_device', DEFAULTS['ocr_device'])
     if not isinstance(ocr_device, str) or ocr_device.strip().lower() not in OCR_CHOICES:
-        raise ValueError('OCR 后端只能是 auto、cpu 或 cuda')
+        raise ValueError('OCR 后端只能是 auto、cpu、cuda 或 dml')
     result['ocr_device'] = ocr_device.strip().lower()
     return result
 
