@@ -243,6 +243,19 @@ class GeometryTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             capture_display('Display 0:\n mDisplayId=0\n mPrimaryDisplayDevice=未知屏幕\n mLayerStack=0\n',0)
 
+    def test_display_mapping_accepts_compact_and_headerless_rom_formats(self):
+        compact = ('Display 0: mDisplayId=0 mPrimaryDisplayDevice=内置屏幕\n'
+                   'DisplayDeviceInfo{内置屏幕: uniqueId=local:17, 1080 x 2400}\n')
+        self.assertEqual(capture_display(compact, 0), '17')
+        headerless = ('mDisplayId=0\n'
+                      'mPrimaryDisplayDevice=内置屏幕\n'
+                      'DisplayDeviceInfo{"内置屏幕": uniqueId="local:18", 1080 x 2400}\n')
+        self.assertEqual(capture_display(headerless, 0), '18')
+
+    def test_single_physical_display_without_logical_mapping_is_safe(self):
+        dump = 'DisplayDeviceInfo{"内置屏幕": uniqueId="local:19", 1080 x 2400}\n'
+        self.assertEqual(capture_display(dump, 0), '19')
+
     def test_wide_ocr_tiles_cover_edges_without_stretching(self):
         image=Image.new('RGB',(1920,1080));tiles=ocr_tiles(image)
         self.assertEqual(tiles[0][1],0)

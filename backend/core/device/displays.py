@@ -33,6 +33,11 @@ def _logical_display_block(display_dump, logical_id):
                 and lines[index + 1].strip() == 'mDisplayId=%d' % logical_id:
             start = index
             break
+        if re.search(r'\bmDisplayId\s*=\s*%d\b' % logical_id, stripped):
+            # A few ROMs put the display id on the same line as the section
+            # header, or omit the "Display N:" header entirely.
+            start = index
+            break
     if start is None:
         return ''
     end = len(lines)
@@ -62,10 +67,19 @@ def capture_display(display_dump, logical_id):
         own_id = re.search(r'uniqueId[= ]"?local:(\d+)', own[1]) if own else None
         if own_id:
             return own_id[1]
-        named = re.search(r'mPrimaryDisplayDevice=([^\n(]+)', block)
+        named = re.search(r'mPrimaryDisplayDevice\s*=\s*([^\n(]+)', block)
         if named:
-            matches = set(re.findall(r'DisplayDeviceInfo\{"' + re.escape(named[1].strip())
-                                     + r'":[^\n]*?uniqueId="local:(\d+)"', display_dump))
+            name = re.escape(named[1].strip().strip('"'))
+            matches = set(re.findall(
+                r'DisplayDeviceInfo\{\s*["\']?' + name +
+                r'["\']?\s*:\s*[^\n]*?uniqueId\s*=\s*["\']?local:(\d+)',
+                display_dump))
             if len(matches) == 1:
                 return matches.pop()
+    # Single-display ROMs sometimes omit the primary-device name and the
+    # logical block entirely.  A unique physical id is still unambiguous.
+    physical_ids = set(re.findall(r'\blocal:(\d+)\b', display_dump))
+    if (not block and not re.search(r'\bmDisplayId\s*=', display_dump)
+            and len(physical_ids) == 1):
+        return physical_ids.pop()
     raise RuntimeError('无法映射当前应用屏幕，已停止截图和点击；请检查模拟器多屏状态')
