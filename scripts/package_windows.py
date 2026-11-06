@@ -15,6 +15,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parent.parent
 CUDA_PLUGIN_VERSION = '1.0'
+DML_PLUGIN_VERSION = '1.0'
 PORTABLE_DOCS = ('USAGE.md', 'CONFIGURATION.md', 'SAFETY.md', 'RELEASES.md', 'LICENSING.md')
 PROJECT_LICENSES = ('LICENSE', 'NOTICE')
 LICENSE_TEXT_SUFFIXES = {'', '.txt', '.md', '.rst', '.html', '.apache', '.bsd',
@@ -205,10 +206,80 @@ def selected_packages(catalog, choices, all_activities=False):
     return [available[name] for name in choices]
 
 
+def dml_plugin_archive(output):
+    """Package only DirectML-specific wheels from a separate locked DML environment."""
+    import sysconfig
+    from packaging.requirements import Requirement
+
+    def locked(path):
+        return {Requirement(line).name.lower().replace('_', '-'): Requirement(line)
+                for line in path.read_text(encoding='utf-8').splitlines()
+                if line.strip() and not line.startswith('#')}
+
+    cpu = locked(ROOT / 'requirements-windows.lock')
+    dml = locked(ROOT / 'configs/environments/requirements-dml.lock')
+    for name in cpu.keys() & dml.keys():
+        if cpu[name].specifier != dml[name].specifier:
+            raise ValueError('CPU/DML共有依赖不一致：' + name)
+    for name, requirement in dml.items():
+        if metadata.version(name) not in requirement.specifier:
+            raise ValueError('DML环境不符合锁定版本：' + name)
+    plugin_names = sorted(dml.keys() - cpu.keys())
+    if 'onnxruntime-directml' not in plugin_names:
+        raise ValueError('DML环境必须仅使用onnxruntime-directml')
+    if any(distribution.metadata['Name'].lower() == 'onnxruntime'
+           for distribution in metadata.distributions()):
+        raise ValueError('DML环境混装了CPU ORT，请使用独立环境')
+    runtime_version = metadata.version('onnxruntime-directml')
+    base = Path(sysconfig.get_paths()['purelib']).resolve()
+    # onnxruntime-directml follows its own version line (e.g. 1.24.4) and must
+    # not be forced to match the bundled CPU ORT release; the framework checks
+    # runtime_version instead of onnxruntime for kind='dml'.
+    manifest = dict(schema=1, kind='dml', version=DML_PLUGIN_VERSION,
+                    tested_with='MiaoTask-v0.2.2', python=f'{sys.version_info.major}.{sys.version_info.minor}',
+                    system=platform.system(), machine=platform.machine().lower(),
+                    runtime_version=runtime_version,
+                    runtime_package='onnxruntime-directml',
+                    packages={name: metadata.version(name) for name in plugin_names})
+    output = Path(output).resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    prefix = PurePosixPath('runtime_plugins/dml')
+    with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED, compresslevel=3) as archive:
+        archive.writestr(str(prefix / 'manifest.json'), json.dumps(manifest, indent=2))
+        archive.writestr(str(prefix / 'README.txt'),
+            f'MiaoTask DirectML扩展 v{DML_PLUGIN_VERSION}（AMD / Intel），不包含主程序。\n'
+            '退出MiaoTask托盘服务后，将本ZIP的runtime_plugins目录放到MiaoTask.exe旁。\n'
+            '重启服务，在高级选项选择「强制 DirectML（AMD / Intel 显卡）」。\n'
+            '移除扩展：退出服务后删除runtime_plugins/dml目录。不要覆盖_internal。\n'
+            '兼容：Windows x64、Python 3.13、MiaoTask v0.2.2；\n'
+            f'运行库 onnxruntime-directml {runtime_version}，与基础包CPU ORT版本线独立。\n'
+            '需要支持DirectX 12的显卡与较新驱动；AMD RX 6750 GRE 已实机验证，Intel 核显未验证。\n'
+            '无需安装Torch或CUDA Toolkit；装有CUDA扩展时必须显式选择DirectML，auto优先加载cuda。\n'
+            '更新主程序时可迁移相同兼容版本的runtime_plugins/dml目录，无需重复下载。\n'
+            '此扩展包含本地可执行代码，仅安装可信来源；兼容版本见manifest.json。\n')
+        seen = set()
+        for name in plugin_names:
+            distribution = metadata.distribution(name)
+            for entry in distribution.files or ():
+                path = Path(distribution.locate_file(entry)).resolve()
+                if not path.is_relative_to(base) or not path.is_file():
+                    continue
+                relative = path.relative_to(base)
+                if '__pycache__' in relative.parts or path.suffix == '.pyc':
+                    continue
+                member = str(prefix / 'python' / PurePosixPath(relative.as_posix()))
+                if member not in seen:
+                    archive.write(path, member)
+                    seen.add(member)
+    return manifest
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--cuda-plugin', metavar='ZIP',
                         help='Package the separate locked CUDA environment as a runtime overlay; no exe build')
+    parser.add_argument('--dml-plugin', metavar='ZIP',
+                        help='Package the separate locked DirectML environment as a runtime overlay; no exe build')
     parser.add_argument('--adb-dir', help='Folder containing adb.exe, DLLs and NOTICE.txt')
     parser.add_argument('--hdc-dir', help='Optional authorized HDC runtime folder')
     parser.add_argument('--skip-tests', action='store_true', help='Skip unit tests already run on this commit')
@@ -227,6 +298,11 @@ def main():
         if sys.platform != 'win32' or platform.machine().lower() not in ('amd64', 'x86_64'):
             parser.error('CUDA overlay currently supports Windows x64 only')
         print(json.dumps(cuda_plugin_archive(args.cuda_plugin), indent=2))
+        return
+    if args.dml_plugin:
+        if sys.platform != 'win32' or platform.machine().lower() not in ('amd64', 'x86_64'):
+            parser.error('DirectML overlay currently supports Windows x64 only')
+        print(json.dumps(dml_plugin_archive(args.dml_plugin), indent=2))
         return
     if args.framework_only and (args.preinstall_all or args.preinstall_activity or args.include_activities):
         parser.error('Pure framework cannot be combined with activity selections')
