@@ -228,3 +228,16 @@ class CatalogOpeningLatencyTests(unittest.TestCase):
             finally:
                 release.set()
                 hub.catalog_refresh_thread.join(3)
+
+
+class IdlePreviewBudgetTests(unittest.TestCase):
+    def test_attention_view_does_not_recapture_twice_per_second(self):
+        from backend.core.service.preview import PreviewWorker
+        worker = PreviewWorker()
+        worker._preview_stop = Mock(); worker._preview_stop.wait.side_effect = [False, True]
+        worker._last_client_seen = 100; worker._preview_last = 98
+        worker.state = {'status': 'needs_attention'}
+        worker.device = Mock(); worker.lock = threading.RLock()
+        with patch('backend.core.service.preview.time.monotonic', return_value=100):
+            worker._preview_loop()
+        worker.device.screenshot.assert_not_called()

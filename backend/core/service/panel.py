@@ -28,7 +28,7 @@ from backend.core.storage.namespace import StorageNamespace
 from backend.core.service.security import allowed_host, allowed_write
 from backend.core.service.static import static_response
 from backend.core.storage.daily_state import DailyState, local_day
-from backend.core.device.instances import AppInstance, InstanceMismatch
+from backend.core.device.instances import ObservationUnavailable, AppInstance, InstanceMismatch
 from backend.core.service.notify import notify_security_attention
 from backend.core.runtime import data_dir, version
 from backend.core.context import device_scoped
@@ -485,11 +485,19 @@ class Controller(ActivityPipeline, PreviewWorker):
                 if getattr(self, 'claim_device', None):
                     options['on_resolved'] = self.claim_device
                 device = DeviceAdapter(kind, serial, **options)
-                info = device.current_app()
-                self.control.check()
-                initial_image = device.screenshot()
-                self.on_image(initial_image)
-                width, height = initial_image.size
+                try:
+                    info = device.current_app()
+                    self.control.check()
+                    initial_image = device.screenshot()
+                    self.on_image(initial_image)
+                    width, height = initial_image.size
+                except ObservationUnavailable:
+                    # Discovery/lease already confirmed the transport. A first
+                    # preview is optional; task input still requires fresh focus.
+                    self.control.check()
+                    info = {}
+                    width = height = 0
+                    self.log('INFO', '设备已连接，窗口暂未就绪；开始执行后自动恢复并重新核定')
                 self.device = device
                 device.preview_managed = True
                 self._ensure_daily()
@@ -654,7 +662,8 @@ class Controller(ActivityPipeline, PreviewWorker):
                             # gain access on a restricted device.
                             self.log('INFO', '当前设备未能清空剪贴板，已继续执行；如出现链接弹窗请手动关闭')
                         self.control.check()
-                    runner.run(auto_open=auto_open)
+                    from backend.core.execution.loop import run_with_observation_recovery
+                    run_with_observation_recovery(runner, auto_open=auto_open)
             if (action == 'run' and getattr(runner, 'daily_exhausted', False) is True
                     and started_daily is not None and self.daily is started_daily and started_daily.date == local_day()):
                 started_daily.mark_activity_finished()
@@ -662,7 +671,8 @@ class Controller(ActivityPipeline, PreviewWorker):
                 runner.reset_task_marks()
                 self.log('INFO', '清理任务标记后复查一次，累计统计保留')
                 with (self.device.instance_session() if instance_id else nullcontext()), device_comfort(self.device, config, notify=self.log):
-                    runner.run(auto_open=True)
+                    from backend.core.execution.loop import run_with_observation_recovery
+                    run_with_observation_recovery(runner, auto_open=True)
                 if started_daily is not None:
                     started_daily.mark_activity_finished(bool(getattr(runner, 'daily_exhausted', False)))
             self._persist_state()

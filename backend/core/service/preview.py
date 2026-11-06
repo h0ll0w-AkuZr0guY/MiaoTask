@@ -36,7 +36,13 @@ class PreviewWorker:
                 # Closed browser tabs have no preview consumer. The task worker
                 # still makes its own observations; idle phones stop capturing.
                 continue
-            if time.monotonic() - self._preview_last < .35:
+            # Idle/error workspaces must not flood Wi-Fi with full-resolution
+            # PNGs while another device is executing. Running tasks publish
+            # their own frames; an error view needs only occasional refresh.
+            status = getattr(self, 'state', {}).get('status')
+            interval = 4 if status in ('needs_attention', 'error', 'stopped') else 1.5
+            interval = max(interval, min(8, 2 ** min(3, getattr(self, '_preview_failures', 0))))
+            if time.monotonic() - self._preview_last < interval:
                 continue
             with self.lock:
                 device = self.device

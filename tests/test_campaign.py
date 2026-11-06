@@ -2527,3 +2527,82 @@ class SerialBrowseProtocolTests(unittest.TestCase):
         self.assertLess(clock[0],3);r.read.assert_not_called()
 if __name__ == '__main__':
     unittest.main()
+
+
+class FinalMilestoneSweepTests(unittest.TestCase):
+    def test_final_sweep_claims_each_visible_card_and_verifies_it(self):
+        from types import SimpleNamespace
+        from backend.core.models import Task
+        r = CampaignRunner.__new__(CampaignRunner)
+        r.config = dict(claim_rewards=True, enabled_task_kinds=['claim'], max_tasks=80)
+        r.stats = SimpleNamespace(attempts=0, claims=0)
+        a = Task('milestone-2', '累计奖励', '', '立即领取', (0, 0, 10, 10), kind='claim')
+        b = Task('milestone-6', '累计奖励', '', '立即领取', (20, 0, 30, 10), kind='claim')
+        screen = SimpleNamespace(nodes=[])
+        r.control = Mock(); r.guard = Mock(); r.ensure_list = Mock(return_value=screen)
+        r.is_task_list = Mock(return_value=True); r.tasks = Mock(side_effect=[[a, b], [b], []])
+        r.task_policy = Mock(); r.task_policy.reason.return_value = ''
+        r.records = {a.key: {}, b.key: {}}
+        r.remember = Mock(); r.update = Mock(); r.execute = Mock(return_value=(screen, False, False))
+        r.verify = Mock(return_value=True); r._refresh_after_success = Mock(return_value=screen)
+        r.return_to_home(screen)
+        self.assertEqual(r.stats.claims, 2)
+        self.assertEqual(r.verify.call_count, 2)
+        r.config['claim_rewards'] = False
+        r.ensure_list.reset_mock(); r.return_to_home(screen)
+        r.ensure_list.assert_not_called()
+
+
+class ObservationRecoveryTests(unittest.TestCase):
+    def runner(self):
+        from types import SimpleNamespace
+        r = Mock(); r.target_instance = AppInstance('org.example.shop', 999, 'clone')
+        r.records = {'a': {'status': 'done'}, 'b': {'status': 'running'}}
+        r.stats = SimpleNamespace(completed=7)
+        return r
+
+    def test_lost_metadata_resumes_then_restarts_same_instance_and_keeps_progress(self):
+        from backend.core.device.instances import ObservationUnavailable
+        from backend.core.execution.loop import run_with_observation_recovery
+        r = self.runner(); r.run.side_effect = [ObservationUnavailable('temporary')] * 2 + [{'completed': 7}]
+        self.assertEqual(run_with_observation_recovery(r), {'completed': 7})
+        r.device.resume_app.assert_called_once_with('org.example.shop')
+        r.device.restart_app.assert_called_once_with('org.example.shop')
+        self.assertEqual(r.records['a']['status'], 'done')
+        self.assertEqual(r.records['b']['status'], 'pending')
+        self.assertEqual(r.stats.completed, 7)
+        self.assertEqual(r.run.call_args.kwargs['auto_open'], True)
+
+    def test_real_identity_conflict_and_security_are_not_restarted(self):
+        from backend.core.execution.loop import run_with_observation_recovery
+        for error in (InstanceMismatch('wrong user'), NeedsAttention('security', kind='security'), Stopped()):
+            r = self.runner(); r.run.side_effect = error
+            with self.assertRaises(type(error)):run_with_observation_recovery(r)
+            r.device.resume_app.assert_not_called(); r.device.restart_app.assert_not_called()
+
+    def test_persistent_transport_loss_has_only_two_recovery_attempts(self):
+        from backend.core.device.instances import ObservationUnavailable
+        from backend.core.execution.loop import run_with_observation_recovery
+        r = self.runner(); r.run.side_effect = ObservationUnavailable('offline')
+        with self.assertRaises(ObservationUnavailable):run_with_observation_recovery(r)
+        self.assertEqual(r.run.call_count, 3)
+        self.assertEqual(r.device.restart_app.call_count, 1)
+
+
+class ObservationProgressRecoveryTests(unittest.TestCase):
+    def test_verified_progress_reopens_consecutive_recovery_budget(self):
+        from backend.core.device.instances import ObservationUnavailable
+        from backend.core.execution.loop import run_with_observation_recovery
+        r = ObservationRecoveryTests().runner()
+        calls = [0]
+        def run(**kwargs):
+            calls[0] += 1
+            if calls[0] == 3:
+                r.stats.completed += 1
+            if calls[0] < 4:
+                raise ObservationUnavailable('temporary')
+            return {'completed': r.stats.completed}
+        r.run.side_effect = run
+        self.assertEqual(run_with_observation_recovery(r), {'completed': 8})
+        self.assertEqual(r.device.resume_app.call_count, 2)
+        self.assertEqual(r.device.restart_app.call_count, 1)

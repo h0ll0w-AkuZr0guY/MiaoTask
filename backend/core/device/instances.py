@@ -24,7 +24,31 @@ class InstanceMismatch(RuntimeError):
     evidence_saved = False
 
 
+class ObservationUnavailable(InstanceMismatch):
+    """Temporary missing metadata, distinct from a proven wrong identity."""
+    kind = 'observation'
+
+
+def focused_notification(output):
+    """Identify transient notification surfaces, not arbitrary foreign apps.
+
+    Only the current focused window is examined; background notification
+    windows and message content are never foreground identity evidence.
+    """
+    if not isinstance(output, str):
+        return False
+    focus = re.search(r'mCurrentFocus\s*=\s*Window\{([^\r\n}]+)', output)
+    if not focus:
+        return False
+    title = focus[1]
+    return bool(re.search(r'NotificationShade|HeadsUp|Heads.?up|FloatingNotification|'
+                          r'NotificationPopup|PopupNotification|StatusBar(?![A-Za-z])', title, re.I))
+
+
 def parse_foreground(output):
+    # Never borrow the underlying focused app while a notification owns focus.
+    if focused_notification(output):
+        return None
     # Window focus is the visible surface, not any background activity record.
     patterns = (
         r'mCurrentFocus=Window\{[^\n]*?\bu(\d+)\s+([\w.]+)/([\w.$]+)',

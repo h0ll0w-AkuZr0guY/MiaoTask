@@ -1,0 +1,38 @@
+# Optional Windows x64 / Python 3.13 DirectML environment; CPU base remains unchanged.
+# Shares every CPU dependency version with requirements-windows.lock. The only
+# GPU-specific wheel is onnxruntime-directml, whose version line is independent
+# from the bundled CPU onnxruntime (see runtime_version in the overlay manifest).
+PyYAML==6.0.3
+adbutils==2.12.0
+altgraph==0.17.5
+certifi==2026.7.22
+charset-normalizer==3.5.2
+colorama==0.4.6
+colorlog==6.12.0
+decorator==5.3.1
+deprecation==2.1.0
+flatbuffers==25.12.19
+hmdriver2==1.4.4
+idna==3.20
+lxml==5.4.0
+numpy==2.5.4
+omegaconf==2.4.0
+onnxruntime-directml==1.24.4
+opencv-python-headless==5.0.0.93
+packaging==26.3
+pefile==2024.8.26
+pillow==13.0.0
+protobuf==7.36.2
+pyclipper==1.4.0
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.8
+pywin32-ctypes==0.2.3
+rapidocr==3.10.0
+requests==2.34.2
+retry2==0.9.5
+setuptools==84.0.0
+shapely==2.2.0
+six==1.17.0
+tqdm==4.70.1
+uiautomator2==3.5.2
+urllib3==2.8.0

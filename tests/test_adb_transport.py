@@ -292,7 +292,7 @@ class SwipeFallbackTests(unittest.TestCase):
             channel.return_value.__enter__.return_value = connection
             self.assertEqual(adapter._capture_jpeg(45), b'image')
             client.assert_called_once_with(socket_timeout=3)
-            connection.sock.settimeout.assert_called_once_with(5)
+            connection.sock.settimeout.assert_called_once_with(8)
             payload = json.loads(connection.request.call_args.args[2])
             self.assertEqual((payload['method'],payload['params']),('takeScreenshot',[1,45]))
 
@@ -445,7 +445,7 @@ class SwipeFallbackTests(unittest.TestCase):
             shell.return_value.side_effect = TimeoutError('synthetic timeout')
             with self.assertRaisesRegex(InstanceMismatch, '读取超时或断流') as raised:
                 device.capture_observation(compressed=True)
-        self.assertEqual(shell.call_args.kwargs['budget'], 5)
+        self.assertEqual(shell.call_args.kwargs['budget'], 8)
         self.assertLessEqual(shell.return_value.call_count, 6)
         self.assertEqual(raised.exception.capture_diagnostics[0], dict(query='displays', error='TimeoutError'))
         device._capture_jpeg.assert_not_called()
@@ -474,6 +474,33 @@ class SwipeFallbackTests(unittest.TestCase):
             with self.assertRaises(Stopped):
                 device.capture_observation(compressed=True)
         device._capture_jpeg.assert_not_called()
+
+    def test_input_focus_uses_same_recovery_and_ignores_old_identity(self):
+        device = self.focus_adapter()
+        device._foreground_package = ('org.example.old', 999)
+        focused = {'package': 'org.example.new', 'user_id': 0}
+        device._capture_focus = Mock(return_value=(focused, 'fresh window'))
+        self.assertEqual(device.current_app(), focused)
+        device._capture_focus.assert_called_once_with(None)
+        self.assertEqual(device._window_dump, 'fresh window')
+
+    def test_focus_channels_are_independent_across_devices(self):
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+        barrier = threading.Barrier(2)
+        devices = [self.focus_adapter(), self.focus_adapter()]
+        devices[0].serial, devices[1].serial = 'synthetic-one', 'synthetic-two'
+        def create(serial, **kwargs):
+            def query(args):
+                barrier.wait(timeout=3)
+                return SimpleNamespace(exit_code=0,
+                    output='mCurrentFocus=Window{abc u0 org.example.' + serial.replace('-', '') + '/.Main}')
+            return query
+        with patch('backend.core.device.read_shell.AdbReadShell', side_effect=create):
+            with ThreadPoolExecutor(2) as pool:
+                values = list(pool.map(lambda d: d.current_app(), devices))
+        self.assertEqual([v['package'] for v in values],
+                         ['org.example.syntheticone', 'org.example.synthetictwo'])
 
     def test_clipboard_clear_never_reads_contents_or_changes_ime(self):
         adapter = DeviceAdapter.__new__(DeviceAdapter)
@@ -565,3 +592,95 @@ class DirectAdbReadTests(unittest.TestCase):
         with patch('backend.core.device.read_shell.AdbReadShell',return_value=Mock(return_value=ReadResult('',1))):
             result=phone._read_metadata(['dumpsys','window','windows'])
         self.assertEqual(result.exit_code,1);phone._device.shell.assert_not_called()
+
+
+class WirelessFocusRecoveryTests(unittest.TestCase):
+    @patch('backend.core.device.read_shell.resolve_adb_binary', return_value='synthetic-adb')
+    def test_reconnect_is_targeted_and_never_restarts_adb_server(self, _adb):
+        from backend.core.device.read_shell import reconnect_offline_wireless
+        owner = Mock()
+        owner.run.side_effect = [SimpleNamespace(returncode=1), SimpleNamespace(returncode=0)]
+        self.assertTrue(reconnect_offline_wireless('192.0.2.1:5555', 3, owner))
+        self.assertEqual(owner.run.call_args_list[0].args[0][-3:], ['-s', '192.0.2.1:5555', 'get-state'])
+        self.assertEqual(owner.run.call_args_list[1].args[0][-2:], ['connect', '192.0.2.1:5555'])
+
+    @patch('backend.core.device.read_shell.resolve_adb_binary', return_value='synthetic-adb')
+    def test_live_transport_or_usb_is_not_reconnected(self, _adb):
+        from backend.core.device.read_shell import reconnect_offline_wireless
+        owner = Mock(); owner.run.return_value.returncode = 0
+        self.assertFalse(reconnect_offline_wireless('192.0.2.1:5555', 3, owner))
+        self.assertEqual(owner.run.call_count, 1)
+        owner.reset_mock()
+        self.assertFalse(reconnect_offline_wireless('synthetic-usb', 3, owner))
+        owner.run.assert_not_called()
+
+
+class CaptureStreamRecoveryTests(unittest.TestCase):
+    def test_stalled_jpeg_is_retried_once_with_fresh_identity(self):
+        device = DeviceAdapter.__new__(DeviceAdapter)
+        device.device_type = 'uiautomator2'; device._display_id = 0
+        device._capture_focus = Mock(side_effect=[({'package':'org.example.old'}, 'old'),
+                                                  ({'package':'org.example.fresh'}, 'fresh')])
+        raw = io.BytesIO(); Image.new('RGB', (20, 30)).save(raw, 'JPEG')
+        device._capture_jpeg = Mock(side_effect=[TimeoutError(), raw.getvalue()])
+        info, image = device.capture_observation(compressed=True)
+        self.assertEqual(info['package'], 'org.example.fresh')
+        self.assertEqual(image.size, (20, 30))
+        self.assertEqual(device._capture_focus.call_count, 2)
+        device._capture_focus.side_effect = None
+        device._capture_focus.return_value = ({'package':'org.example.fresh'}, 'fresh')
+        device._capture_jpeg.reset_mock()
+        device._capture_jpeg.side_effect = TimeoutError()
+        with self.assertRaises(TimeoutError):device.capture_observation(compressed=True)
+
+
+class NotificationFocusTests(unittest.TestCase):
+    def test_notification_waits_without_using_background_instance(self):
+        from backend.core.device.instances import parse_foreground
+        blocked = 'mCurrentFocus=Window{abc u0 NotificationShade}\nmFocusedApp=ActivityRecord{abc u999 org.example.shop/.Main}'
+        self.assertIsNone(parse_foreground(blocked))
+        d = SwipeFallbackTests().focus_adapter()
+        d._instance_guard_active = True
+        d.check_instance = Mock()
+        fresh = 'mCurrentFocus=Window{abc u0 org.example.shop/.Main}'
+        with patch('backend.core.device.read_shell.AdbReadShell') as shell, patch('backend.core.device.adapter.time.sleep'):
+            shell.return_value.side_effect = [SimpleNamespace(exit_code=0, output=blocked),
+                                               SimpleNamespace(exit_code=0, output=fresh)]
+            info, _ = d._capture_focus()
+        self.assertEqual(info['user_id'], 0)
+        d.check_instance.assert_called_once_with(info)
+        d._capture_jpeg.assert_not_called()
+
+    def test_background_notification_does_not_override_real_focus(self):
+        from backend.core.device.instances import focused_notification, parse_foreground
+        text = 'mCurrentFocus=Window{abc u0 org.example.shop/.Main}\nWindow{background u0 NotificationShade}'
+        self.assertFalse(focused_notification(text))
+        self.assertEqual(parse_foreground(text)['package'], 'org.example.shop')
+
+    def test_real_chat_activity_is_not_silently_ignored(self):
+        from backend.core.device.instances import focused_notification, parse_foreground
+        text = 'mCurrentFocus=Window{abc u0 org.example.messenger/.ChatActivity}'
+        self.assertFalse(focused_notification(text))
+        self.assertEqual(parse_foreground(text)['package'], 'org.example.messenger')
+
+    def test_persistent_notification_is_bounded_and_never_captured(self):
+        d = SwipeFallbackTests().focus_adapter()
+        with patch('backend.core.device.read_shell.AdbReadShell') as shell, patch('backend.core.device.adapter.time.sleep'):
+            shell.return_value.return_value = SimpleNamespace(exit_code=0,
+                output='mCurrentFocus=Window{abc u0 NotificationShade}')
+            with self.assertRaisesRegex(Exception, '通知窗口尚未消退'):
+                d.capture_observation(compressed=True)
+        self.assertLessEqual(shell.return_value.call_count, 32)
+        d._capture_jpeg.assert_not_called()
+
+
+class FocusGapGraceTests(unittest.TestCase):
+    def test_fast_empty_focus_does_not_abort_after_only_three_rounds(self):
+        d = SwipeFallbackTests().focus_adapter()
+        missing = SimpleNamespace(exit_code=0, output='mCurrentFocus=null\nmFocusedApp=null')
+        ready = SimpleNamespace(exit_code=0, output='mCurrentFocus=Window{abc u0 org.example.shop/.Main}')
+        with patch('backend.core.device.read_shell.AdbReadShell') as shell, patch('backend.core.device.adapter.time.sleep'):
+            shell.return_value.side_effect = [missing] * 8 + [ready]
+            info, _ = d._capture_focus()
+        self.assertEqual(info['package'], 'org.example.shop')
+        self.assertEqual(shell.return_value.call_count, 9)

@@ -374,3 +374,44 @@ class SessionLoop:
         self.update('finished', message=message, current_task='', remaining=0,
                     tasks=list(self.records.values()))
         return asdict(self.stats)
+
+
+def run_with_observation_recovery(runner, auto_open=False):
+    """Recover missing metadata; limit consecutive failures without progress."""
+    from backend.core.device.instances import AppInstance, ObservationUnavailable
+    retries, error = 0, None
+    def progress_of():
+        stats = getattr(runner, 'stats', None)
+        return (getattr(stats, 'completed', 0), getattr(stats, 'claims', 0))
+    progress = progress_of()
+    while True:
+        runner.control.check()
+        try:
+            if retries:
+                target = runner.target_instance
+                if not isinstance(target, AppInstance) or target.user_id is None:
+                    raise error
+                runner.update('recovering', message='窗口读取暂时失败，正在恢复所选应用并重新进入任务页')
+                if getattr(error, 'notification', False):
+                    runner.device.dismiss_notification_panel()
+                if retries == 1:
+                    runner.device.resume_app(target.package)
+                else:
+                    runner.device.restart_app(target.package)
+                runner._task_restart_used = False
+                auto_open = True
+            return runner.run(auto_open=auto_open)
+        except ObservationUnavailable as exc:
+            error = exc
+            current = progress_of()
+            if current != progress:
+                retries = 0
+                progress = current
+            runner.report_failure(str(exc), phase='recovering')
+            if retries >= 2 or not isinstance(runner.target_instance, AppInstance):
+                raise
+            retries += 1
+            logger.info('窗口元数据暂时不可用，第%d/2次自动恢复；保留已核验进度', retries)
+            for row in runner.records.values():
+                if row.get('status') == 'running':
+                    row.update(status='pending', reason='窗口读取中断，恢复后重新核验')

@@ -93,7 +93,8 @@ def main():
     runner = CampaignRunner(device, config, app=args.app, activity=args.activity)
     try:
         with device.instance_session():
-            result = runner.scan(args.auto_open) if args.scan else runner.run(args.auto_open)
+            from backend.core.execution.loop import run_with_observation_recovery
+            result = runner.scan(args.auto_open) if args.scan else run_with_observation_recovery(runner, args.auto_open)
         print(json.dumps(result, ensure_ascii=False, indent=2))
     except (NeedsAttention, Stopped, InstanceMismatch) as exc:
         parser.exit(2, f'{exc}\n')
