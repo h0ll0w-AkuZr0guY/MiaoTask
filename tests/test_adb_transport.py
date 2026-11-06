@@ -595,7 +595,8 @@ class DirectAdbReadTests(unittest.TestCase):
 
 
 class WirelessFocusRecoveryTests(unittest.TestCase):
-    def test_reconnect_is_targeted_and_never_restarts_adb_server(self):
+    @patch('backend.core.device.read_shell.resolve_adb_binary', return_value='synthetic-adb')
+    def test_reconnect_is_targeted_and_never_restarts_adb_server(self, _adb):
         from backend.core.device.read_shell import reconnect_offline_wireless
         owner = Mock()
         owner.run.side_effect = [SimpleNamespace(returncode=1), SimpleNamespace(returncode=0)]
@@ -603,7 +604,8 @@ class WirelessFocusRecoveryTests(unittest.TestCase):
         self.assertEqual(owner.run.call_args_list[0].args[0][-3:], ['-s', '192.0.2.1:5555', 'get-state'])
         self.assertEqual(owner.run.call_args_list[1].args[0][-2:], ['connect', '192.0.2.1:5555'])
 
-    def test_live_transport_or_usb_is_not_reconnected(self):
+    @patch('backend.core.device.read_shell.resolve_adb_binary', return_value='synthetic-adb')
+    def test_live_transport_or_usb_is_not_reconnected(self, _adb):
         from backend.core.device.read_shell import reconnect_offline_wireless
         owner = Mock(); owner.run.return_value.returncode = 0
         self.assertFalse(reconnect_offline_wireless('192.0.2.1:5555', 3, owner))
