@@ -1,4 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
+from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 import os
 import shutil
@@ -19,8 +20,20 @@ datas += application_data(root, include_activities)
 binaries = collect_dynamic_libs('onnxruntime')
 for package in ('uiautomator2', 'hmdriver2', 'rapidocr'):
     datas += collect_data_files(package)
+
+
+def metadata_name(name):
+    try:
+        distribution(name)
+        return name
+    except PackageNotFoundError:
+        if name == 'onnxruntime':
+            return 'onnxruntime-gpu'
+        raise
+
+
 for package in ('uiautomator2', 'hmdriver2', 'rapidocr', 'onnxruntime', 'numpy', 'Pillow'):
-    datas += copy_metadata(package, recursive=True)
+    datas += copy_metadata(metadata_name(package), recursive=True)
 
 for tool in ('adb', 'hdc'):
     supplied = os.environ.get(f'MIAO_{tool.upper()}_DIR')

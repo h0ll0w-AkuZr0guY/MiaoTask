@@ -10,12 +10,26 @@ import sys
 
 from backend.core.runtime import assets_dir, version
 
+# onnxruntime-gpu 提供同名 onnxruntime 模块，但发行包元数据名不同。
+_DISTRIBUTION_ALIASES = {'onnxruntime': ('onnxruntime', 'onnxruntime-gpu')}
+
+
+def _distribution_version(name):
+    names = _DISTRIBUTION_ALIASES.get(name, (name,))
+    for candidate in names:
+        try:
+            return importlib.metadata.version(candidate)
+        except importlib.metadata.PackageNotFoundError:
+            continue
+    raise importlib.metadata.PackageNotFoundError(
+        f'No package metadata was found for {" or ".join(names)}')
+
 
 def self_test(output, *, activity_package=None, activity_sha256=None):
     checks, errors = {}, []
     for name in ('uiautomator2', 'hmdriver2', 'rapidocr', 'onnxruntime', 'numpy', 'Pillow'):
         try:
-            checks[name] = importlib.metadata.version(name)
+            checks[name] = _distribution_version(name)
         except Exception as exc:
             errors.append(f'{name}: {exc}')
     for name in ('frontend/index.html', 'frontend/js/app.js', 'frontend/js/api.js',
