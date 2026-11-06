@@ -224,15 +224,16 @@ class IdleFishCoinsActivity(EntryPolicy, Activity):
         logger.info('点击任务：%s | 按钮=%s | 区域=%s', task.title, fresh.action, fresh.bounds)
         self.click(TextNode(fresh.action, fresh.bounds))
         if task.kind == 'claim':
-            # 领奖按钮响应快，1.2 秒足够；读一屏点掉「获得XX」弹窗就立刻
-            # 交给外层按实际回执与任务进度核验。
-            self.control.wait(1.2)
+            # 「领取奖励」按钮点掉后整行约 3 秒才消失，那是页面自己的刷新，
+            # 不需要脚本反复读屏核验，也不靠「领取成功/奖励已到账」等文案判定。
+            # 点的是确实存在的领取按钮即视为已领；读一屏只为顺手清掉气泡弹窗。
+            self.control.wait(float(self.config.get('claim_settle_seconds', 0.6)))
             screen = self.read()
             self.guard(screen)
-            explicit = bool(screen.find(DONE_PROMPT_RE))
+            self._completed_evidence = getattr(self, '_completed_evidence', set()) | {task.key}
             if self._dismiss_popups(screen):
                 screen = self.read()
-            return screen, explicit, False
+            return screen, True, False
         self.control.wait(2)
         screen = self.read()
         if task.kind == 'trade':
@@ -243,7 +244,7 @@ class IdleFishCoinsActivity(EntryPolicy, Activity):
         if task.kind == 'search':
             # 搜索类：进入搜索页后搜词并浏览
             screen, explicit = self._search_task(screen)
-            return self._claim_ready(task, self._return_to_list()), explicit, False
+            return self._claim_ready(task, self._return_to_list(), explicit=explicit), explicit, False
         if task.kind == 'visit':
             # 跳转类：点「去完成」跳到其它 App，停留几秒后回闲鱼。
             # 回到任务列表后确认该任务是否已变成「领取奖励」/进度+1：
@@ -264,15 +265,16 @@ class IdleFishCoinsActivity(EntryPolicy, Activity):
         else:
             screen, explicit = self._browse(task.seconds)
         # 浏览完主动返回任务列表，顺手把变成「领取奖励」的行领掉
-        return self._claim_ready(task, self._return_to_list()), explicit, False
+        return self._claim_ready(task, self._return_to_list(), explicit=explicit), explicit, False
 
-    def _claim_ready(self, task, screen, tries=3):
-        """浏览/点击完成后按钮会从「去完成」变成「领取奖励」，顺手点掉。
+    def _claim_ready(self, task, screen, tries=2, explicit=False):
+        """浏览/跳转完成后顺手领奖：默认只看一拍，页面仍在加载才再看一拍。
 
-        服务端结算有几秒延迟，第一次读往往还是「去完成」，所以查三拍（约 3 秒）；
-        按标题匹配，确保达标后能及时领奖。
+        服务端结算慢时不再原地死等三拍，把领奖交给下一轮扫描（框架给领取类
+        排的优先级最高）；整行消失直接当完成，不再空耗读屏。
         """
-        for _ in range(tries):
+        total = max(1, tries)
+        for index in range(total):
             if not self.is_task_list(screen.nodes):
                 return screen
             row = next((t for t in self.parse_tasks(screen.nodes, screen.width, screen.height)
@@ -281,13 +283,22 @@ class IdleFishCoinsActivity(EntryPolicy, Activity):
                 self._completed_evidence = getattr(self, '_completed_evidence', set()) | {task.key}
                 logger.info('任务已完成，领取奖励：%s', task.title)
                 self.click(TextNode(row.action, row.bounds))
-                self.control.wait(1)
+                self.control.wait(float(self.config.get('claim_settle_seconds', 0.6)))
                 self._dismiss_popups(self.read())
                 return self.read()
+            if row is None:
+                # 整行消失即已完成或已领取，不再空等；记为证据避免被判失败
+                self._completed_evidence = getattr(self, '_completed_evidence', set()) | {task.key}
+                logger.info('任务行已消失，后续交给下一轮扫描：%s', task.title)
+                return screen
+            # 只有页面仍在「加载中」才多给一拍，否则直接返回交给下一轮扫描。
+            # 浏览页给过完成提示时，领奖延后不代表本轮失败。
+            if index + 1 >= total or not self.panel_loading(screen):
+                if explicit:
+                    self._completed_evidence = getattr(self, '_completed_evidence', set()) | {task.key}
+                return screen
             self.control.wait(1)
             screen = self.read()
-        # 累计任务奖励不在这里领：留到 teardown（本轮任务都处理完）统一查，
-        # 避免每个任务后都读屏查一遍。
         return screen
 
     # ------------------------------------------------------------------
@@ -313,7 +324,7 @@ class IdleFishCoinsActivity(EntryPolicy, Activity):
                 return True
             return bool(explicit) and current.kind == 'claim'
         # 任务行消失：领取类视为已领；浏览类要求页面给过完成提示
-        return False
+        return task.kind == 'claim'
 
     # ------------------------------------------------------------------
     # 生命周期
@@ -457,12 +468,37 @@ class IdleFishCoinsActivity(EntryPolicy, Activity):
     def _is_ad_or_video_page(self, screen):
         return self._find(screen, self._AD_VIDEO_RE) is not None
 
-    def _return_to_list(self, screen=None, tries=5, cold_start=False):
-        """任务页结束后主动返回，退回任务列表。
+    def _dismiss_exit_dialogs(self, screen, tries=None):
+        """广告/视频页的退出确认会连弹两次：一直点到不再出现为止。
 
-        浏览/视频/点击/跳转页可能是 H5、独立页或其它 App，到时不会自动回列表：
-        最多按两次返回；遇到小游戏弹窗先点「残忍离开」；已退到大富翁落地页就
-        不再继续退（否则会一路退回桌面），直接重新导航进任务列表。
+        「跳过」和「坚持退出/残忍离开/离开」合并成一组，不区分第几层弹窗；
+        每次点完等一秒再读屏，回到任务列表或找不到按钮就停。
+        """
+        if tries is None:
+            tries = int(self.config.get('exit_dialog_tries', 4))
+        words = [str(w) for w in (list(self.config.get('video_skip_words') or [])
+                                  + list(self.config.get('video_exit_words') or [])) if w]
+        if not words:
+            return screen
+        pattern = '|'.join(re.escape(w) for w in words)
+        for _ in range(max(1, tries)):
+            if self._at_task_list(screen):
+                return screen
+            node = self._find(screen, pattern)
+            if node is None:
+                return screen
+            logger.info('退出确认弹窗，点击「%s」', node.text)
+            self.click(node)
+            self.control.wait(float(self.config.get('exit_dialog_interval', 1.0)))
+            screen = self.read(force_ocr=bool(self.config.get('ocr', False)))
+        return screen
+
+    def _return_to_list(self, screen=None, tries=5, cold_start=False):
+        """任务页结束后主动返回任务列表。
+
+        广告/视频页先反复点页面内的退出按钮（二次确认也点掉）；小游戏容器交给
+        _exit_game 处理。普通浏览/搜索页只做一次返回动作，等 1～2 秒读一屏，
+        仍不在任务列表就直接恢复导航，不再一轮轮按返回键。
         """
         if screen is None:
             screen = self.read()
@@ -476,25 +512,37 @@ class IdleFishCoinsActivity(EntryPolicy, Activity):
             except Exception as exc:
                 logger.warning('跨 App 返回闲鱼失败：%s', exc)
                 return screen
-        for _ in range(tries):
+        # 视频/广告页：把连弹的退出确认一次点干净，再判断是否已经回到列表
+        if self._is_ad_or_video_page(screen):
+            screen = self._dismiss_exit_dialogs(screen)
+            if self._at_task_list(screen):
+                return screen
+        back_tries = max(1, int(self.config.get('return_back_tries', 1)))
+        settle = float(self.config.get('return_settle_seconds', 1.5))
+        for _ in range(back_tries):
             if self._at_task_list(screen):
                 return screen
             if self._is_game_container(screen):
                 self._exit_game()
                 screen = self.read()
                 continue
-            # 仍在视频/广告全屏页（H5 嵌套，需多次返回才退得出来）：持续返回，
-            # 不触发下面的落地页 break，否则会停在视频页被框架判导航失败、重启闲鱼
             if self._is_ad_or_video_page(screen):
-                self.device.go_back()
-                self.control.wait(0.8)
-                screen = self.read()
-                continue
+                screen = self._dismiss_exit_dialogs(screen)
+                if self._at_task_list(screen):
+                    return screen
             # 已退到金币落地页（不在任务面板）：再退就越退越远，直接重开面板
             if self.activity_landing(screen):
                 break
-            self.device.go_back()
-            self.control.wait(0.8)
+            # 页面内「返回」按钮优先，找不到才按系统返回键；两者只做一次，
+            # 避免一次点按钮 + 一次返回键把页面退过头。
+            label = str(self.config.get('browse_reward_button', '返回'))
+            back = self._find(screen, re.escape(label), exact=True)
+            if back is not None:
+                logger.info('点击页面内「%s」返回任务列表', label)
+                self.click(back)
+            else:
+                self.device.go_back()
+            self.control.wait(settle)
             screen = self.read()
         if not self._at_task_list(screen):
             try:
@@ -552,17 +600,9 @@ class IdleFishCoinsActivity(EntryPolicy, Activity):
                 break
             self.control.wait(min(2, max(.2, remaining)))
             screen = self.read(force_ocr=bool(self.config['ocr']))
-        for _ in range(3):
-            skip = self._find(screen, '|'.join(self.config['video_skip_words']))
-            if skip is None:
-                break
-            self.click(skip)
-            self.control.wait(1.5)
-            screen = self.read(force_ocr=bool(self.config['ocr']))
-        leave = self._find(screen, '|'.join(self.config['video_exit_words']))
-        if leave is not None:
-            self.click(leave)
-            self.control.wait(2)
+        # 退出确认可能连弹两次，「跳过」与「坚持退出/残忍离开/离开」合并成一组
+        # 反复点，直到不再出现为止；原先 leave 只点一次，第二次弹窗无人处理。
+        screen = self._dismiss_exit_dialogs(screen)
         return screen, explicit
 
     # 真正的商品卡片都标「抵后价」（闲鱼币抵扣后实付价），用它锁定商品；

@@ -5,7 +5,12 @@
   "ocr_fallback": true,
   "force_ocr_entry": false,
   "visit_seconds": 5,
-  "visit_settle_seconds": 4,
+  "visit_settle_seconds": 2,
+  "claim_settle_seconds": 0.6,
+  "return_back_tries": 1,
+  "return_settle_seconds": 1.5,
+  "exit_dialog_tries": 4,
+  "exit_dialog_interval": 1.0,
   "entry_ocr_label": "赚更多",
   "entry_ocr_band": [0.45, 0.75],
   "entry_ocr_fullscreen": true,
@@ -24,7 +29,6 @@
   "browse": {
     "regular_seconds": 20,
     "video_seconds": 18,
-    "map_event_seconds": 21,
     "swipe_interval": 2.5
   },
   "dice": {
