@@ -239,3 +239,5 @@ DirectML扩展独立于主程序版本维护，不含exe；先安装MiaoTask v0.
 先退出右下角托盘服务，解压扩展ZIP，将其中的 `runtime_plugins/` 放到 `MiaoTask.exe` 同级，再启动服务，在高级选项选择「强制 DirectML（AMD / Intel 显卡）」。扩展内容集中在 `runtime_plugins/dml/python/`，不覆盖 `_internal/`。同时装有CUDA扩展时必须显式选择DirectML：`auto` 会优先加载 `runtime_plugins/cuda/`。不建议混装两种ORT扩展。
 
 需要在支持DirectX 12的显卡与较新驱动上使用；AMD Radeon RX 6750 GRE（驱动32.0.21045.16010）由贡献者报告实机验证，检测与识别模型均使用 `DmlExecutionProvider`，Intel核显尚未实机验证，不宣称可用或加速收益。硬件、驱动或GPU推理不可用时回退CPU；卸载只需退出服务后删除 `runtime_plugins/dml/`。安装、移除或切换扩展种类后从托盘退出再重启，已有ORT加载后不能在线换库。
+
+消息通知临时占用前台时，助手暂停输入并等待恢复，不打开消息。持续无法读取窗口时会自动恢复同一设备的所选实例并重新进入任务列表，不清空今日统计；恢复次数有界。真正断联、持续遮挡或验证页面仍需本人检查，不能保证所有ROM通知行为一致。
