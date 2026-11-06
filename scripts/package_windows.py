@@ -44,7 +44,7 @@ def cuda_plugin_archive(output):
     plugin_names = sorted(gpu.keys() - cpu.keys())
     if 'onnxruntime-gpu' not in plugin_names or 'onnxruntime' in gpu:
         raise ValueError('CUDA环境必须仅使用onnxruntime-gpu')
-    if any(distribution.metadata['Name'].lower() == 'onnxruntime'
+    if any(distribution.metadata['Name'].lower() in ('onnxruntime', 'onnxruntime-gpu')
            for distribution in metadata.distributions()):
         raise ValueError('CUDA环境混装了CPU ORT，请使用独立环境')
     base = Path(sysconfig.get_paths()['purelib']).resolve()
@@ -227,7 +227,7 @@ def dml_plugin_archive(output):
     plugin_names = sorted(dml.keys() - cpu.keys())
     if 'onnxruntime-directml' not in plugin_names:
         raise ValueError('DML环境必须仅使用onnxruntime-directml')
-    if any(distribution.metadata['Name'].lower() == 'onnxruntime'
+    if any(distribution.metadata['Name'].lower() in ('onnxruntime', 'onnxruntime-gpu')
            for distribution in metadata.distributions()):
         raise ValueError('DML环境混装了CPU ORT，请使用独立环境')
     runtime_version = metadata.version('onnxruntime-directml')
@@ -294,6 +294,8 @@ def main():
     parser.add_argument('--preinstall-all', action='store_true', help='Preinstall source activities whose bundle_by_default flag is true')
     parser.add_argument('--framework-only', action='store_true', help='Exclude default-preinstalled activities')
     args = parser.parse_args()
+    if args.cuda_plugin and args.dml_plugin:
+        parser.error('Choose exactly one GPU extension')
     if args.cuda_plugin:
         if sys.platform != 'win32' or platform.machine().lower() not in ('amd64', 'x86_64'):
             parser.error('CUDA overlay currently supports Windows x64 only')

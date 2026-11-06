@@ -557,3 +557,7 @@ controller.dispatch('run', {'auto_open': True})
 实例选择补充：显式空列表属于无效请求，不触发主实例或全部实例兜底；同应用的后续活动复用本轮实例集合。成功后的列表刷新只在本轮仍有尝试额度时执行，普通读取异常沿用 recover_task 的恢复预算，停止、认证和实例错误继续传播；此框架变更不会由活动源码下载更新已有exe。
 
 DirectML扩展：偏好增加dml，单独目录runtime_plugins/dml、kind=dml、runtime_version声明实际ORT版本；平台/Python ABI仍必须一致，导入后核对版本与执行器。auto保留CUDA优先，显式dml才优先选DML；实际后端标记dml，初始化或推理失败回退CPU。CUDA v1.0的原目录和ORT校验保留。通用click越界仍抛异常，仅京东活动可忽略本次越界；无时长浏览的一次预算规则保留在core，日常活动自行覆盖。
+
+设备焦点读取统一由 `_capture_focus` 有界实时重读：单次4秒、总计8秒，输入前与截图前共用策略，不跨设备共享身份或缓存旧身份。验证需覆盖无线延迟、两设备并行、停止取消与真实跨实例/跨屏拒绝。DirectML构建可用 `scripts/package_windows.py --dml-plugin ZIP`，使用独立锁定环境；硬件结果目前为贡献者报告，不作为维护者本机验收。
+
+无线窗口查询失败时可在同一总预算内调用 `reconnect_offline_wireless(serial, timeout, transport=None)`：只接受明确IPv4调试端点，先get-state，已在线不重连；离线仅connect原地址。USB/mDNS别名不猜测地址，不kill-server；重连不构成身份凭据，必须重新读取窗口并通过实例/显示屏守卫。空闲预览1.5秒起，停止/异常4秒起，失败退避到8秒；运行任务仍共享自己的观察帧。双11收工检查限于活动内累计领奖，遵守用户选择、领奖开关、本轮预算及领取状态核验。

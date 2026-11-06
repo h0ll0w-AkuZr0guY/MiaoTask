@@ -2527,3 +2527,27 @@ class SerialBrowseProtocolTests(unittest.TestCase):
         self.assertLess(clock[0],3);r.read.assert_not_called()
 if __name__ == '__main__':
     unittest.main()
+
+
+class FinalMilestoneSweepTests(unittest.TestCase):
+    def test_final_sweep_claims_each_visible_card_and_verifies_it(self):
+        from types import SimpleNamespace
+        from backend.core.models import Task
+        r = CampaignRunner.__new__(CampaignRunner)
+        r.config = dict(claim_rewards=True, enabled_task_kinds=['claim'], max_tasks=80)
+        r.stats = SimpleNamespace(attempts=0, claims=0)
+        a = Task('milestone-2', '累计奖励', '', '立即领取', (0, 0, 10, 10), kind='claim')
+        b = Task('milestone-6', '累计奖励', '', '立即领取', (20, 0, 30, 10), kind='claim')
+        screen = SimpleNamespace(nodes=[])
+        r.control = Mock(); r.guard = Mock(); r.ensure_list = Mock(return_value=screen)
+        r.is_task_list = Mock(return_value=True); r.tasks = Mock(side_effect=[[a, b], [b], []])
+        r.task_policy = Mock(); r.task_policy.reason.return_value = ''
+        r.records = {a.key: {}, b.key: {}}
+        r.remember = Mock(); r.update = Mock(); r.execute = Mock(return_value=(screen, False, False))
+        r.verify = Mock(return_value=True); r._refresh_after_success = Mock(return_value=screen)
+        r.return_to_home(screen)
+        self.assertEqual(r.stats.claims, 2)
+        self.assertEqual(r.verify.call_count, 2)
+        r.config['claim_rewards'] = False
+        r.ensure_list.reset_mock(); r.return_to_home(screen)
+        r.ensure_list.assert_not_called()

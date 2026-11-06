@@ -127,6 +127,29 @@ class AdbReadShell:
                 return ReadResult(output.decode('utf-8','replace'),0)
 
 
+def reconnect_offline_wireless(serial, timeout, transport=None):
+    """Reconnect only an explicitly configured TCP endpoint, never the server.
+
+    A live transport is left untouched. No address discovery or fallback device
+    selection is performed, and the caller owns the overall focus deadline.
+    """
+    if not re.fullmatch(r'(?:\d{1,3}\.){3}\d{1,3}:\d{1,5}', str(serial)) or timeout <= 0:
+        return False
+    deadline = time.monotonic() + timeout
+    io = transport or DeviceIO()
+    try:
+        status = io.run([resolve_adb_binary(), '-s', serial, 'get-state'], min(1, timeout), text=True)
+        if status.returncode == 0:
+            return False
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        result = io.run([resolve_adb_binary(), 'connect', serial], min(2, remaining), text=True)
+        return result.returncode == 0
+    except (OSError, TimeoutError, subprocess.TimeoutExpired):
+        return False
+
+
 class DeviceIO:
     """Cancel only this run's sockets/processes; never kill the shared ADB server."""
     def __init__(self):

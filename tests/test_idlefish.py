@@ -92,12 +92,12 @@ class IdlefishContracts(unittest.TestCase):
         r._claim_ready(task, ready)
         r.click.assert_called_once()
 
-    def test_claim_ready_row_removed_returns_with_evidence(self):
+    def test_claim_ready_row_removed_without_receipt_is_not_success(self):
         r = self.runner()
         task = r.parse_tasks(self.panel().nodes, 600, 1000)[0]
         screen = Screen([TextNode('+100完成3次', (100, 80, 300, 100))], 600, 1000, r.origin)
         r._claim_ready(task, screen)
-        self.assertIn(task.key, r._completed_evidence)
+        self.assertNotIn(task.key, getattr(r, '_completed_evidence', set()))
         r.read.assert_not_called()
 
     def test_exit_dialog_second_confirmation_is_clicked(self):
@@ -120,3 +120,16 @@ class IdlefishContracts(unittest.TestCase):
         r.device.go_back.assert_not_called()
         r.recover.assert_not_called()
         r.control.wait.assert_called_once_with(1.5)
+
+
+class ClaimReceiptTests(unittest.TestCase):
+    runner = IdlefishContracts.runner
+    panel = IdlefishContracts.panel
+    def test_click_with_unchanged_claim_button_is_not_success(self):
+        r = self.runner(); screen = self.panel(action='领取奖励')
+        task = r.parse_tasks(screen.nodes, screen.width, screen.height)[0]
+        r._stable_target = Mock(return_value=(screen, task)); r.update = Mock(); r.guard = Mock()
+        r._dismiss_popups = Mock(return_value=False); r.read.return_value = screen
+        after, explicit, _ = r.execute(task, screen)
+        self.assertFalse(explicit)
+        self.assertFalse(r.verify(task, screen, after, explicit=explicit))

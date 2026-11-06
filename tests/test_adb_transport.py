@@ -445,7 +445,7 @@ class SwipeFallbackTests(unittest.TestCase):
             shell.return_value.side_effect = TimeoutError('synthetic timeout')
             with self.assertRaisesRegex(InstanceMismatch, '读取超时或断流') as raised:
                 device.capture_observation(compressed=True)
-        self.assertEqual(shell.call_args.kwargs['budget'], 5)
+        self.assertEqual(shell.call_args.kwargs['budget'], 8)
         self.assertLessEqual(shell.return_value.call_count, 6)
         self.assertEqual(raised.exception.capture_diagnostics[0], dict(query='displays', error='TimeoutError'))
         device._capture_jpeg.assert_not_called()
@@ -474,6 +474,33 @@ class SwipeFallbackTests(unittest.TestCase):
             with self.assertRaises(Stopped):
                 device.capture_observation(compressed=True)
         device._capture_jpeg.assert_not_called()
+
+    def test_input_focus_uses_same_recovery_and_ignores_old_identity(self):
+        device = self.focus_adapter()
+        device._foreground_package = ('org.example.old', 999)
+        focused = {'package': 'org.example.new', 'user_id': 0}
+        device._capture_focus = Mock(return_value=(focused, 'fresh window'))
+        self.assertEqual(device.current_app(), focused)
+        device._capture_focus.assert_called_once_with(None)
+        self.assertEqual(device._window_dump, 'fresh window')
+
+    def test_focus_channels_are_independent_across_devices(self):
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+        barrier = threading.Barrier(2)
+        devices = [self.focus_adapter(), self.focus_adapter()]
+        devices[0].serial, devices[1].serial = 'synthetic-one', 'synthetic-two'
+        def create(serial, **kwargs):
+            def query(args):
+                barrier.wait(timeout=3)
+                return SimpleNamespace(exit_code=0,
+                    output='mCurrentFocus=Window{abc u0 org.example.' + serial.replace('-', '') + '/.Main}')
+            return query
+        with patch('backend.core.device.read_shell.AdbReadShell', side_effect=create):
+            with ThreadPoolExecutor(2) as pool:
+                values = list(pool.map(lambda d: d.current_app(), devices))
+        self.assertEqual([v['package'] for v in values],
+                         ['org.example.syntheticone', 'org.example.synthetictwo'])
 
     def test_clipboard_clear_never_reads_contents_or_changes_ime(self):
         adapter = DeviceAdapter.__new__(DeviceAdapter)
@@ -565,3 +592,22 @@ class DirectAdbReadTests(unittest.TestCase):
         with patch('backend.core.device.read_shell.AdbReadShell',return_value=Mock(return_value=ReadResult('',1))):
             result=phone._read_metadata(['dumpsys','window','windows'])
         self.assertEqual(result.exit_code,1);phone._device.shell.assert_not_called()
+
+
+class WirelessFocusRecoveryTests(unittest.TestCase):
+    def test_reconnect_is_targeted_and_never_restarts_adb_server(self):
+        from backend.core.device.read_shell import reconnect_offline_wireless
+        owner = Mock()
+        owner.run.side_effect = [SimpleNamespace(returncode=1), SimpleNamespace(returncode=0)]
+        self.assertTrue(reconnect_offline_wireless('192.0.2.1:5555', 3, owner))
+        self.assertEqual(owner.run.call_args_list[0].args[0][-3:], ['-s', '192.0.2.1:5555', 'get-state'])
+        self.assertEqual(owner.run.call_args_list[1].args[0][-2:], ['connect', '192.0.2.1:5555'])
+
+    def test_live_transport_or_usb_is_not_reconnected(self):
+        from backend.core.device.read_shell import reconnect_offline_wireless
+        owner = Mock(); owner.run.return_value.returncode = 0
+        self.assertFalse(reconnect_offline_wireless('192.0.2.1:5555', 3, owner))
+        self.assertEqual(owner.run.call_count, 1)
+        owner.reset_mock()
+        self.assertFalse(reconnect_offline_wireless('synthetic-usb', 3, owner))
+        owner.run.assert_not_called()

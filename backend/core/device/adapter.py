@@ -369,6 +369,11 @@ class DeviceAdapter:
         if self.device_type == 'hmdriver2':
             package, activity = self._device.current_app()
             info = {'package': package or '', 'activity': activity or ''}
+        elif getattr(self, '_bounded_capture', False) and not getattr(self, '_display_id', 0):
+            # Input and capture use the same fresh, bounded focus recovery. A
+            # single stalled summary must not exhaust all later fallbacks.
+            info, evidence = self._capture_focus(getattr(self, '_operation_io', None))
+            self._window_dump = evidence
         else:
             fallback = [None]
             def reliable_read(args):
@@ -489,11 +494,12 @@ class DeviceAdapter:
         from backend.core.device.read_shell import AdbReadShell
         from backend.core.device.displays import focused_display
         read = AdbReadShell(self.serial, prefer_socket=getattr(self, '_bounded_capture', False),
-                            timeout=2, budget=5, transport=transport)
-        deadline = time.monotonic() + 5
+                            timeout=4, budget=8, transport=transport)
+        deadline = time.monotonic() + 8
         control = getattr(self, '_run_control', None)
         reason = '前台焦点暂缺'
         observations = []
+        reconnect_checked = False
         for round_no in range(3):
             if control is not None:
                 control.check()
@@ -507,6 +513,12 @@ class DeviceAdapter:
                         control.check()
                     reason = '窗口元数据读取超时或断流'
                     observations.append(dict(query=command, error=type(exc).__name__))
+                    if not reconnect_checked:
+                        reconnect_checked = True
+                        from backend.core.device.read_shell import reconnect_offline_wireless
+                        restored = reconnect_offline_wireless(self.serial, max(0, deadline-time.monotonic()), transport)
+                        if restored:
+                            logger.info('无线调试通道已重连，重新核定当前窗口')
                     continue
                 if (result.exit_code != 0 or not isinstance(result.output, str)
                         or not result.output.strip() or re.search(
@@ -538,7 +550,7 @@ class DeviceAdapter:
                 else:
                     time.sleep(delay)
         error = InstanceMismatch('截图采集未能核定主显示屏及前台身份，已停止操作'
-                                 f'（{reason}；已在5秒总预算内尝试复读，未执行输入）')
+                                 f'（{reason}；已在8秒总预算内尝试复读，未执行输入）')
         error.capture_diagnostics = observations
         raise error
 
@@ -702,7 +714,7 @@ class DeviceAdapter:
         # force-stop or any input into an unconfirmed account.
         for attempt in range(2):
             self._checked_shell(start)
-            deadline = time.monotonic() + 5
+            deadline = time.monotonic() + 8
             while time.monotonic() < deadline:
                 try:
                     info = self.current_app()

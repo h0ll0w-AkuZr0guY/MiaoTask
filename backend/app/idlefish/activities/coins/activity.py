@@ -226,14 +226,14 @@ class IdleFishCoinsActivity(EntryPolicy, Activity):
         if task.kind == 'claim':
             # 「领取奖励」按钮点掉后整行约 3 秒才消失，那是页面自己的刷新，
             # 不需要脚本反复读屏核验，也不靠「领取成功/奖励已到账」等文案判定。
-            # 点的是确实存在的领取按钮即视为已领；读一屏只为顺手清掉气泡弹窗。
+            # 点击本身不作为成功证据，交给回执或任务行变化核验。
             self.control.wait(float(self.config.get('claim_settle_seconds', 0.6)))
             screen = self.read()
             self.guard(screen)
-            self._completed_evidence = getattr(self, '_completed_evidence', set()) | {task.key}
+            explicit = bool(screen.find(DONE_PROMPT_RE))
             if self._dismiss_popups(screen):
                 screen = self.read()
-            return screen, True, False
+            return screen, explicit, False
         self.control.wait(2)
         screen = self.read()
         if task.kind == 'trade':
@@ -287,8 +287,9 @@ class IdleFishCoinsActivity(EntryPolicy, Activity):
                 self._dismiss_popups(self.read())
                 return self.read()
             if row is None:
-                # 整行消失即已完成或已领取，不再空等；记为证据避免被判失败
-                self._completed_evidence = getattr(self, '_completed_evidence', set()) | {task.key}
+                # 行不在当前视口不能证明浏览完成；保留明确完成回执。
+                if explicit:
+                    self._completed_evidence = getattr(self, '_completed_evidence', set()) | {task.key}
                 logger.info('任务行已消失，后续交给下一轮扫描：%s', task.title)
                 return screen
             # 只有页面仍在「加载中」才多给一拍，否则直接返回交给下一轮扫描。

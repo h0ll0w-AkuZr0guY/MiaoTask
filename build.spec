@@ -23,13 +23,14 @@ for package in ('uiautomator2', 'hmdriver2', 'rapidocr'):
 
 
 def metadata_name(name):
-    try:
-        distribution(name)
-        return name
-    except PackageNotFoundError:
-        if name == 'onnxruntime':
-            return 'onnxruntime-gpu'
-        raise
+    candidates = ('onnxruntime', 'onnxruntime-gpu', 'onnxruntime-directml') if name == 'onnxruntime' else (name,)
+    for candidate in candidates:
+        try:
+            distribution(candidate)
+            return candidate
+        except PackageNotFoundError:
+            continue
+    raise PackageNotFoundError(' or '.join(candidates))
 
 
 for package in ('uiautomator2', 'hmdriver2', 'rapidocr', 'onnxruntime', 'numpy', 'Pillow'):

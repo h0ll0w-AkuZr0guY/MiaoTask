@@ -20,6 +20,14 @@ class DistributionVersionTests(unittest.TestCase):
             self.assertEqual(diagnostics._distribution_version('onnxruntime'), '1.31.0')
         lookup.assert_called_once_with('onnxruntime')
 
+    def test_directml_distribution_is_supported(self):
+        def version(name):
+            if name != 'onnxruntime-directml':
+                raise importlib.metadata.PackageNotFoundError(name)
+            return '1.24.4'
+        with patch.object(importlib.metadata, 'version', side_effect=version):
+            self.assertEqual(diagnostics._distribution_version('onnxruntime'), '1.24.4')
+
     def test_missing_distribution_reports_every_candidate(self):
         with patch.object(importlib.metadata, 'version',
                           side_effect=importlib.metadata.PackageNotFoundError('missing')):

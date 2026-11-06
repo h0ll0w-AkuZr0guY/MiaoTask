@@ -43,6 +43,45 @@ class Double11Activity(RescanPolicy, EntryPolicy, TaskActions, VerificationPolic
             screen = super().read(force_ocr=True)
         return self.refine_task_rows(screen)
 
+    def return_to_home(self, screen):
+        # A reward can become claimable only after the final task settles, or
+        # keep the same card key as an earlier tier. Read the painted list again
+        # instead of trusting today's completed-row flags for reward cards.
+        if not self.config.get('claim_rewards', True) or 'claim' not in self.config['enabled_task_kinds']:
+            return screen
+        if self.stats.attempts >= self.config['max_tasks']:
+            return screen
+        screen = self.ensure_list(True)
+        seen = set()
+        for _ in range(6):
+            self.control.check()
+            self.guard(screen)
+            if not self.is_task_list(screen.nodes) or self.stats.attempts >= self.config['max_tasks']:
+                break
+            claim = next((t for t in self.tasks(screen)
+                          if t.key.startswith('milestone-') and t.kind == 'claim'
+                          and t.key not in seen and not self.task_policy.reason(t)), None)
+            if claim is None:
+                break
+            seen.add(claim.key)
+            self.remember([claim])
+            self.stats.attempts += 1
+            before = screen
+            screen, explicit, _ = self.execute(claim, before)
+            self.guard(screen)
+            if not self.verify(claim, before, screen, explicit=explicit):
+                self.daily_exhausted = False
+                self.records[claim.key].update(status='pending', reason='累计奖励尚未核验领取')
+                logger.info('累计奖励尚未核验领取，保留待下次检查')
+                break
+            self.stats.claims += 1
+            self.task_policy.progress(claim)
+            self.records[claim.key].update(status='done', current=claim.total,
+                                            reason='收工前已核验累计奖励领取')
+            self.update(tasks=list(self.records.values()))
+            screen = self._refresh_after_success(claim)
+        return screen
+
     def task_assets(self, screen, center_y):
         header = screen.find('累计任务奖励', exact=True)
         left = max(0, header.bounds[0]-screen.width*.04) if header else 0
