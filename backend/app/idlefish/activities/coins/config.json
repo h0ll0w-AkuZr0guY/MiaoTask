@@ -22,6 +22,7 @@
   "entry_settle_timeout": 12,
   "enabled_task_kinds": ["browse", "claim", "visit", "search"],
   "browse_extra_seconds": 2,
+  "browse_swipe_interval": 0.2,
   "browse_read_interval": 3,
   "search_keyword": "",
   "task_search_keyword": "手机壳",
@@ -45,6 +46,8 @@
   "homepage_labels": ["闲鱼", "我的"],
 
   "landing_regex": "7天圈数挑战|再走\\d+步完成1圈|挑战大奖",
+  "guide_title_regex": "前进获得闲鱼币|前进领闲鱼币",
+  "guide_close_x": 0.88,
   "step_regex": "再走\\d+步完成1圈|再走\\d+步|^\\d+步$",
   "panel_heading_regex": "提醒签到|累积任务奖励",
   "panel_loading_regex": "加载中|请稍候|正在加载",
