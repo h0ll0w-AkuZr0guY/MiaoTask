@@ -81,6 +81,30 @@ class IdlefishContracts(unittest.TestCase):
         screen,explicit=r._browse(1)
         self.assertIs(screen,first); self.assertFalse(explicit)
 
+    def test_video_task_waits_for_page_before_finishing(self):
+        r=self.runner(); r.config['browse']['video_seconds']=1
+        r.config['browse_extra_seconds']=1
+        panel=self.panel()
+        video=Screen([TextNode('广告',(100,300,200,320))],600,1000,r.origin)
+        # 第一屏仍是任务列表（H5 还没跳转），第二屏才是视频页
+        r.control.now.side_effect=[0,0,5]
+        r.read.side_effect=[panel,video]
+        screen,explicit=r._video_browse(1)
+        self.assertIs(screen,video); self.assertFalse(explicit)
+
+    def test_restart_client_runs_once_per_round(self):
+        r=self.runner(); r._client_restarted=False
+        self.assertTrue(r._restart_client())
+        self.assertFalse(r._restart_client())
+        r.device.go_home.assert_called_once()
+        r.device.stop_app.assert_called_once_with(r.origin)
+        r.device.start_app.assert_called_once_with(r.origin)
+
+    def test_setup_resets_restart_budget(self):
+        r=self.runner(); r._client_restarted=True
+        r.setup()
+        self.assertFalse(r._client_restarted)
+
     def test_task_panel_is_not_treated_as_landing(self):
         r=self.runner()
         landing=Screen([TextNode('再走4步完成1圈',(100,800,500,840))],600,1000,r.origin)

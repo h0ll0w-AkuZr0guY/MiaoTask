@@ -352,7 +352,7 @@ class IdleFishCoinsActivity(EntryPolicy, Activity):
     def setup(self):
         # 导航（闲鱼 → 我的 → 闲鱼币 → 赚更多）完全交给框架 ensure_list，
         # 进入后不做任何地图滑动或掷骰子，避免误触。
-        pass
+        self._client_restarted = False
 
     def teardown(self):
         # 只有确实没有待执行任务时才收尾；否则把累计奖励和走步数留到下一轮，
@@ -513,6 +513,44 @@ class IdleFishCoinsActivity(EntryPolicy, Activity):
             screen = self.read(force_ocr=bool(self.config.get('ocr', False)))
         return screen
 
+    # ------------------------------------------------------------------
+    # 恢复：框架的一次冷启动预算用完后，补一次强制重启客户端
+    # ------------------------------------------------------------------
+    def recover(self, cold_start=False):
+        """导航恢复；仍失败时杀进程重开闲鱼再试一次。
+
+        框架的 `_navigate_list` 只在「检测到桌面」时才冷启动应用。实际跑下来更
+        常见的是页面停在闲鱼内部的 H5 死页：其实已经在应用里，但怎么退都回不到
+        任务列表，导航把预算耗完就抛「未能自动恢复应用活动任务列表」。这里补一次
+        真正的杀进程重开，把 H5 页面栈清干净再走一遍导航；还是不行才向上抛。
+        """
+        try:
+            return super().recover(cold_start=cold_start)
+        except Exception as exc:
+            if not self._restart_client():
+                raise
+            logger.warning('导航未能恢复，已强制重启闲鱼后重试：%s', exc)
+            return super().recover(cold_start=False)
+
+    def _restart_client(self):
+        """回桌面 → force-stop → 重新启动。每轮只做一次。"""
+        if getattr(self, '_client_restarted', False):
+            return False
+        self._client_restarted = True
+        package = self.origin or 'com.taobao.idlefish'
+        logger.warning('强制重启 %s：先回桌面再强停，避免下次启动恢复旧页面', package)
+        try:
+            self.device.go_home()
+            self.control.wait(0.6)
+            self.device.stop_app(package)
+            self.control.wait(1.2)
+            self.device.start_app(package)
+            self.control.wait(float(self.config.get('restart_settle_seconds', 5.0)))
+        except Exception as exc:
+            logger.warning('强制重启闲鱼失败：%s', exc)
+            return False
+        return True
+
     def _return_to_list(self, screen=None, tries=5, cold_start=False):
         """任务页结束后主动返回任务列表。
 
@@ -604,25 +642,41 @@ class IdleFishCoinsActivity(EntryPolicy, Activity):
                           int(width * .5), int(height * .46), duration=0.5)
 
     def _video_browse(self, seconds):
-        """视频页不用滑动，但要一直观察到时间到或出现完成提示。"""
+        """视频页不用滑动，但要一直观察到时间到或出现完成提示。
+
+        刚点完「去完成」时 H5 还没跳转，第一屏读到的往往仍是任务列表；
+        只在「离开过列表又回来」或「等满时长」时才结束，否则视频一秒没播
+        就被当成看完，任务白做一次失败。
+        """
         desired = int(seconds or self.config['browse']['video_seconds'])
         total = desired + int(self.config.get('browse_extra_seconds', 5))
         self.update(message='浏览视频 %d 秒' % total)
         deadline = self.control.now() + total
         screen = self.read()
         explicit = False
+        entered = False
         while True:
             if screen.find(DONE_PROMPT_RE):
                 explicit = True
                 logger.info('检测到视频完成提示，提前结束浏览')
                 break
             if self.is_task_list(screen.nodes):
-                break
+                if entered:
+                    # 已经离开过列表又回到列表：视频页结束
+                    break
+                if self.control.now() >= deadline:
+                    logger.info('视频页 %.0f 秒内未打开，按超时结束', total)
+                    break
+                logger.info('视频页尚未打开，继续等待')
+                self.control.wait(1)
+                screen = self._safe_read(screen, force_ocr=bool(self.config['ocr']))
+                continue
+            entered = True
             remaining = deadline - self.control.now()
             if remaining <= 0:
                 break
             self.control.wait(min(2, max(.2, remaining)))
-            screen = self.read(force_ocr=bool(self.config['ocr']))
+            screen = self._safe_read(screen, force_ocr=bool(self.config['ocr']))
         # 退出确认可能连弹两次，「跳过」与「坚持退出/残忍离开/离开」合并成一组
         # 反复点，直到不再出现为止；原先 leave 只点一次，第二次弹窗无人处理。
         screen = self._dismiss_exit_dialogs(screen)

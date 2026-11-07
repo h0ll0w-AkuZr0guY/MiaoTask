@@ -9,6 +9,7 @@
   "claim_settle_seconds": 0.6,
   "return_back_tries": 1,
   "return_settle_seconds": 1.5,
+  "restart_settle_seconds": 5.0,
   "exit_dialog_tries": 4,
   "exit_dialog_interval": 1.0,
   "entry_ocr_label": "赚更多",
