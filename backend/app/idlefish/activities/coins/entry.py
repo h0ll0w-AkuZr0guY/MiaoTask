@@ -73,6 +73,11 @@ class EntryPolicy:
         if self._has_bottom_nav(screen):
             # 账户页/首页有原生底部导航，那不是活动页（即便里面有宽 banner）
             return False
+        # 任务面板已打开时不算落地页：面板顶部的引导卡片里也带「再走N步完成1圈」，
+        # 只按文案判定会把面板误认成落地页，接着去点「赚更多」并按返回键，
+        # 结果把面板整层退掉、还要多跑一轮恢复导航。面板特征优先于文案。
+        if self.task_panel_visible(screen):
+            return False
         if self._step_button(screen) is not None:
             return True
         return bool(self._find(screen, self.config['landing_regex']))
@@ -302,6 +307,19 @@ class EntryPolicy:
                 self.click(n)
                 self.control.wait(1.0)
                 return True
+        # 「前进获得闲鱼币」引导浮层是画布绘制的卡片，关闭键既不在控件树里，
+        # OCR 也常把它漏成空节点，于是只剩「按返回键」这一条路——而返回键会
+        # 把落地页整层退掉，还得从头导航。这里按标题定位，点标题同一行的最右侧
+        # （关闭键固定贴在卡片右上角），当作「×」的兜底。
+        guide = str(self.config.get('guide_title_regex') or '')
+        title = self._find(screen, guide) if guide else None
+        if title is not None:
+            x = int(screen.width * float(self.config.get('guide_close_x', 0.88)))
+            y = title.center[1]
+            logger.info('检测到步数引导浮层，按标题位置点击关闭 (%d,%d)', x, y)
+            self.click(TextNode('关闭浮层', (x - 24, y - 16, x + 24, y + 16)))
+            self.control.wait(1.0)
+            return True
         return False
 
     def enter_task_panel(self, screen, expected_activity=False):
