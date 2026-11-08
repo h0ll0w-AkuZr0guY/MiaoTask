@@ -2,6 +2,35 @@
 
 按新到旧维护用户可见变化。GitHub Release 正文从对应的 `## 版本号` 小节提取，发布状态以 [Releases](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/releases) 为准。
 
+## MiaoTask-v0.2.3
+
+修复主屏截图映射回归，完善无线多设备与通知恢复。
+
+**受影响范围为包含 #36 的 v0.2.0 修订包、v0.2.1 和 v0.2.2。** 部分设备预览正常，但点击开始、执行或切换活动流水线时会报“无法映射当前应用屏幕，已停止截图和点击”，甚至在首个任务前固定终止。#36 为解决多屏 PNG 警告混入图片，将物理屏映射设成了普通截图的强制前提。后续 MTK 适配扩充了解析格式，但保留了这个前提，厂商转储格式不匹配时便阻断普通机型。该故障可以在单设备启动时触发。
+
+**v0.2.3 修复这条前置映射回归。** 常规 PNG 可用时直接采用，失败或有明确多屏证据后才解析物理屏映射，必要时重新核定实例并尝试 UIAutomation 主屏截图。保留 MTK、多屏和实例保护，消除对特殊格式的统一前置依赖。反馈包没有原始 ROM 显示屏转储，具体机型的兼容仍以实际验收为准。
+
+* 【修复】截图和输入前统一有界焦点重读，通知遮挡先等待消退，暂时无法观察时定向唤回或重启所选实例并重进任务页。
+* 【优化】降低空闲预览占用，无线断流只检查并重连明确离线的设备地址，减少多设备带宽争用。
+* 【修复】双11收工前重新读取累计奖励卡片，逐档领取并核验。闲鱼币修复浏览收尾异常、搜索提交、视频任务过早退出及导航恢复。
+* 【维护】合入 GPU 发行元数据兼容与独立 DirectML 扩展构建工具。CPU 基础包及 CUDA 扩展继续按原有方式使用，AMD 硬件与运行库包须单独验收。
+* 【文档】贡献规范与 AI 开发约定要求通用首判优先，特殊机型通过有界二判扩展，并验证普通路径、回退路径、失败和隔离行为。
+
+下载 Windows x64 ZIP，完整解压后运行 `MiaoTask.exe`，保留 `_internal/` 与 `activities/`。升级前退出旧托盘服务，使用完整新包，用户目录中的偏好与日记录继续保留。安全认证需本人处理，诊断截图分享前请脱敏。
+
+GPU 加速使用独立的 [CUDA 扩展 v1.0](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/releases/tag/MiaoTask-CUDA-v1.0)。退出助手后，将兼容的 `runtime_plugins/` 放在新 exe 旁。AMD 扩展另行交付验收。
+
+感谢 @jiang123574（#46）、@ashen0116（#61、#62、#64）及反馈诊断的用户。感谢 [MonsterNone/tmall-miao](https://github.com/MonsterNone/tmall-miao) 提供早期思路参考。[使用说明](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/blob/main/docs/USAGE.md) · [项目介绍](https://github.com/h0ll0w-AkuZr0guY/MiaoTask#readme)
+
+| 框架模块 | 主要修改 |
+| --- | --- |
+| `core/device/adapter.py`、`displays.py` | 恢复常规主屏 PNG 优先，异常后二判映射与主屏 RPC 回退，区分物理目标歧义 |
+| `core/device/read_shell.py`、`instances.py` | 有界实时焦点读取、通知识别和明确离线无线地址恢复 |
+| `core/execution/loop.py`、`core/service/panel.py` | 短暂观察失败后恢复所选实例与活动，保留统计和已核验进度 |
+| `core/service/preview.py` | 空闲及异常预览降频、传输失败退避，运行中复用任务画面 |
+| `app/taobao`、`app/idlefish` | 累计奖励逐档核验及闲鱼任务、搜索和导航修复 |
+| `scripts`、`tests`、`docs` | GPU/DirectML 打包兼容、主屏回退和多设备隔离回归、二判开发规范 |
+
 ## MiaoTask-v0.2.2
 
 活动补扫、分身选择与可选 DirectML 扩展适配。
