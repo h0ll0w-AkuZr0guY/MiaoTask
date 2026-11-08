@@ -2,6 +2,10 @@
 import re
 
 
+class AmbiguousDisplayMapping(RuntimeError):
+    """A known logical screen matches more than one physical device."""
+
+
 def focused_display(window_dump):
     match = re.search(r'mTopFocusedDisplayId\s*=\s*(\d+)', window_dump)
     return int(match[1]) if match else 0
@@ -68,4 +72,6 @@ def capture_display(display_dump, logical_id):
                                      + r'":[^\n]*?uniqueId="local:(\d+)"', display_dump))
             if len(matches) == 1:
                 return matches.pop()
+            if len(matches) > 1:
+                raise AmbiguousDisplayMapping('当前逻辑屏对应多个物理屏，无法唯一核定截图目标')
     raise RuntimeError('无法映射当前应用屏幕，已停止截图和点击；请检查模拟器多屏状态')

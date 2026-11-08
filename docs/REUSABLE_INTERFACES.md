@@ -156,7 +156,7 @@ class CropForOCR:
 # 裁剪图上的 (1, 2, 11, 12) 对应输入图的 (11, 22, 21, 32)。
 ```
 
-`focused_display(window_dump)` 取得逻辑屏幕，`capture_display(display_dump, logical_id)` 解析采集映射。适配器负责将输入与采集对齐；应用无需调用这些底层方法，更不能用列表序号替代显示屏 ID。映射不明时停止。折叠姿态、自由窗口和全新厂商仍需专门适配。
+`focused_display(window_dump)` 取得逻辑屏幕，`capture_display(display_dump, logical_id)` 解析采集映射。适配器负责将输入与采集对齐；应用无需调用这些底层方法，更不能用列表序号替代显示屏 ID。真实非主屏映射不明或物理映射存在歧义时停止，主屏截图的兼容回退见下文。折叠姿态、自由窗口和全新厂商仍需专门适配。
 
 ## 5. 任务模型与行解析
 
@@ -488,7 +488,9 @@ controller.dispatch('run', {'auto_open': True})
 | `TaskActions.wait_for_browse(task, screen, cross, seconds)` | 首轮无中途观察；CPU首轮到时返回核验，retry_needed为真时启用停1秒检查及补滑。实际CUDA同应用browse/search首轮末尾也检查；均由browse_recheck_rounds约束补滑次数 |
 | `TaskActions.browse_completed(screen)` | 只接受明确完成/到账证据；正数倒计时优先，不能替代返回列表的最终进度核验 |
 
-`capture_observation` 的未压缩 PNG 路径每次通过有界只读 `dumpsys display` 查询，将逻辑主屏 0 映射到物理采集 ID，并显式传给 `screencap -d`，避免多屏默认选择与警告文字污染图片流。查询最多2秒，沿用当前 `transport` 的取消通道；查询失败或映射缺失时停止采集，不猜测显示屏、不回退默认屏幕。JPEG 和非主屏截图路径不变。
+`capture_observation` 在核定主屏身份后，未压缩路径先执行常规 `screencap -p`。有效图片且窗口信息未声明其他逻辑屏时直接使用，不查询物理屏映射。常规截图失败或窗口信息存在多屏证据时，再通过最多2秒的 `dumpsys display` 查询物理采集 ID，显式执行 `screencap -p -d <ID>`。保留 MTK 两种逻辑块格式、主显示设备名称与 uniqueId 的解析。
+
+物理映射缺失、格式不支持或显式截图失败时，重新核定当前实例与主屏，再复用 `_capture_jpeg(95)` 的 UIAutomation 主屏接口，返回新身份及同分辨率图片。这个异常回退使用 JPEG，即使未开启压缩截图也可能采用。每次截图命令最多8秒，回退次数固定，沿用当前 `transport` 的停止通道。`AmbiguousDisplayMapping` 表示已发现多个冲突物理目标，仍立即拒绝。非主屏和压缩截图的既有路径不变，跨活动切换不保存或共享上次物理映射。
 
 `browse_recheck_rounds` 默认3，范围0～10，表示最多额外补滑几次（CPU失败后的第二轮，或实际CUDA首轮末尾检查）；第二轮基础时长后仍有一次初始检查。`max_task_seconds` 限定当前浏览与补滑窗口，截图/原生传输另有有界超时。失败预算继续按当天设备、活动与实例持久化；TaskPolicy.progress只在真实进度通过核验后清除失败连击，之后恢复首轮快速路径。
 

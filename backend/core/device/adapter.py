@@ -595,28 +595,59 @@ class DeviceAdapter:
                     transport.check()
                 info, window_dump = self._capture_focus(transport)
                 raw = self._capture_jpeg(quality, transport=transport) if transport else self._capture_jpeg(quality)
+            image = Image.open(io.BytesIO(raw)).convert('RGB')
         else:
-            from backend.core.device.discovery import resolve_adb_binary
-            from backend.core.device.displays import capture_display
-            from backend.core.device.read_shell import AdbReadShell
-            import subprocess
-            # screencap's implicit display can emit a warning into the PNG
-            # stream and is not guaranteed to be the logical primary display.
-            displays = AdbReadShell(self.serial, prefer_socket=True, timeout=2, budget=2,
-                                   transport=transport)(['dumpsys', 'display'])
-            if displays.exit_code != 0:
-                raise RuntimeError('无法读取主显示屏映射，已停止截图')
-            capture_id = capture_display(displays.output, 0)
-            command = [resolve_adb_binary(), '-s', self.serial, 'exec-out', 'screencap', '-p', '-d', capture_id]
-            result = (transport.run(command, 8) if transport else subprocess.run(command,
-                                    capture_output=True, timeout=8,
-                                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)))
-            if result.returncode:
-                raise RuntimeError('设备截图失败')
-            raw = result.stdout
-        image = Image.open(io.BytesIO(raw)).convert('RGB')
+            image, refreshed = self._primary_png_image(window_dump, transport)
+            if refreshed is not None:
+                info, window_dump = refreshed
         info['window_dump'] = window_dump
         return info, image
+
+    def _primary_png_image(self, window_dump, transport=None):
+        """Use the original primary screencap path, then ROM-specific fallbacks."""
+        from PIL import Image
+        from backend.core.device.discovery import resolve_adb_binary
+        from backend.core.device.displays import capture_display, AmbiguousDisplayMapping
+        from backend.core.device.read_shell import AdbReadShell
+
+        base = [resolve_adb_binary(), '-s', self.serial, 'exec-out', 'screencap', '-p']
+
+        def capture(command):
+            result = (transport.run(command, 8) if transport else subprocess.run(
+                command, capture_output=True, timeout=8,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)))
+            if result.returncode:
+                raise OSError('设备PNG截图失败')
+            return Image.open(io.BytesIO(result.stdout)).convert('RGB')
+
+        # A working ordinary phone must not depend on dumpsys display grammar.
+        # A known multi-display environment still needs an explicit mapping.
+        multiple = any(int(value) != 0 for value in re.findall(r'mDisplayId\s*=\s*(\d+)', window_dump))
+        try:
+            image = capture(base)
+            if not multiple:
+                return image, None
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            pass
+        logger.debug('常规主屏截图未采用，尝试显式物理屏映射')
+        try:
+            result = AdbReadShell(self.serial, prefer_socket=True, timeout=2, budget=2,
+                                  transport=transport)(['dumpsys', 'display'])
+            if result.exit_code:
+                raise OSError('显示屏元数据暂不可用')
+            capture_id = capture_display(result.output, 0)
+            return capture(base + ['-d', capture_id]), None
+        except AmbiguousDisplayMapping:
+            raise
+        except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired):
+            # UIAutomation's takeScreenshot targets logical display 0. It does
+            # not need a SurfaceFlinger physical ID or ROM display dump parser.
+            if transport is not None:
+                transport.check()
+            refreshed = self._capture_focus(transport)
+            logger.debug('物理屏映射截图不可用，尝试主屏UIAutomation截图')
+            raw = self._capture_jpeg(95, transport=transport) if transport else self._capture_jpeg(95)
+            return Image.open(io.BytesIO(raw)).convert('RGB'), refreshed
 
     def _capture_jpeg(self, quality=70, transport=None):
         """Read-only screenshot RPC on its own socket; never restart the server."""
