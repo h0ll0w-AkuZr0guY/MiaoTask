@@ -321,7 +321,7 @@ class SwipeFallbackTests(unittest.TestCase):
             run.assert_not_called()
             device.capture_observation()
             self.assertEqual(run.call_args.kwargs['timeout'], 8)
-            self.assertEqual(run.call_args.args[0][-5:], ['exec-out','screencap','-p','-d','987654321'])
+            self.assertEqual(run.call_args.args[0][-3:], ['exec-out','screencap','-p'])
             display.return_value = 2
             run.reset_mock()
             with self.assertRaises(InstanceMismatch):
@@ -369,35 +369,107 @@ class SwipeFallbackTests(unittest.TestCase):
                     else:
                         self.assertEqual(run.call_args.kwargs['timeout'], 8)
 
-    def test_png_capture_rejects_missing_or_failed_primary_mapping_without_capture(self):
-        results = [SimpleNamespace(exit_code=0, output=''),
-                   SimpleNamespace(exit_code=0, output='mDisplayId=7\n mPrimaryDisplayDevice=external(local:123456789)'),
-                   SimpleNamespace(exit_code=1, output='mDisplayId=0\n mPrimaryDisplayDevice=builtin(local:987654321)')]
-        for metadata in results:
+    def test_ordinary_png_does_not_require_any_display_mapping(self):
+        device = self.focus_adapter()
+        device._capture_focus = Mock(return_value=({'package': 'org.example.shop'}, 'focus'))
+        output = io.BytesIO(); Image.new('RGB', (1176, 2400)).save(output, 'PNG')
+        owner = Mock(); owner.run.return_value = SimpleNamespace(returncode=0, stdout=output.getvalue())
+        with patch('backend.core.device.read_shell.AdbReadShell') as read, \
+                patch('backend.core.device.discovery.resolve_adb_binary', return_value='synthetic-adb'):
+            info, image = device.capture_observation(transport=owner)
+        read.assert_not_called()
+        self.assertEqual(image.size, (1176, 2400))
+        self.assertEqual(owner.run.call_args.args[0][-3:], ['exec-out', 'screencap', '-p'])
+
+    def test_bad_png_and_unavailable_mapping_use_primary_rpc_and_fresh_identity(self):
+        for metadata in (SimpleNamespace(exit_code=0, output='unrecognized ROM format'),
+                         SimpleNamespace(exit_code=1, output=''), TimeoutError('slow display dump')):
             with self.subTest(metadata=metadata):
                 device = self.focus_adapter()
-                device._capture_focus = Mock(return_value=({}, 'synthetic focus'))
-                owner = Mock()
-                with patch('backend.core.device.read_shell.AdbReadShell') as read, patch('subprocess.run') as run:
-                    read.return_value.return_value = metadata
-                    with self.assertRaises(RuntimeError):
-                        device.capture_observation(transport=owner)
-                    owner.run.assert_not_called()
-                    run.assert_not_called()
+                device._capture_focus = Mock(side_effect=[({'package':'org.example.old'}, 'old'),
+                                                           ({'package':'org.example.fresh'}, 'fresh')])
+                output = io.BytesIO(); Image.new('RGB', (1176, 2400)).save(output, 'JPEG')
+                device._capture_jpeg.return_value = output.getvalue()
+                owner = Mock(); owner.run.return_value = SimpleNamespace(returncode=0, stdout=b'warning invalid PNG')
+                with patch('backend.core.device.read_shell.AdbReadShell') as read, \
+                        patch('backend.core.device.discovery.resolve_adb_binary', return_value='synthetic-adb'):
+                    if isinstance(metadata, Exception): read.return_value.side_effect = metadata
+                    else: read.return_value.return_value = metadata
+                    info, image = device.capture_observation(transport=owner)
+                self.assertEqual(image.size, (1176, 2400))
+                self.assertEqual(info['package'], 'org.example.fresh')
+                self.assertEqual(info['window_dump'], 'fresh')
+                device._capture_jpeg.assert_called_once_with(95, transport=owner)
 
-    def test_png_mapping_propagates_stop_and_timeout_without_capture(self):
+    def test_known_multiple_displays_require_mapping_even_with_valid_default_png(self):
+        device = self.focus_adapter()
+        device._capture_focus = Mock(return_value=({}, 'mDisplayId=0\nmDisplayId=7'))
+        output = io.BytesIO()
+        Image.new('RGB', (100, 200)).save(output, 'PNG')
+        owner = Mock()
+        owner.run.return_value = SimpleNamespace(returncode=0, stdout=output.getvalue())
+        with patch('backend.core.device.read_shell.AdbReadShell') as read, \
+                patch('backend.core.device.discovery.resolve_adb_binary', return_value='synthetic-adb'):
+            read.return_value.return_value = SimpleNamespace(
+                exit_code=0, output='mDisplayId=0\n mPrimaryDisplayDevice=builtin(local:987654321)')
+            device.capture_observation(transport=owner)
+        self.assertEqual(owner.run.call_count, 2)
+        self.assertEqual(owner.run.call_args.args[0][-2:], ['-d', '987654321'])
+        device._capture_jpeg.assert_not_called()
+
+    def test_parallel_devices_and_activity_handoffs_keep_capture_routes_isolated(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        devices = [self.focus_adapter(), self.focus_adapter()]
+        owners = [Mock(), Mock()]
+        for index, (device, owner) in enumerate(zip(devices, owners)):
+            device.serial = f'synthetic-device-{index}'
+            device._capture_focus = Mock(side_effect=[
+                ({'package': package, 'user_id': 0}, 'mDisplayId=0')
+                for package in ('org.example.first', 'org.example.second')])
+            output = io.BytesIO()
+            Image.new('RGB', (100 + index, 200)).save(output, 'PNG')
+            owner.run.return_value = SimpleNamespace(returncode=0, stdout=output.getvalue())
+
+        def pipeline(index):
+            return [devices[index].capture_observation(transport=owners[index]) for _ in range(2)]
+
+        with patch('backend.core.device.read_shell.AdbReadShell') as read, \
+                patch('backend.core.device.discovery.resolve_adb_binary', return_value='synthetic-adb'), \
+                ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(pipeline, (0, 1)))
+        read.assert_not_called()
+        for index, observations in enumerate(results):
+            self.assertEqual([info['package'] for info, _ in observations],
+                             ['org.example.first', 'org.example.second'])
+            self.assertTrue(all(image.size == (100 + index, 200) for _, image in observations))
+            self.assertEqual(owners[index].run.call_count, 2)
+            for call in owners[index].run.call_args_list:
+                self.assertEqual(call.args[0][1:3], ['-s', devices[index].serial])
+
+    def test_png_mapping_stop_does_not_fall_back_to_more_io(self):
         from backend.core.errors import Stopped
-        for error in (Stopped(), TimeoutError('synthetic mapping timeout')):
-            with self.subTest(error=type(error).__name__):
-                device = self.focus_adapter()
-                device._capture_focus = Mock(return_value=({}, 'synthetic focus'))
-                owner = Mock()
-                with patch('backend.core.device.read_shell.AdbReadShell') as read, patch('subprocess.run') as run:
-                    read.return_value.side_effect = error
-                    with self.assertRaises(type(error)):
-                        device.capture_observation(transport=owner)
-                    owner.run.assert_not_called()
-                    run.assert_not_called()
+        device = self.focus_adapter(); device._capture_focus = Mock(return_value=({}, 'focus'))
+        owner = Mock(); owner.run.return_value = SimpleNamespace(returncode=0, stdout=b'not PNG')
+        with patch('backend.core.device.read_shell.AdbReadShell') as read, \
+                patch('backend.core.device.discovery.resolve_adb_binary', return_value='synthetic-adb'):
+            read.return_value.side_effect = Stopped()
+            with self.assertRaises(Stopped): device.capture_observation(transport=owner)
+        self.assertEqual(owner.run.call_count, 1)
+        device._capture_jpeg.assert_not_called()
+
+    def test_known_ambiguous_physical_devices_are_not_guessed(self):
+        from backend.core.device.displays import AmbiguousDisplayMapping
+        device = self.focus_adapter();device._capture_focus = Mock(return_value=({}, 'focus'))
+        owner = Mock();owner.run.return_value = SimpleNamespace(returncode=0, stdout=b'not PNG')
+        metadata = ('Display: mDisplayId=0\n mPrimaryDisplayDevice=Same\n'
+                    'DisplayDeviceInfo{"Same": uniqueId="local:10"}\n'
+                    'DisplayDeviceInfo{"Same": uniqueId="local:20"}')
+        with patch('backend.core.device.read_shell.AdbReadShell') as read, \
+                patch('backend.core.device.discovery.resolve_adb_binary', return_value='synthetic-adb'):
+            read.return_value.return_value=SimpleNamespace(exit_code=0,output=metadata)
+            with self.assertRaises(AmbiguousDisplayMapping):device.capture_observation(transport=owner)
+        device._capture_jpeg.assert_not_called()
 
     def focus_adapter(self):
         device = DeviceAdapter.__new__(DeviceAdapter)
