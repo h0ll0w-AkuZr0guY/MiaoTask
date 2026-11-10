@@ -184,7 +184,10 @@ class ActivityDescriptionTests(unittest.TestCase):
         described=[(app['id'],activity['id'],activity['description']) for app in registry.catalog()
                    for activity in app['activities'] if activity.get('description')]
         self.assertEqual([(a,b) for a,b,_ in described],
-                         [('jd','dongdong_farm'),('zfb','yueyuezhuan')])
+                         [('jd','dongdong_farm'),('taobao','double11'),('zfb','yueyuezhuan')])
+        ended=next(text for a,b,text in described if (a,b)==('taobao','double11'))
+        self.assertIn('已结束',ended)
+        self.assertIn('淘金币日常',ended)
         transfer=next(text for a,b,text in described if (a,b)==('zfb','yueyuezhuan'))
         self.assertIn('这是一款转账红包（非支付减免红包）',transfer)
         self.assertIn('积少成多',transfer)
