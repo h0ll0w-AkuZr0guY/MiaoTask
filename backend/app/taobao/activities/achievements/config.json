@@ -20,8 +20,8 @@
     "official_entry_labels": [
       "开启我的淘宝成就"
     ],
-    "manual_entry_markers": "点此设置默认地址|请先选择地址",
-    "manual_entry_message": "成就中心需要本人先设置收货地址并开启签到；助手不会修改地址或参与抽奖，请处理后重新开始",
+    "manual_entry_markers": "点此设置默认地址|请先选择地址|^免费领正版周边$",
+    "manual_entry_message": "成就中心需要本人先设置收货地址、选择签到奖品并开启签到，完成初始化后重新开始。",
     "landing_markers": "淘宝成就|成就中心|成就点",
     "inline_claims": [
       {

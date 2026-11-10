@@ -631,6 +631,30 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
         logger.info('画面没认出入口，用控件树兜底：%s', normalize(node.text))
         return node
 
+    HOME_CHANNEL_LABELS = ('领淘金币', '红包签到', '芭芭农场', '成就中心')
+
+    def homepage_entry(self, screen):
+        """Reuse the former campaign's short homepage caption matching."""
+        if not self.homepage_visible(screen):
+            return None
+        exact = self.entry_node(screen, self.config['entry_labels'])
+        if exact:
+            return exact
+        for label in self.config['entry_labels']:
+            matches = [node for node in screen.nodes
+                       if label in normalize(node.text)
+                       and len(normalize(node.text)) <= len(label) + 8
+                       and not any(other != label and other in normalize(node.text)
+                                   for other in self.HOME_CHANNEL_LABELS)
+                       and not re.search(r'[¥￥]|已售|人付款|商品详情', node.text)
+                       and 0 < node.bounds[2] - node.bounds[0] < screen.width * .45
+                       and 0 < node.bounds[3] - node.bounds[1] < screen.height * .2
+                       and 0 < node.center[1] < screen.height * .7
+                       and (screen.geometry is None or screen.geometry.contains(*node.center))]
+            if matches:
+                return min(matches, key=lambda node: (len(normalize(node.text)), node.bounds[1]))
+        return None
+
     def official_activity_entry(self, screen):
         if screen.find(r'^历史搜索$|^搜索发现$|^猜你想搜$'):
             return None
@@ -1585,6 +1609,20 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
                 loading_until = self.control.now()+self.config['page_timeout']
                 deadline = min(hard_deadline, max(deadline, loading_until))
             native_frame = screen if screen.source == 'ui' else None
+            if auto_open and native_frame is not None and screen.package == package:
+                # Native homepage icons are readable before OCR. Require the
+                # bottom navigation and multiple channel captions, then try
+                # once before falling back to the existing visual navigation.
+                grid = sum(any(normalize(n.text) == label and 0 < n.center[1] < screen.height * .7
+                               for n in screen.nodes) for label in self.HOME_CHANNEL_LABELS)
+                node = self.homepage_entry(screen) if grid >= 2 else None
+                if node is not None and not taps.get('native-home'):
+                    taps['native-home'] = 1
+                    self.update(message='从首页打开' + normalize(node.text))
+                    self.click(node)
+                    self.pause(1)
+                    screen = self.read_page()
+                    continue
             if native_frame is not None and self.config['ocr']:
                 # Embedded pages can retain the channel grid behind a canvas
                 # or a delayed popup. Confirm the current painted page before
@@ -1691,7 +1729,10 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
                     and (self.homepage_visible(screen) or screen.find('全部频道', exact=True))
                     and not self.search_results_ready(screen)
                     and not screen.find(r'^历史搜索$|^搜索发现$|^猜你想搜$')):
-                node = self.entry_node(screen, self.config['entry_labels'])
+                node = (self.homepage_entry(screen) if self.homepage_visible(screen)
+                        else self.entry_node(screen, self.config['entry_labels']))
+                if node is None and screen.source.startswith('ocr'):
+                    node = self.native_entry(screen, self.config['entry_labels'])
                 if native_frame is not None and self.homepage_visible(screen):
                     native = self.entry_node(native_frame, self.config['entry_labels'])
                     if (native and (native_frame.width,native_frame.height)==(screen.width,screen.height)

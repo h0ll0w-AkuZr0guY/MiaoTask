@@ -87,6 +87,7 @@ class MigrationContracts(unittest.TestCase):
         self.assertIn('头条', configured.pop('skip_task_keywords'))
         self.assertEqual(configured.pop('screenshot_quality'), 70)
         self.assertEqual(configured.pop('screen_timeout_minutes'), 10)
+        self.assertIn('已结束', configured.pop('description'))
         rescan = configured.pop('rescan')
         self.assertFalse(rescan['rescan_restart_app'])
         self.assertEqual(rescan['rescan_rounds'], 3)

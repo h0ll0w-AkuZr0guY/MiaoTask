@@ -155,6 +155,85 @@ class TaobaoDailyTests(unittest.TestCase):
         caption=TextNode('领淘金币',(300,350,450,390))
         self.assertIs(runner.entry_node(Screen([caption,outer],1800,2880,'com.taobao.taobao'),['领淘金币']),outer)
 
+    def test_homepage_fallback_rejects_merged_neighboring_icons(self):
+        runner = self.runner()
+        tabs = [TextNode('购物车', (650, 2200, 780, 2300)),
+                TextNode('我的淘宝', (800, 2200, 1000, 2300))]
+        for caption, accepted in [('领淘金币抵现金', True), ('领淘金币红包签到', False)]:
+            with self.subTest(caption=caption):
+                node = TextNode(caption, (100, 300, 500, 360))
+                screen = Screen([*tabs, node], 1080, 2400, 'com.taobao.taobao', 'ocr')
+                self.assertEqual(runner.homepage_entry(screen) is node, accepted)
+        self.assertIsNone(runner.homepage_entry(Screen([node], 1080, 2400, screen.package)))
+
+    def test_confirmed_native_homepage_opens_icon_before_visual_read(self):
+        runner = self.runner()
+        entry = TextNode('领淘金币', (300, 200, 450, 350), 'ui')
+        home = Screen([entry, TextNode('芭芭农场', (500, 200, 700, 350)),
+                       TextNode('购物车', (650, 2200, 780, 2300)),
+                       TextNode('我的淘宝', (800, 2200, 1000, 2300))],
+                      1080, 2400, 'com.taobao.taobao', 'ui')
+        panel = Screen([TextNode('今日速赚', (50, 500, 400, 600))],
+                       1080, 2400, home.package, 'ocr')
+        runner.device.current_app = Mock(return_value={'package': home.package})
+        runner.read_page = Mock(side_effect=[home, panel])
+        runner.click = Mock()
+        runner.control.wait = Mock()
+        self.assertIs(runner.navigate(auto_open=True), panel)
+        runner.click.assert_called_once_with(entry)
+        self.assertEqual(runner.read_page.call_args_list, [unittest.mock.call(), unittest.mock.call()])
+
+    def test_post_campaign_coin_signin_entry_and_end_description(self):
+        runner = self.runner()
+        self.assertTrue({'赚更多金币', '去赚金币', '回日常版', '日常版'}.issubset(
+            runner.config['task_entry_labels']))
+        landing = Screen([TextNode('淘金币', (80, 100, 350, 170)),
+                          TextNode('签到领金币', (250, 600, 800, 760))],
+                         1080, 2400, 'com.taobao.taobao', 'ocr')
+        self.assertTrue(landing.find(runner.page['landing_markers']))
+        self.assertEqual(runner.entry_node(landing, runner.config['task_entry_labels']).text, '签到领金币')
+        registry = Registry(Path(__file__).resolve().parents[1] / 'backend/app').discover()
+        self.assertIn('已结束', registry.get('taobao', 'double11').description)
+        achievements = self.runner('achievements')
+        for caption in ('点此设置默认地址', '请先选择地址', '免费领正版周边'):
+            self.assertRegex(caption, achievements.page['manual_entry_markers'])
+
+    def test_all_channels_keeps_its_entry_without_homepage_bottom_tabs(self):
+        runner = self.runner('farm')
+        runner.config['ocr'] = False
+        entry = TextNode('芭芭农场', (100, 300, 300, 400))
+        channels = Screen([TextNode('全部频道', (100, 100, 400, 200)), entry],
+                          1080, 2400, 'com.taobao.taobao', 'ui')
+        panel = Screen([TextNode('肥料明细', (50, 500, 400, 600))],
+                       1080, 2400, channels.package, 'ui')
+        runner.device.current_app = Mock(return_value={'package': channels.package})
+        runner.read_page = Mock(side_effect=[channels, panel])
+        runner.click = Mock()
+        runner.control.wait = Mock()
+        self.assertIs(runner.navigate(auto_open=True), panel)
+        runner.click.assert_called_once_with(entry)
+
+    def test_cash_promotion_close_can_overlap_background_product_text(self):
+        for width, height in ((1080, 2400), (1800, 2880), (2560, 1600)):
+            with self.subTest(size=(width, height)):
+                runner = self.runner('cash-signin')
+                def node(text, x, y):
+                    return TextNode(text, (int(width*x), int(height*y),
+                                           int(width*(x+.06)), int(height*(y+.02))))
+                close = node('X', .47, .72)
+                screen = Screen([node('累计签到奖励', .05, .2),
+                                 node('送你限时折扣', .3, .3), close,
+                                 node('背景商品', .47, .745)], width, height,
+                                'com.taobao.taobao', 'ocr')
+                runner.click = Mock()
+                runner.control.wait = Mock()
+                runner.device.go_back = Mock()
+                self.assertIs(runner.dismiss_overlay(screen), close)
+                runner.click.assert_called_once_with(close)
+                runner.device.go_back.assert_not_called()
+                screen.nodes.pop(1)
+                self.assertFalse(runner.lonely_close(screen, close))
+
     def test_coin_task_entry_priority_beats_taller_version_switch(self):
         runner = self.runner()
         direct = TextNode('去赚金币',(30,1300,270,1370))
