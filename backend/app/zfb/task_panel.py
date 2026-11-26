@@ -115,7 +115,9 @@ class AlipayTaskPanel(DestinationPolicy, Activity):
         return True
 
     def _locate(self, screen, auto_open):
-        deadline = self.control.now() + self.config['return_timeout'] + 2 * self.config['page_timeout']
+        page_timeout = self.config['page_timeout']
+        deadline = self.control.now() + self.config['return_timeout'] + 2 * page_timeout
+        hard_deadline = deadline + page_timeout
         backs = entry_attempts = panel_attempts = 0
         typed = launched = False
         checked_overlay = False
@@ -146,6 +148,12 @@ class AlipayTaskPanel(DestinationPolicy, Activity):
                         screen = self._read()
                         continue
                 return screen
+            if self._groups(screen.nodes, self.config.get('loading_panel_groups', [])):
+                # The landscape canvas can expose the task sheet and its close
+                # control a frame before the rows. Leave the sheet open to render.
+                self.control.wait(.55)
+                screen = self._read()
+                continue
             if self._groups(screen.nodes, self.config['landing_groups']):
                 if not checked_overlay:
                     checked_overlay = True
@@ -166,6 +174,7 @@ class AlipayTaskPanel(DestinationPolicy, Activity):
                     self.click(target)
                     panel_attempts += 1
                     wait_until = self.control.now() + 2
+                    deadline = min(hard_deadline, max(deadline, self.control.now() + page_timeout))
             elif auto_open and self.control.now() >= wait_until:
                 field = self._search_field(screen)
                 if field and not typed:

@@ -20,7 +20,7 @@
     "official_entry_labels": [
       "开启我的淘宝成就"
     ],
-    "manual_entry_markers": "点此设置默认地址|请先选择地址|^免费领正版周边$",
+    "manual_entry_markers": "点此设置默认地址|请先选择地址",
     "manual_entry_message": "成就中心需要本人先设置收货地址、选择签到奖品并开启签到，完成初始化后重新开始。",
     "known_promotions": [
       {"markers": ["淘宝成就", "免费领正版周边", "开启[0-9]+天打卡"], "close_region": [0.86, 0.18, 0.99, 0.31]}

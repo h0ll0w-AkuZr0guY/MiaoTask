@@ -2,6 +2,7 @@
   "name": "芭芭农场",
   "bundle_by_default": false,
   "search_keyword": "芭芭农场",
+  "native_home_labels": ["芭芭农场"],
   "progressless_rows": true,
   "panel_headers": ["做任务集肥料"],
   "sign_heading": "连续签到任务规则",
@@ -38,6 +39,7 @@
       "已完成"
     ]
   ],
+  "loading_panel_groups": [["做任务集肥料"], ["关闭做任务集肥料弹窗"]],
   "task_entry_labels": [
     "任务列表",
     "集肥料",

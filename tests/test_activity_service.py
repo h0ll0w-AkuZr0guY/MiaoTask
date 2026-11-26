@@ -295,6 +295,22 @@ class AlipayTaskPanelTests(unittest.TestCase):
         runner = self.runner('ant_forest')
         self.assertEqual(runner._classify('去淘宝签到领红包', '', [], '立即领取', 0, 1)[1], 'manual')
 
+    def test_farm_open_sheet_waits_for_rendered_tasks_before_using_entry_again(self):
+        runner = self.runner('baba_farm')
+        runner.origin = self.package
+        header = TextNode('做任务集肥料', (70, 640, 830, 730))
+        loading = Screen([header, TextNode('关闭做任务集肥料弹窗', (900, 650, 1000, 740)),
+                          TextNode('支付宝·芭芭农场', (70, 190, 420, 250)),
+                          TextNode('任务列表', (810, 1810, 1010, 1950))], 1080, 2400, self.package)
+        ready = Screen([*loading.nodes, TextNode('去完成', (810, 980, 1010, 1070))],
+                       1080, 2400, self.package)
+        runner._read = Mock(return_value=ready)
+        runner.control.wait = Mock()
+        runner.click = Mock()
+        self.assertIs(runner._locate(loading, True), ready)
+        runner._read.assert_called_once()
+        runner.click.assert_not_called()
+
     def test_farm_combined_row_separates_timed_browse_from_game(self):
         runner = self.runner('baba_farm')
         nodes = [

@@ -196,8 +196,9 @@ class TaobaoDailyTests(unittest.TestCase):
         registry = Registry(Path(__file__).resolve().parents[1] / 'backend/app').discover()
         self.assertIn('已结束', registry.get('taobao', 'double11').description)
         achievements = self.runner('achievements')
-        for caption in ('点此设置默认地址', '请先选择地址', '免费领正版周边'):
+        for caption in ('点此设置默认地址', '请先选择地址'):
             self.assertRegex(caption, achievements.page['manual_entry_markers'])
+        self.assertNotRegex('免费领正版周边', achievements.page['manual_entry_markers'])
 
     def test_all_channels_keeps_its_entry_without_homepage_bottom_tabs(self):
         runner = self.runner('farm')
@@ -301,6 +302,26 @@ class TaobaoDailyTests(unittest.TestCase):
         runner.device.go_back.assert_not_called()
         screen.nodes.pop(2)
         self.assertIsNone(runner.known_promotion(screen))
+
+    def test_farm_signin_checks_completed_at_the_original_button(self):
+        runner = self.runner('farm')
+        header = TextNode('肥料明细', (40, 430, 220, 490))
+        button = TextNode('去签到', (810, 580, 940, 640))
+        before = Screen([header, button], 1000, 2000, 'com.taobao.taobao')
+        after = Screen([header, TextNode('已完成', button.bounds)], 1000, 2000, before.package)
+        task, = runner.tasks(before)
+        self.assertEqual(task.title, '农场每日签到')
+        self.assertTrue(runner.verify(task, before, after))
+
+    def test_farm_search_requires_official_card_subtitle_next_to_title(self):
+        runner = self.runner('farm')
+        title = TextNode('芭芭农场', (150, 230, 360, 285), 'ocr')
+        field = TextNode('芭芭农场', (130, 50, 760, 120), 'ocr')
+        subtitle = TextNode('施肥种树，1分钱兑水果百货', (150, 305, 630, 342), 'ocr')
+        result = Screen([field, title, subtitle], 1000, 2000, 'com.taobao.taobao', 'ocr')
+        self.assertIs(runner.official_activity_entry(result), title)
+        result.nodes.pop()
+        self.assertIsNone(runner.official_activity_entry(result))
 
     def test_confirmed_home_uses_native_icon_when_ocr_merges_adjacent_captions(self):
         runner=self.runner('farm')
@@ -857,6 +878,7 @@ class TaobaoDailyTests(unittest.TestCase):
         runner = self.runner('achievements')
         tab = TextNode('我的成就',(790,2650,1000,2720))
         screen = Screen([TextNode('淘宝成就',(180,100,560,210)),
+                         TextNode('免费领正版周边',(50,280,860,380)),
                          TextNode('未开启签到抽奖快去开启吧~',(50,560,860,630)),tab],
                         1800,2880,'com.taobao.taobao','ocr')
         runner.read = Mock(return_value=screen); runner.click = Mock()
