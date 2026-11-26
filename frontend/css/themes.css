@@ -28,7 +28,7 @@ input::placeholder{color:var(--faint)}
 input[type=checkbox],input[type=radio],input[type=range]{accent-color:var(--accent)}
 input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
 .section-heading,.setup-divider,.results-header,.filters,.task-row,.preview-meta,.package-name,.preview-controls,.settings-scope,.ranking-toolbar,.ranking-footnote,.device-rail .device-batch{border-color:var(--line)}
-.activity-selection,.advanced-entry,.settings-panel,.wifi-manager,.instance-settings,.activity-folder{background:var(--surface-soft);border-color:var(--line)}
+.activity-selection,.advanced-entry,.settings-panel,.advanced-network,.instance-settings,.activity-folder{background:var(--surface-soft);border-color:var(--line)}
 .activity-selection h3,.pipeline-details>summary,.pipeline-expand-hint,.settings-panel-heading p,.settings-switch small,.swipe-range-row strong,.swipe-range-row small,.help-card p{color:var(--muted)}
 .activity-tile,.activity-pipeline-row,.activity-download-card{background:var(--surface);border-color:var(--line)}
 .activity-tile strong,.activity-download-card h4,.activity-source-group h3,.activity-pipeline-label strong,.task-title,.stat strong{color:var(--ink)}

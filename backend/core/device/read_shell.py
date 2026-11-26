@@ -1,4 +1,4 @@
-"""Bounded Android metadata reads and cancellation of per-run device I/O."""
+"""Bounded Android USB metadata reads and cancellation of per-run device I/O."""
 from dataclasses import dataclass
 import math
 import os
@@ -11,8 +11,7 @@ import threading
 import subprocess
 from backend.core.errors import Stopped
 
-from backend.core.device.discovery import _run_adb, resolve_adb_binary
-
+from backend.core.device.discovery import _run_adb, is_usb_serial, resolve_adb_binary
 
 
 @dataclass(frozen=True)
@@ -40,9 +39,8 @@ def parse_package_list(output):
 class AdbReadShell:
     """Avoid SDK shell sentinel/PTY handling for read-only instance discovery."""
     def __init__(self, serial, *, timeout=8, budget=24, transport=None, prefer_socket=False):
-        if (not isinstance(serial, str) or not serial or len(serial) > 256
-                or serial.startswith('-') or re.search(r'\s|[\x00-\x1f]', serial)):
-            raise ValueError('实例查询需要明确的设备连接标识，请重新连接设备')
+        if not is_usb_serial(serial):
+            raise ValueError('实例查询需要明确的 USB 设备序列号，不支持无线或模拟器地址')
         self.serial = serial
         if any(isinstance(value, bool) or not isinstance(value, (int, float))
                or not math.isfinite(value) or value <= 0 for value in (timeout, budget)):
@@ -79,8 +77,8 @@ class AdbReadShell:
         return ReadResult(output, result.returncode)
 
     def _read_socket(self, args, timeout):
-        """ADB exec protocol, no shell sentinel or Windows child-process pipes."""
-        deadline = time.monotonic()+timeout
+        """ADB exec protocol, no shell sentinel or child-process pipes."""
+        deadline = time.monotonic() + timeout
         address = (os.environ.get('ANDROID_ADB_SERVER_HOST', '127.0.0.1'),
                    int(os.environ.get('ANDROID_ADB_SERVER_PORT', '5037')))
         with socket.create_connection(address, timeout=timeout) as channel:
@@ -92,7 +90,7 @@ class AdbReadShell:
                 channel.close()
             with self.transport.own(cancel) if self.transport else nullcontext():
                 def receive(size):
-                    remaining = deadline-time.monotonic()
+                    remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         raise TimeoutError('ADB只读查询超时')
                     channel.settimeout(remaining)
@@ -100,54 +98,31 @@ class AdbReadShell:
                 def exact(size):
                     output = bytearray()
                     while len(output) < size:
-                        part = receive(size-len(output))
+                        part = receive(size - len(output))
                         if not part:
                             raise ConnectionError('ADB只读通道提前断开')
                         output.extend(part)
                     return bytes(output)
                 def command(text):
                     encoded = text.encode('utf-8')
-                    channel.sendall(f'{len(encoded):04x}'.encode()+encoded)
+                    channel.sendall(f'{len(encoded):04x}'.encode() + encoded)
                     status = exact(4)
                     if status != b'OKAY':
                         if status == b'FAIL':
-                            length = int(exact(4),16)
-                            raise ConnectionError(exact(length).decode('utf-8','replace'))
+                            length = int(exact(4), 16)
+                            raise ConnectionError(exact(length).decode('utf-8', 'replace'))
                         raise ConnectionError('ADB只读通道协议错误')
-                command('host:transport:'+self.serial)
-                command('exec:'+shlex.join(args))
+                command('host:transport:' + self.serial)
+                command('exec:' + shlex.join(args))
                 output = bytearray()
                 while True:
                     part = receive(65536)
                     if not part:
                         break
                     output.extend(part)
-                    if len(output) > 8*1024*1024:
+                    if len(output) > 8 * 1024 * 1024:
                         raise ValueError('设备只读查询返回内容过大')
-                return ReadResult(output.decode('utf-8','replace'),0)
-
-
-def reconnect_offline_wireless(serial, timeout, transport=None):
-    """Reconnect only an explicitly configured TCP endpoint, never the server.
-
-    A live transport is left untouched. No address discovery or fallback device
-    selection is performed, and the caller owns the overall focus deadline.
-    """
-    if not re.fullmatch(r'(?:\d{1,3}\.){3}\d{1,3}:\d{1,5}', str(serial)) or timeout <= 0:
-        return False
-    deadline = time.monotonic() + timeout
-    io = transport or DeviceIO()
-    try:
-        status = io.run([resolve_adb_binary(), '-s', serial, 'get-state'], min(1, timeout), text=True)
-        if status.returncode == 0:
-            return False
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return False
-        result = io.run([resolve_adb_binary(), 'connect', serial], min(2, remaining), text=True)
-        return result.returncode == 0
-    except (OSError, TimeoutError, subprocess.TimeoutExpired):
-        return False
+                return ReadResult(output.decode('utf-8', 'replace'), 0)
 
 
 class DeviceIO:
@@ -191,8 +166,7 @@ class DeviceIO:
 
     def run(self, args, timeout=8, *, text=False):
         self.check()
-        process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                   creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         def kill():
             if process.poll() is None:
                 process.kill()

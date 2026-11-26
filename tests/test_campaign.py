@@ -1874,7 +1874,7 @@ class GestureTests(unittest.TestCase):
 
 
 class NotificationTests(unittest.TestCase):
-    def test_non_windows_does_not_start_a_dialog(self):
+    def test_non_macos_does_not_start_a_dialog(self):
         with patch.object(notifications.sys, 'platform', 'linux'), \
                 patch.object(notifications, '_show_security_dialog') as dialog:
             self.assertFalse(notifications.notify_security_attention())
@@ -1886,7 +1886,7 @@ class NotificationTests(unittest.TestCase):
         def dialog():
             entered.set()
             dismiss.wait(2)
-        with patch.object(notifications.sys, 'platform', 'win32'), \
+        with patch.object(notifications.sys, 'platform', 'darwin'), \
                 patch.object(notifications, '_popup_lock', lock), \
                 patch.object(notifications, '_show_security_dialog', side_effect=dialog):
             try:
@@ -1895,25 +1895,22 @@ class NotificationTests(unittest.TestCase):
                 self.assertFalse(notifications.notify_security_attention())
             finally:
                 dismiss.set()
-                # Wait on the actual lock, rather than guessing thread timings.
                 self.assertTrue(lock.acquire(timeout=2))
                 lock.release()
 
-    def test_native_dialog_uses_foreground_warning_and_explicit_manual_resume(self):
-        api = Mock()
-        api.MessageBoxW.return_value = 1
-        with patch('ctypes.WinDLL', return_value=api, create=True):
+    def test_native_dialog_uses_macos_osascript_warning_and_explicit_manual_resume(self):
+        with patch.object(notifications.subprocess, 'run') as run:
             notifications._show_security_dialog()
-        owner, message, title, flags = api.MessageBoxW.call_args.args
-        self.assertIsNone(owner)
-        self.assertIn('开始自动执行', message)
-        self.assertIn('不会继续操作手机', message)
-        self.assertIn('手工验证', title)
-        self.assertEqual(flags, 0x30 | 0x10000 | 0x40000)
+        cmd = run.call_args.args[0]
+        self.assertEqual(cmd[:2], ['osascript', '-e'])
+        script = cmd[2]
+        self.assertIn('开始自动执行', script)
+        self.assertIn('不会继续操作手机', script)
+        self.assertIn('手工验证', script)
 
     def test_dialog_failure_releases_dedup_lock(self):
         lock = threading.Lock()
-        with patch.object(notifications.sys, 'platform', 'win32'), \
+        with patch.object(notifications.sys, 'platform', 'darwin'), \
                 patch.object(notifications, '_popup_lock', lock), \
                 patch.object(notifications, '_show_security_dialog', side_effect=OSError('no desktop')), \
                 self.assertLogs('backend.core.service.notify', level='WARNING'):

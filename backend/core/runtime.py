@@ -1,4 +1,4 @@
-"""Asset and writable-data paths for source and frozen distributions."""
+"""Asset and writable-data paths for source and frozen macOS distributions."""
 import json
 import os
 from pathlib import Path
@@ -15,12 +15,29 @@ def assets_dir():
     return Path(getattr(sys, '_MEIPASS', ROOT))
 
 
+def user_data_root():
+    """Return the user-scoped private data directory (Application Support on macOS)."""
+    local_app_data = os.environ.get('LOCALAPPDATA')
+    if local_app_data:
+        return Path(local_app_data) / 'MiaoTask'
+    if sys.platform == 'darwin':
+        return Path.home() / 'Library' / 'Application Support' / 'MiaoTask'
+    return Path.home() / 'MiaoTask'
+
+
+def _portable_dir():
+    executable = Path(sys.executable).resolve()
+    if len(executable.parents) >= 3 and executable.parents[1].name == 'Contents' and executable.parents[2].suffix == '.app':
+        return executable.parents[2].parent
+    return executable.parent
+
+
 def data_dir():
     override = os.environ.get('MIAO_DATA_DIR')
     if override:
         path = Path(override).expanduser().resolve()
     elif getattr(sys, 'frozen', False):
-        path = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'MiaoTask'
+        path = user_data_root()
     else:
         path = ROOT / 'runtime'
     path.mkdir(parents=True, exist_ok=True)
@@ -34,7 +51,7 @@ def _seed_activities(source, target):
     # Do not follow links out of an installation while migrating its source.
     selected = [source / name for name in ('apps', 'installed.json', 'catalog.json')
                 if (source / name).exists()]
-    linked = lambda path: path.is_symlink() or path.is_junction()
+    linked = lambda path: path.is_symlink() or getattr(path, 'is_junction', lambda: False)()
     if linked(source) or any(linked(item) or (item.is_dir() and any(linked(p) for p in item.rglob('*')))
            for item in selected):
         raise ValueError('旧活动目录含符号链接，请保留现场并从活动中心重新安装')
@@ -70,7 +87,7 @@ def activities_dir():
             return target
         private = data_dir()
         isolated = bool(os.environ.get('MIAO_DATA_DIR'))
-        portable = Path(sys.executable).resolve().parent if getattr(sys, 'frozen', False) else ROOT
+        portable = _portable_dir() if getattr(sys, 'frozen', False) else ROOT
         preferred = private / 'activities' if isolated else portable / 'activities'
         target = preferred
         try:

@@ -59,26 +59,6 @@ def discover_devices():
                                 status=device['state'], model=device['model']))
     except AndroidConnectionError as exc:
         errors.append(f'adb: {exc}')
-    # Discovery shares the connection helper's exact Android executable and
-    # state parser. It does not perform the connection-only backend restart or
-    # wait for authorization; an unauthorized phone remains selectable here.
-    for tool, args, kind in [('hdc', ['list', 'targets'], 'hmdriver2')]:
-        binary = shutil.which(tool)
-        if not binary:
-            continue
-        try:
-            result = subprocess.run([binary, *args], capture_output=True, text=True, timeout=8,
-                                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-            if result.returncode:
-                errors.append(f'{tool}: {result.stderr.strip() or result.stdout.strip()}')
-            for line in result.stdout.splitlines():
-                fields = line.split()
-                if not fields or line.startswith(('List ', '*', '[Empty]')):
-                    continue
-                if len(fields) == 1:
-                    devices.append(dict(serial=fields[0], type=kind, status='device', model='HarmonyOS'))
-        except (OSError, subprocess.SubprocessError) as exc:
-            errors.append(f'{tool}: {exc}')
     return dict(devices=devices, errors=errors)
 
 
@@ -354,7 +334,7 @@ class Controller(ActivityPipeline, PreviewWorker):
                     self.thread = threading.Thread(target=self._change_activity, args=(registration, config), daemon=True)
                     self.thread.start()
                     return
-                if not self.registration and action not in ('configure', 'wifi_pair'):
+                if not self.registration and action != 'configure':
                     raise ValueError('未注册活动，请先安装活动包')
                 planned_run = action == 'run'
                 if planned_run:
@@ -371,19 +351,18 @@ class Controller(ActivityPipeline, PreviewWorker):
                         (payload.get('app', self.registration.app.id) != self.registration.app.id
                          or payload.get('activity', self.registration.activity.id) != self.registration.activity.id)):
                     raise ValueError('请先选择对应应用和活动')
-                if action not in ('connect', 'wifi_pair', 'wifi_connect', 'scan', 'run', 'open_app', 'capture', 'configure', 'reset_tasks', 'select_instance', 'refresh_instances'):
+                if action not in ('connect', 'scan', 'run', 'open_app', 'capture', 'configure', 'reset_tasks', 'select_instance', 'refresh_instances'):
                     raise ValueError('未知操作')
-                if action in ('wifi_pair', 'wifi_connect'):
-                    if self.registration is None and payload.get('connect_address'):
-                        raise ValueError('请先安装并选择活动，再连接设备')
-                    from backend.core.device.wifi import endpoint, pairing_code
-                    address = payload.get('connect_address')
-                    serial = endpoint(address) if action == 'wifi_connect' or address else None
-                    payload = dict(payload, serial=serial, device_type='uiautomator2')
-                    if action == 'wifi_pair':
-                        payload['pair_address'] = endpoint(payload.get('pair_address'))
-                        payload['pair_code'] = pairing_code(payload.get('pair_code'))
-                if action not in ('connect', 'wifi_pair', 'wifi_connect', 'configure') and self.device is None:
+                if action == 'connect':
+                    from backend.core.device.discovery import is_usb_serial
+                    kind = payload.get('device_type', 'uiautomator2')
+                    serial = payload.get('serial') or None
+                    if kind != 'uiautomator2':
+                        raise ValueError('当前仅支持 Android ADB USB 连接（uiautomator2）')
+                    if serial is not None and not is_usb_serial(serial):
+                        raise ValueError('仅支持通过 macOS ADB USB 连接的设备序列号，不支持无线调试或模拟器地址')
+                    payload = dict(payload, device_type='uiautomator2', serial=serial)
+                if action not in ('connect', 'configure') and self.device is None:
                     raise ValueError('请先连接设备')
                 config = copy.deepcopy(self.state['config'])
                 overrides = payload.get('config', {})
@@ -421,11 +400,11 @@ class Controller(ActivityPipeline, PreviewWorker):
                     if action == 'run' and 'all_instances' in payload:
                         self.state['all_instances'] = payload['all_instances']
                     self.control = RunControl()
-                    self.update(config=config, status={'connect': 'connecting', 'wifi_pair': 'connecting', 'wifi_connect': 'connecting', 'scan': 'scanning',
+                    self.update(config=config, status={'connect': 'connecting', 'scan': 'scanning',
                                                       'run': 'running', 'capture': 'scanning', 'reset_tasks': 'scanning',
-                                                      'open_app':'scanning',
+                                                      'open_app': 'scanning',
                                                       'select_instance': 'scanning', 'refresh_instances': 'scanning'}[action],
-                                message='正在连接手机' if action in ('connect', 'wifi_pair', 'wifi_connect') else '正在读取手机页面')
+                                message='正在通过 USB 连接手机' if action == 'connect' else '正在读取手机页面')
                     self.thread = threading.Thread(target=self._work, args=(action, payload, config), daemon=True,
                                                    name='miao-device-worker')
                     self.thread.start()
@@ -441,20 +420,9 @@ class Controller(ActivityPipeline, PreviewWorker):
     def _work(self, action, payload, config):
         self._last_failure_stamp = 0.0
         try:
-            if action == 'wifi_pair':
-                from backend.core.device.wifi import pair_wifi
-                try:
-                    pair_wifi(payload['pair_address'], payload.pop('pair_code'), self._connection_status)
-                finally:
-                    payload.pop('pair_code', None)
-                self.control.check()
-                self.update(wifi_paired=True)
-                if not payload.get('serial'):
-                    self.update(status='ready' if self.device else 'disconnected', phase='ready' if self.device else 'idle',
-                                message='配对成功；关闭手机配对弹窗，填写无线调试主页面的连接地址，再点击连接')
-                    return
-            if action in ('connect', 'wifi_pair', 'wifi_connect'):
+            if action == 'connect':
                 from backend.core.device.adapter import DeviceAdapter
+                from backend.core.device.discovery import is_usb_serial
                 if getattr(self, 'release_device', None):
                     self.release_device()
                 # A failed attempt to choose another phone must not leave the
@@ -475,12 +443,8 @@ class Controller(ActivityPipeline, PreviewWorker):
                             selected_instance='', instance_warnings=[], instance_queue=[])
                 kind = payload.get('device_type', 'uiautomator2')
                 serial = payload.get('serial') or None
-                if kind not in ('uiautomator2', 'hmdriver2') or (serial and (not isinstance(serial, str) or len(serial) > 128)):
-                    raise ValueError('设备类型或序列号无效')
-                if action in ('wifi_pair', 'wifi_connect'):
-                    from backend.core.device.wifi import connect_wifi
-                    self.control.check()
-                    serial = connect_wifi(serial, self._connection_status)
+                if kind != 'uiautomator2' or (serial is not None and not is_usb_serial(serial)):
+                    raise ValueError('仅支持通过 macOS ADB USB 连接 Android 设备')
                 options = dict(on_status=self._connection_status, application=self.registration.app.profile)
                 if getattr(self, 'claim_device', None):
                     options['on_resolved'] = self.claim_device
@@ -578,12 +542,11 @@ class Controller(ActivityPipeline, PreviewWorker):
             self._finish_activity_pipeline('error')
             self.interrupt_records('执行中断，本次进度尚未核验')
             logger.exception('设备操作失败')
-            self.update(status='error', phase='connect_failed' if action in ('connect', 'wifi_pair', 'wifi_connect') else 'error',
+            self.update(status='error', phase='connect_failed' if action == 'connect' else 'error',
                         message=f'{type(exc).__name__}: {exc}', remaining=0)
             self.on_failure(dict(reason=f'{type(exc).__name__}: {exc}', phase='error', kind='exception'))
         finally:
-            payload.pop('pair_code', None)
-            if action in ('connect','wifi_pair','wifi_connect') and self.device is None and getattr(self, 'release_device', None):
+            if action == 'connect' and self.device is None and getattr(self, 'release_device', None):
                 self.release_device()
             if action in ('run', 'scan') and self.device is not None and not self.control.stopped.is_set():
                 try:
@@ -798,18 +761,9 @@ def make_handler(controller, token):
                 self.reply(200, dict(app='miao-task', version=version()))
             elif path == '/api/devices':
                 self.reply(200, discover_devices())
-            elif path == '/api/emulators':
-                from backend.core.device.emulators import discover_emulators
-                self.reply(200, discover_emulators())
             elif path == '/api/inventory':
                 from backend.core.device.inventory import inventory
                 self.reply(200, inventory())
-            elif path == '/api/wifi/devices':
-                from backend.core.device.wifi import discover_wifi
-                try:
-                    self.reply(200, discover_wifi())
-                except ConnectionError as exc:
-                    self.reply(200, dict(services=[], devices=[], errors=[str(exc)]))
             elif path in ('/api/screenshot', '/api/preview'):
                 with controller.lock:
                     data = controller.image
@@ -929,8 +883,7 @@ def make_handler(controller, token):
                     self.reply(200, controller.diagnostics(), 'application/zip')
                     return
                 action = path.removeprefix('/api/')
-                action = {'session/start': 'run', 'session/pause': 'pause', 'session/resume': 'resume', 'session/stop': 'stop',
-                          'wifi/pair': 'wifi_pair', 'wifi/connect': 'wifi_connect'}.get(action, action)
+                action = {'session/start': 'run', 'session/pause': 'pause', 'session/resume': 'resume', 'session/stop': 'stop'}.get(action, action)
                 controller.dispatch(action, payload)
                 self.reply(202, {'ok': True})
             except (ValueError, TypeError) as exc:

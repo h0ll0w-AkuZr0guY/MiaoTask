@@ -75,11 +75,11 @@ def prepare(root, version, summary):
         values = [value for kind, value in entries if kind == category]
         if values:
             groups.append('* 【' + category + '】' + '；'.join(value.rstrip('。；') for value in values) + '。')
-    footer = ('下载 Windows x64 ZIP，完整解压后运行 `MiaoTask.exe`，保留 `_internal/`。升级前退出旧助手。'
+    footer = ('下载 macOS Apple Silicon (arm64) ZIP，完整解压后运行 `./MiaoTask`（或双击 `start.command`），保留 `_internal/`。升级前退出旧助手。'
               '安全认证需本人处理，诊断截图分享前请脱敏。\n\n'
               '感谢 [MonsterNone/tmall-miao](https://github.com/MonsterNone/tmall-miao) 提供早期实现思路参考。'
-              '[使用说明](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/blob/main/docs/USAGE.md) · '
-              '[项目介绍](https://github.com/h0ll0w-AkuZr0guY/MiaoTask#readme)\n\n')
+              '[使用说明](https://github.com/heyunl/MiaoTask-macOS/blob/main/docs/USAGE.md) · '
+              '[项目介绍](https://github.com/heyunl/MiaoTask-macOS#readme)\n\n')
     section = '## ' + version + '\n\n' + summary.strip() + '\n\n' + '\n'.join(groups) + '\n\n' + footer
     position = re.search(r'^## ', history, re.M)
     position = position.start() if position else len(history.rstrip()) + 2

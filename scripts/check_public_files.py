@@ -7,13 +7,13 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parent.parent
 ROOT_FILES = {
-    '.gitignore', '.gitattributes', '.github/CODEOWNERS', 'README.md', 'AGENTS.md', 'LICENSE', 'NOTICE', 'main.py', 'build.spec', 'start.bat',
-    'build/README.md', 'requirements.txt', 'requirements-build.txt', 'requirements-windows.lock', 'version.json',
+    '.gitignore', '.gitattributes', '.github/CODEOWNERS', 'README.md', 'AGENTS.md', 'LICENSE', 'NOTICE', 'main.py', 'build.spec', 'start.command',
+    'build/README.md', 'requirements.txt', 'requirements-build.txt', 'version.json',
 }
 SOURCE_DIRS = {'.github', 'configs', 'docs', 'modules', 'scripts', 'tests', 'web', 'frontend', 'backend', 'shared'}
 PRIVATE_PARTS = {'runtime', 'private', 'screenshots', 'captures', 'reports', 'backups',
                  '.venv', 'venv', 'env', 'build', 'dist', '__pycache__', '.ruff_cache', '.idea', '.vscode'}
-SOURCE_SUFFIXES = {'.py', '.md', '.json', '.yml', '.yaml', '.html', '.css', '.js', '.txt', '.lock'}
+SOURCE_SUFFIXES = {'.py', '.md', '.json', '.yml', '.yaml', '.html', '.css', '.js', '.txt', '.lock', '.command'}
 # README and public graphics are maintained directly by the maintainer. Their
 # contents, individual filenames, signatures and sizes are outside this audit.
 IMAGE_SUFFIXES = {'.png', '.webp', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.avif', '.bmp', '.tif', '.tiff'}

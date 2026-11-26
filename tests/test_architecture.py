@@ -10,12 +10,11 @@ import threading
 import unittest
 from unittest.mock import Mock, patch
 
-import numpy as np
 from PIL import Image
 
 from backend.core.config.loader import load_config, load_resolved
 from backend.core.device.geometry import (CoordinateTransform, DisplayGeometry, IdentityImageProcessor, PreparedImage)
-from backend.core.device.endpoints import ConfiguredEmulatorProvider
+from backend.core.device.endpoints import UsbEndpointProvider
 from backend.core.device.contracts import DriverFactory
 from backend.core.device.profile import ApplicationProfile
 from backend.core.device.instances import AppInstance
@@ -287,12 +286,13 @@ class DeviceExtensionContracts(unittest.TestCase):
         with self.assertRaises(ValueError):
             DisplayGeometry(1080, 2400, safe_insets=(600,0,600,0))
 
-    def test_emulator_provider_uses_configured_endpoint_without_adb_or_port_guess(self):
-        provider = ConfiguredEmulatorProvider(['127.0.0.1:16384'], 'MuMu')
+    def test_usb_endpoint_provider_accepts_usb_serial_and_rejects_tcp_or_emulator(self):
+        provider = UsbEndpointProvider(['R58M123456A'], 'USB Phone')
         endpoint = provider.discover()[0]
-        self.assertEqual((endpoint.serial, endpoint.transport), ('127.0.0.1:16384', 'tcp'))
-        with self.assertRaises(ValueError):
-            ConfiguredEmulatorProvider(['127.0.0.1:99999'])
+        self.assertEqual((endpoint.serial, endpoint.transport), ('R58M123456A', 'usb'))
+        for invalid in ('127.0.0.1:16384', 'emulator-5554', 'phone._adb-tls-connect._tcp'):
+            with self.assertRaises(ValueError):
+                UsbEndpointProvider([invalid])
 
     def test_custom_driver_factory_does_not_change_existing_adapter(self):
         factory = DriverFactory(); instance = Mock()

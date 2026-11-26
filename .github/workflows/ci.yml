@@ -15,28 +15,28 @@ concurrency:
 jobs:
   check:
     name: check
-    runs-on: windows-latest
+    runs-on: macos-14
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
           cache: pip
-          cache-dependency-path: requirements-windows.lock
-      - uses: actions/setup-node@v6
+          cache-dependency-path: requirements.txt
+      - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: python -m pip install -r requirements-windows.lock
+      - run: python -m pip install -r requirements.txt
       - name: Validate a dispatched release preparation
         if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/codex/release-prepare-')
         run: python scripts/prepare_release.py --ready
       - name: Protect release records and suggest PR context
         if: github.event_name == 'pull_request'
-        shell: pwsh
-        run: python scripts/check_contribution.py --event "$env:GITHUB_EVENT_PATH" --advisory-metadata
+        shell: bash
+        run: python scripts/check_contribution.py --event "$GITHUB_EVENT_PATH" --advisory-metadata
       - name: Check public source, regressions and syntax
         run: python scripts/check_project.py

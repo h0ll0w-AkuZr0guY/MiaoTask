@@ -11,7 +11,10 @@ _LOCK = threading.RLock()
 
 def preferences_path():
     base = os.environ.get('MIAO_DATA_DIR')
-    return (Path(base) if base else Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'MiaoTask') / 'preferences.json'
+    if base:
+        return Path(base) / 'preferences.json'
+    from backend.core.runtime import user_data_root
+    return user_data_root() / 'preferences.json'
 
 
 def read_preferences():

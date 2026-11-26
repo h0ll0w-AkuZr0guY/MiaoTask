@@ -598,16 +598,27 @@ class FrameworkPreferencesTests(unittest.TestCase):
         self.assertEqual(volume[0], 7)
 
     def test_adb_cleanup_only_new_matching_process(self):
-        with patch.object(OwnedAdb, '_processes', side_effect=[{(1, '10')}, {(1, '10'), (2, '20')}]), patch.object(OwnedAdb, '_powershell') as execute:
-            OwnedAdb('adb.exe').close()
-            self.assertEqual(execute.call_count, 1)
-            self.assertIn('ProcessId=2', execute.call_args.args[0])
-            self.assertIn("-eq '20'", execute.call_args.args[0])
+        import signal
+        import subprocess
+        from pathlib import Path
+        binary = str(Path('adb').resolve())
+        stamp_1 = 'Mon Nov 25 10:00:00 2026'
+        stamp_2 = 'Mon Nov 25 10:01:00 2026'
+        verify = subprocess.CompletedProcess([], 0, f'{stamp_2} {binary} server\n', '')
+        with patch.object(OwnedAdb, '_processes', side_effect=[{(1, stamp_1)}, {(1, stamp_1), (2, stamp_2)}]), \
+                patch('backend.core.device.adb_lifecycle.subprocess.run', return_value=verify) as check_proc, \
+                patch('backend.core.device.adb_lifecycle.os.kill') as kill:
+            OwnedAdb('adb').close()
+            check_proc.assert_called_once()
+            self.assertEqual(check_proc.call_args.args[0][:2], ['ps', '-p'])
+            self.assertEqual(check_proc.call_args.args[0][2], '2')
+            kill.assert_called_once_with(2, signal.SIGTERM)
 
     def test_unknown_adb_ownership_never_kills(self):
-        with patch.object(OwnedAdb, '_processes', side_effect=[None, {(2, '20')}]), patch.object(OwnedAdb, '_powershell') as execute:
-            OwnedAdb('adb.exe').close()
-            execute.assert_not_called()
+        with patch.object(OwnedAdb, '_processes', side_effect=[None, {(2, 'Mon Nov 25 10:01:00 2026')}]), \
+                patch('backend.core.device.adb_lifecycle.os.kill') as kill:
+            OwnedAdb('adb').close()
+            kill.assert_not_called()
 
     def test_finished_marker_scoped_to_day_instance_and_activity(self):
         with tempfile.TemporaryDirectory() as folder:

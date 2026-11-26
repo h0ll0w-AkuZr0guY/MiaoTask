@@ -17,7 +17,6 @@ STATIC = {
     '/js/app.js': ('js/app.js', 'text/javascript; charset=utf-8'),
     '/js/api.js': ('js/api.js', 'text/javascript; charset=utf-8'),
     '/js/components/activity-selector.js': ('js/components/activity-selector.js', 'text/javascript; charset=utf-8'),
-    '/js/components/wifi-connect.js': ('js/components/wifi-connect.js', 'text/javascript; charset=utf-8'),
     '/css/base.css': ('css/base.css', 'text/css; charset=utf-8'),
 }
 

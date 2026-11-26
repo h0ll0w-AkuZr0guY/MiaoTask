@@ -2,34 +2,34 @@
 
 开发前依次阅读[架构](ARCHITECTURE.md)、[贡献规范](CONTRIBUTING.md)和本页，再按需求查阅[公用能力与接口手册](REUSABLE_INTERFACES.md)。设备接入与坐标属于 core，平台规则位于对应 app，前端只提交操作与显示状态。先复用已有能力，再判断是否需要扩展共用契约。
 
-## 源码运行
+## 源码运行（macOS Apple Silicon）
 
-使用 Python 3.13，准备可用的 Android ADB；手机保持解锁并允许调试。HarmonyOS 驱动接口需要另行提供 HDC，当前便携包不包含 HDC。
+在搭载 Apple Silicon（M 系列芯片，`arm64`）的 macOS 上使用 Python 3.12+，并准备可用的 macOS Android `adb`（例如 `brew install android-platform-tools`）；手机通过 USB 数据线连接、保持解锁并允许 USB 调试。
 
-```powershell
-git clone https://github.com/h0ll0w-AkuZr0guY/MiaoTask.git
-cd MiaoTask
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe main.py
+```bash
+git clone https://github.com/heyunl/MiaoTask-macOS.git
+cd MiaoTask-macOS
+python3 -m venv .venv
+./.venv/bin/python -m pip install -r requirements.txt
+./.venv/bin/python main.py
 ```
 
-Windows 也可用 `start.bat`。网页无需 npm 或额外构建步骤。命令行参数示例：
+macOS 下也可直接双击或执行 `./start.command`。网页无需 npm 或额外构建步骤。
 
-源码运行仍直接发现仓库内活动。便携构建按活动配置的bundle_by_default预装，亦可显式生成纯框架；活动中心从官方 GitHub main 按需获取活动源码；开发与构建验证方法见[构建文档](BUILDING.md)。无需为每次活动规则更新发布框架或额外的活动 Release。
+源码运行仍直接发现仓库内活动。便携构建按活动配置的 `bundle_by_default` 预装，亦可显式生成纯框架；活动中心从官方 GitHub `main` 按需获取活动源码；开发与构建验证方法见[构建文档](BUILDING.md)。命令行参数示例：
 
-```powershell
+```bash
 # 自动进入活动，限制本轮次数
-.\.venv\Scripts\python.exe main.py --cli --auto-open --max-tasks 2
+./.venv/bin/python main.py --cli --auto-open --max-tasks 2
 # 仅识别当前页面
-.\.venv\Scripts\python.exe main.py --cli --scan
+./.venv/bin/python main.py --cli --scan
 # 指定实际发现的 Android 用户空间（数字仅为示例）
-.\.venv\Scripts\python.exe main.py --cli --instance com.taobao.taobao@999 --auto-open
+./.venv/bin/python main.py --cli --instance com.taobao.taobao@999 --auto-open
 # 修改网页端口
-.\.venv\Scripts\python.exe main.py --port 8766 --no-browser
+./.venv/bin/python main.py --port 8766 --no-browser
 ```
 
-`--serial` 指定设备，`--config` 加载公共配置覆盖项，完整参数见 `main.py --help`。默认活动规则在 `backend/app/taobao/activities/double11/config.json` 与 `backend/core/config/defaults.json`，不保存个人设备信息。
+`--serial` 指定 USB 设备序列号，`--config` 加载公共配置覆盖项，完整参数见 `main.py --help`。默认活动规则在 `backend/app/taobao/activities/double11/config.json` 与 `backend/core/config/defaults.json`，不保存个人设备信息。
 
 默认网页模式和单设备 CLI 使用同一注册表与活动工厂。CLI 示例适合单进程单设备调试；多设备、日统计、实时队列选择与诊断绑定由控制台的 `DeviceHub/Controller` 统一管理，不应启动多份 CLI 去操作同一设备。
 
@@ -149,13 +149,13 @@ HTTP 仅绑定本机，写操作校验 Host、Origin 与会话令牌。每台设
 
 ## 数据与接口
 
-源码数据默认位于 `runtime/`，便携版位于 `%LOCALAPPDATA%\MiaoTask`；`MIAO_DATA_DIR` 可覆盖位置。记录使用 `apps/<app>/activities/<activity>/daily/<date>/<device_hash>/instances/<instance_hash>/`。原活动首次接续旧 daily 记录，保留旧文件，其他活动不导入。
+源码数据默认位于 `runtime/`，macOS 便携版位于 `~/Library/Application Support/MiaoTask`；`MIAO_DATA_DIR` 可覆盖位置。记录使用 `apps/<app>/activities/<activity>/daily/<date>/<device_hash>/instances/<instance_hash>/`。原活动首次接续旧 daily 记录，保留旧文件，其他活动不导入。
 
 | 数据 | 含义 |
 | --- | --- |
 | `state.json` | 当日累计、计数水位、任务选择与失败预算、不可用任务 |
 | `events.jsonl` | 阶段变化与日志 |
-| `failures/` | 失败说明和可取得的原始截图 |
+| `failures/` | 阶段失败说明和可取得的原始截图 |
 | API `stats` / `daily.stats` | 本轮 / 当前实例今日累计 |
 | API `image_sequence` | 新截图序号 |
 | GET `/api/diagnostics` | 当前设备、所选实例当天的本地诊断 ZIP |
@@ -164,15 +164,9 @@ HTTP 仅绑定本机，写操作校验 Host、Origin 与会话令牌。每台设
 
 接口和配置以当前代码为准。公共能力变更时同步[接口手册](REUSABLE_INTERFACES.md)的签名、输入输出、限制和示例；所有权或依赖方向变化时再更新架构。结构调整应独立提出迁移方案，避免让活动逻辑依赖网页布局或具体驱动细节。参与修改见[贡献规范](CONTRIBUTING.md)，验证、构建和发布见[测试与打包](BUILDING.md)。
 
-任务文案的排除词只放在公共默认词表，交由`keyword_skip_reason`统一匹配，活动分类器不要再把同类词硬编码为manual。新增任务能力仍需实现动作与核验；页面安全认证、真实交易边界不属于可编辑任务词表。
+任务文案的排除词只放在公共默认词表，交由 `keyword_skip_reason` 统一匹配，活动分类器不要再把同类词硬编码为 manual。新增任务能力仍需实现动作与核验；页面安全认证、真实交易边界不属于可编辑任务词表。
 
 
-### CPU/CUDA环境对齐
+### macOS Apple Silicon Vision OCR 环境约束
 
-CPU环境继续使用requirements-windows.lock。CUDA环境须单独创建，不在现有环境中叠装onnxruntime和onnxruntime-gpu（两者提供同名Python模块）。保持Python小版本、RapidOCR、NumPy、OpenCV及其他基础锁定包一致，仅用同版本onnxruntime-gpu替换CPU分发包，按其声明安装匹配的CUDA/cuDNN运行库；无需为了ONNX推理安装Torch。
-
-首次安装GPU运行库体积较大。先检查编译执行器，再用真实模型核验det/rec实际provider，不能仅看到CUDAExecutionProvider列表就断言GPU可用。必须验证强制CUDA但CPU包、初始化失败、推理失败的CPU回退，以及共享偏好不覆盖任务设置。验证与构建沿用BUILDING文档，暂不改变CPU发布环境或自动发布GPU包。
-
-运行时扩展清单校验操作系统、架构、Python ABI和ORT版本，锁定文件记录NVIDIA依赖；交付前在独立进程验证实际模型与回退。现有PyInstaller的_internal是冻结运行时，不等同于可直接pip安装和重新打包的完整开发环境；不可仅替换几个DLL就承诺任意框架源码升级。启动器应分别管理版本化源码、CPU/GPU运行时和可回滚构建产物。
-
-本地CUDA验证使用`configs/environments/requirements-cuda.lock`，与CPU锁定文件的共有依赖版本保持一致，仅替换ORT分发包并追加NVIDIA库。单独创建环境后使用该完整锁定文件安装，不再叠加requirements.txt；CPU与GPU的ORT包不混装。基础包继续使用CPU锁定环境，CUDA扩展由独立GPU环境生成；命令与验收范围统一见BUILDING。
+本地 OCR 通过 `pyobjc-framework-Vision` 与 `pyobjc-framework-Quartz` 直接调用 macOS 原生 `Vision` 框架，不再依赖 `rapidocr`、`onnxruntime`、`opencv-python` 或外部 `runtime_plugins/`（CUDA / DirectML）。开发机必须运行原生 `arm64` Python（不要通过 Rosetta `x86_64` 启动解释器，否则 `require_apple_silicon_macos()` 会拒绝初始化）。离线单元测试通过模拟 PyObjC `Vision` 接口验证坐标映射、语言选择与取消边界，也可在其他系统运行基础逻辑回归。

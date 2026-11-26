@@ -5,7 +5,7 @@ import shutil
 import tempfile
 import unittest
 
-from scripts.package_windows import copy_documentation, PORTABLE_DOCS
+from scripts.package_macos import copy_documentation, PORTABLE_DOCS
 from scripts.release_notes import extract_notes, ROOT
 
 
@@ -131,7 +131,7 @@ class ReleasePreparationTests(unittest.TestCase):
         publish = yaml.load((folder / 'publish-release.yml').read_text(encoding='utf-8'), Loader=yaml.BaseLoader)
         self.assertEqual(publish['jobs']['publish']['environment'], 'release')
         ci = (folder / 'ci.yml').read_text(encoding='utf-8')
-        self.assertNotIn('package_windows.py', ci)
+        self.assertNotIn('package_macos.py', ci)
         self.assertNotIn('gh release', ci)
         self.assertNotIn('contents: write', ci)
         self.assertNotIn('pull_request_target', ci)
@@ -149,7 +149,7 @@ class ReleasePreparationTests(unittest.TestCase):
 
 # preinstalled_selection
 import unittest
-from scripts.package_windows import selected_packages
+from scripts.package_macos import selected_packages
 
 
 class PreinstalledSelectionTests(unittest.TestCase):
@@ -178,7 +178,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from scripts import package_windows as build
+from scripts import package_macos as build
 
 
 class PreviewBuildTests(unittest.TestCase):
@@ -222,7 +222,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from scripts.package_windows import copy_documentation, licenses, ROOT
+from scripts.package_macos import copy_documentation, licenses, ROOT
 
 
 class PackageLicenseTests(unittest.TestCase):
@@ -243,7 +243,7 @@ class PackageLicenseTests(unittest.TestCase):
                 self.distribution(root, 'tqdm', ['tqdm-1.0.dist-info/licenses/LICENCE']),
             ]
             (root / 'NOTICE.txt').write_text('ADB notice', encoding='utf-8')
-            with patch('scripts.package_windows.metadata.distributions', return_value=dists):
+            with patch('scripts.package_macos.metadata.distributions', return_value=dists):
                 licenses(root / 'output', root)
             for dist in dists:
                 for relative in dist.files:
@@ -256,7 +256,7 @@ class PackageLicenseTests(unittest.TestCase):
             root = Path(work)
             copy_documentation(root)
             (root / 'NOTICE.txt').write_text('ADB notice', encoding='utf-8')
-            with patch('scripts.package_windows.metadata.distributions', return_value=[]):
+            with patch('scripts.package_macos.metadata.distributions', return_value=[]):
                 licenses(root / 'licenses', root)
             for name in ('LICENSE', 'NOTICE'):
                 for target in (root / name, root / 'licenses/MiaoTask' / name):
@@ -269,7 +269,7 @@ class PackageLicenseTests(unittest.TestCase):
             root = Path(work)
             (root / 'NOTICE.txt').write_text('ADB notice', encoding='utf-8')
             dist = self.distribution(root, 'flatbuffers', [], version='25.12.19')
-            with patch('scripts.package_windows.metadata.distributions', return_value=[dist]):
+            with patch('scripts.package_macos.metadata.distributions', return_value=[dist]):
                 licenses(root / 'output', root)
             self.assertEqual((root / 'output/flatbuffers/LICENSE').read_bytes(), (ROOT / 'LICENSE').read_bytes())
             notice = (root / 'output/flatbuffers/NOTICE.txt').read_text(encoding='utf-8')
@@ -280,7 +280,7 @@ class PackageLicenseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as work:
             root = Path(work)
             dist = self.distribution(root, 'flatbuffers', [], version='99.0.0')
-            with patch('scripts.package_windows.metadata.distributions', return_value=[dist]):
+            with patch('scripts.package_macos.metadata.distributions', return_value=[dist]):
                 with self.assertRaisesRegex(RuntimeError, 'Review the FlatBuffers license'):
                     licenses(root / 'output', root)
 
@@ -308,7 +308,7 @@ class PackageLicenseTests(unittest.TestCase):
             dist = self.distribution(root, 'sample', declaration_files + excluded)
             (root / 'runtime/LICENSE.txt').write_bytes(b'MZ\0Binary payload')
             (root / 'NOTICE.txt').write_text('ADB notice', encoding='utf-8')
-            with patch('scripts.package_windows.metadata.distributions', return_value=[dist]):
+            with patch('scripts.package_macos.metadata.distributions', return_value=[dist]):
                 licenses(root / 'output', root)
             copied = {p.relative_to(root / 'output/sample').as_posix()
                       for p in (root / 'output/sample').rglob('*') if p.is_file()}
@@ -426,7 +426,7 @@ class BundlePolicyTests(unittest.TestCase):
 
 class DefaultBundleFlags(unittest.TestCase):
     def test_packaging_uses_activity_bool(self):
-        from scripts.package_windows import selected_packages
+        from scripts.package_macos import selected_packages
         yes = dict(app='sample',activity='yes',bundle_by_default=True)
         no = dict(app='sample',activity='no',bundle_by_default=False)
         self.assertEqual(selected_packages({'packages':[yes,no]},[],True),[yes])

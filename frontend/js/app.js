@@ -91,17 +91,15 @@ async function action(name, extra={}){
   }catch(error){toast(error.message);}finally{requesting=false;}
 }
 function ocrHint(p){
-  const eps=p.ocr_providers||[];
-  if(eps.includes('DmlExecutionProvider'))return '已检测到 DirectML 执行器（AMD / Intel 显卡）；选择自动或强制 DirectML 即可用 GPU，保存后下次识别生效。';
-  if(eps.includes('CUDAExecutionProvider'))return '已检测到 CUDA 执行器（NVIDIA 显卡）；保存后下次识别重建引擎时生效。';
-  return '未检测到 GPU 加速包，GPU 选项会回退 CPU；保存后下次识别生效。';
+  return p?.apple_silicon===false
+    ? '已固定为 macOS Apple Silicon（M 系列芯片）系统 Vision OCR；当前非 Apple Silicon 环境无法运行本地识别。'
+    : '已固定为 macOS Apple Silicon（M 系列芯片）系统 Vision OCR（AppleVision 硬件加速）。';
 }
 let preferencesLoaded=false;
 async function loadPreferences(){
   if(preferencesLoaded)return;
   try{
     const prefs=await MiaoAPI.request('/api/preferences',{timeout:8000});
-    $('ocr-device').value=prefs.ocr_device||'auto';
     $('download-proxy').value=prefs.download_proxy||'';
     $('ocr-device-hint').textContent=ocrHint(prefs);
     preferencesLoaded=true;
@@ -109,7 +107,7 @@ async function loadPreferences(){
 }
 async function savePreferences(){
   if(!preferencesLoaded)return; // do not overwrite saved values after a failed GET
-  const payload={ocr_device:$('ocr-device').value, download_proxy:$('download-proxy').value.trim()};
+  const payload={download_proxy:$('download-proxy').value.trim()};
   const response=await fetch(MiaoAPI.url('/api/preferences'),{method:'POST',headers:{'Content-Type':'application/json','X-Miao-Token':token},body:JSON.stringify(payload)});
   const result=await response.json();
   if(!response.ok)throw new Error(result.error||'偏好设置保存失败');
@@ -117,11 +115,11 @@ async function savePreferences(){
 }
 async function discover(){
   $('discover').disabled=true;
-  try{const response=await fetch(MiaoAPI.url('/api/inventory'));if(!response.ok)throw new Error('设备检测失败');const data=await response.json();const options=$('device-options');options.replaceChildren();
+  try{const response=await fetch(MiaoAPI.url('/api/inventory'));if(!response.ok)throw new Error('USB 设备检测失败');const data=await response.json();const options=$('device-options');options.replaceChildren();
     for(const d of data.devices){const o=el('option','',`${d.model||d.type} · ${d.status}`);o.value=d.serial;options.append(o);}
     const ready=data.devices.filter(d=>d.status==='device');
-    if(ready.length===1&&!$('serial').value){$('serial').value=ready[0].serial;$('device-type').value=ready[0].type;}
-    $('device-hint').textContent=data.devices.length?data.devices.map(d=>`${d.model||d.serial} · ${{device:'已连接',unauthorized:'请在手机允许 USB 调试',offline:'设备离线'}[d.status]||d.status}`).join('；'):(data.errors.join('；')||'暂未检测到设备。请检查数据线和 USB 调试，也可填入已连接的无线调试地址。');
+    if(ready.length===1&&!$('serial').value){$('serial').value=ready[0].serial;$('device-type').value='uiautomator2';}
+    $('device-hint').textContent=data.devices.length?data.devices.map(d=>`${d.model||d.serial} · ${{device:'已连接',unauthorized:'请在手机允许 USB 调试',offline:'设备离线'}[d.status]||d.status}`).join('；'):(data.errors.join('；')||'暂未检测到 USB 设备。请检查 USB 数据线、扩展坞和手机 USB 调试开关。');
   }catch(e){toast(e.message);}finally{$('discover').disabled=false;}
 }
 function renderInstances(busy){

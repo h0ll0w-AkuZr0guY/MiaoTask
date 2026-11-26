@@ -9,25 +9,25 @@ GitHub PR CI 与维护者评审负责合入质量，具体活动的入口、任�
 
 ## 本地 Release Builder
 
-工具实现随源码放在 `scripts/`，本机独立的 `MiaoTask Release Builder/` 是启动与产物目录。双击 `Build.cmd` 打开窗口，或运行：
+工具实现随源码放在 `scripts/`，本机独立的 `MiaoTask Release Builder/` 是启动与产物目录。在 macOS Apple Silicon 终端运行：
 
-```powershell
-.\.venv\Scripts\python.exe scripts/release_builder_gui.py --home "Builder目录"
+```bash
+./.venv/bin/python scripts/release_builder_gui.py --home "Builder目录"
 ```
 
 1. 选择源码文件夹、ZIP 或 GitHub 链接。源码无需 `.git`，工具使用这份源码自己的业务与构建配置。
 2. 默认自动递增末位，例如 `0.1.1 → 0.1.2`。可选递增中位、保留版本或明确填写目标版本；成功记录参与下一次递增，预览和失败不占用版本，原始输入保持不变。
 3. 点击加载官方活动，勾选希望预装的项目；不选则生成纯框架包。目录与源码下载锁定同一 GitHub 提交，预装活动位于包根的 `activities/apps/`，仍可在客户端独立更新，不塞入 `_internal/`。
-4. 点击开始构建。工具清洁复制源码到 `runs/<编号>/source`，在副本设置目标版本、汇总 `UNRELEASED.md` 到 `RELEASES.md`，清空已收录条目，再运行回归、构建和实际 exe 自检。窗口持续显示日志。
-5. 完成后打开 `outputs/<编号>/`，检查带环境 ZIP、整理后源码 ZIP、发布正文、更新文档与 `build-result.json`。完整日志和源码副本留在 `runs/`，旧产物保留。
+4. 点击开始构建。工具清洁复制源码到 `runs/<编号>/source`，在副本设置目标版本、汇总 `UNRELEASED.md` 到 `RELEASES.md`，清空已收录条目，再运行回归、构建和实际可执行文件自检。窗口持续显示日志。
+5. 完成后打开 `outputs/<编号>/`，检查带环境 `macos-arm64.zip`、整理后源码 ZIP、发布正文、更新文档与 `build-result.json`。完整日志和源码副本留在 `runs/`，旧产物保留。
 
 命令行同样可用，具体可选参数以 `--help` 为准：
 
-```powershell
-.\.venv\Scripts\python.exe scripts/local_release.py "源码ZIP、目录或GitHub链接" --home "Builder目录" --summary "一句更新摘要"
+```bash
+./.venv/bin/python scripts/local_release.py "源码ZIP、目录或GitHub链接" --home "Builder目录" --summary "一句更新摘要"
 ```
 
-默认复用配置的 Python 3.13 环境；可用 `--python` 指定解释器、`--adb-dir` 指定官方 platform-tools，或用 `--create-env` 按输入源码的 `requirements-windows.lock` 创建独立环境。Node.js 用于前端语法检查，Git 命令用于仓库工具的合成回归，输入源码本身无需提交或 GitHub 登录。
+默认复用当前 Python 3.12+（`arm64`）环境；可用 `--python` 指定解释器、`--adb-dir` 指定官方 macOS `platform-tools`，或用 `--create-env` 按输入源码的 `requirements.txt` 与 `requirements-build.txt` 创建独立环境。Node.js 用于前端语法检查，Git 命令用于仓库工具的合成回归，输入源码本身无需提交或 GitHub 登录。
 
 默认不回写原始输入。目录输入可显式加 `--write-back-notes`，仅在成功后回写两份更新文档；目标版本与整理后源码保存在构建输出。发布前审阅这些记录，避免下次构建丢失历史。工具只处理已在所选源码中合并的贡献，不自动合并远端 PR。
 
@@ -37,64 +37,60 @@ GitHub PR CI 与维护者评审负责合入质量，具体活动的入口、任�
 
 开发环境运行统一预检，GitHub PR CI 使用同一个入口：
 
-```powershell
-.\.venv\Scripts\python.exe scripts/check_project.py
+```bash
+./.venv/bin/python scripts/check_project.py
 ```
 
-该命令检查当前公开源码、待发布区结构，执行全部回归和 Python / JavaScript 语法检查；不会构建 exe 或创建 Release。修改尚未暂存也可检查，运行前按开发说明安装依赖与 Node.js。
+该命令检查当前公开源码、待发布区结构，执行全部回归和 Python / JavaScript 语法检查；不会构建发行包或创建 Release。修改尚未暂存也可检查，运行前按开发说明安装依赖与 Node.js。
 
-用例覆盖解析、搜索、返回、重试、领奖、分身、日记录、连接、坐标、多设备和活动安装；涉及界面交互再在浏览器核对。行为变化补回归，不删除或削弱原有断言；真机结果、模拟用例和冻结 exe 自检分开描述。设备码、地址、配对码和原始截图不提交。
+用例覆盖解析、搜索、返回、重试、领奖、分身、日记录、USB 连接过滤（拒绝 Wi-Fi / mDNS / 模拟器）、Apple Silicon Vision OCR 坐标转换、多设备和活动安装；涉及界面交互再在浏览器核对。行为变化补回归，不删除或削弱原有断言；真机结果、模拟用例和冻结可执行文件自检分开描述。设备码、地址和原始截图不提交。
 
 前端交互回归使用 Node 内置模块检查弹窗外侧关闭、设备切换后的预览隔离、偏好存储失败回退与活动中心分组，不增加 npm 依赖。浏览器另核对桌面与窄窗口布局、活动勾选与排序、日志切换、弹窗滚动及侧栏跟随；合成工作区只能证明界面交互，不能作为手机任务完成证据。冻结包还需确认新增脚本可通过静态白名单加载。
 
-排行榜回归覆盖跨日、跨实例、跨活动与设备汇总、重复刷新不重复累计、旧迁移副本不重复计入、损坏文件原样保留、匿名键及 HTTP 参数。浏览器核对左侧新增/移除和批量选择、公共设置关闭保留编辑、隐藏字段校验失败自动定位、设备切换关闭设置、排行榜范围与排序、预览显隐偏好；检查窄屏无页面横向溢出，表格可在内部横向滚动。
+排行榜回归覆盖跨日、跨实例、跨活动与设备汇总、重复刷新不重复累计、旧迁移副本不重复计入、损坏文件原样保留、匿名键及 HTTP 参数。
 
-连接编辑与主题修改还需覆盖原工作区改名不改执行状态、新建后等待正确工作区再提交地址、迟到选择拒绝、连续预览失败提示和成功恢复，以及主题允许值、存储失败和跨标签同步。浏览器分别核对 USB/Wi-Fi 的创建连接请求目标、灰绿红状态、多个应用的导航布局、三种主题下的表单/日志/弹窗对比和窄窗口溢出。合成连接请求不等于真实无线重新配对或真机任务执行。
+连接编辑与主题修改还需覆盖原工作区改名不改执行状态、新建后等待正确工作区再提交 USB 序列号、迟到选择拒绝、连续预览失败提示和成功恢复，以及主题允许值、存储失败和跨标签同步。
 
 HyperOS 元数据回归检查 SDK shell 失效时的有界只读回退、未知状态与未安装区分、坏分身空间不阻断主空间、失效选择不换账号；本地用例通过不能写成已在问题设备真机复现。
 
-淘宝日常回归覆盖独立活动注册、手机/平板/横屏的合成任务布局、奖励圆钮与卡片定位、答题行边界、推广遮挡、UI/OCR 标签变化不误计、余额证据及有界返回。实机平板已核验淘金币浏览、农场浏览、现金签到奖励、成就点领取、日常搜索提交后浏览并返回，以及从淘宝访问支付宝后返回。成就中心首次资料由测试者明确授权单独填写，不纳入活动脚本或源码；成就点入口不要求开启商城实物打卡，强制资料页仍交给本人处理。手机也已实跑成就中心的搜索、浏览、领取与闲鱼访问返回，并验证农场的两层跳转确认、搜索批次 0/3 到 3/3，以及红包每日签到、定时奖励到账核验和商品区返回奖励面板；横屏布局用例仍不等于相应真机实测；支付宝访问也不代表已适配支付宝独立活动。
+淘宝日常回归覆盖独立活动注册、手机/平板/横屏的合成任务布局、奖励圆钮与卡片定位、答题行边界、推广遮挡、UI/OCR 标签变化不误计、余额证据及有界返回。
 
-新增活动还应在空框架 exe 中安装源码并实例化工厂。五个淘宝活动可在原 0.1.2 框架完成工厂导入；本轮发现的 SDK 请求长期阻塞修复、可选系统 ASCII 输入通道及共用跳转词表组件需要重建框架，旧 exe 不具备这些实现。框架接口版本仍为 1，没有新增运行库；活动对可选能力先检查，旧驱动保留原生填写路径。共享源码更新冲突按使用说明协调重装，不绕过摘要检查。
-
-驱动回归包含真正挂起的本地 socket、每台驱动的独立超时、指定显示屏的 ASCII 输入及实例不符时拒绝输入。不能只修改 SDK 导出的超时常量，也不能把不可取消的后台输入线程当作超时方案。构建候选需重新执行冻结导入、HTTP 与实际设备流程，保留长程运行中发现的失败现场。
+驱动回归包含真正挂起的本地 socket、每台驱动的独立超时、指定显示屏的 ASCII 输入及实例不符时拒绝输入。
 
 提交前明确选择公开文件，再运行：
 
-```powershell
-.\.venv\Scripts\python.exe scripts/check_public_files.py
+```bash
+./.venv/bin/python scripts/check_public_files.py
 git diff --cached --check
 git diff --cached --stat
 ```
 
 仓库审计读取实际 Git 索引。本地已知标识可用仓库外 JSON 数组配合 `--forbid-file` 检查，图像仍需人工脱敏。Release Builder 对其输入副本进行独立文件审计，不依赖输入含 Git 索引。
 
-根目录 `README.md` 和 `docs/assets/`、`frontend/assets/` 下的图片由维护者直接审阅维护，不做内容、文件名白名单、格式签名或大小校验；可直接更新，不要求经过 PR。源码审计继续检查其他文件，保留路径越界、符号链接、私人目录、凭据与非图片构建产物的限制。图片按常见扩展名识别，支持子目录；这项排除在 PR、本地预检和 Release Builder 中保持一致。
+根目录 `README.md` 和 `docs/assets/`、`frontend/assets/` 下的图片由维护者直接审阅维护，不做内容、文件名白名单、格式签名或大小校验；可直接更新，不要求经过 PR。源码审计继续检查其他文件，保留路径越界、符号链接、私人目录、凭据与非图片构建产物的限制。
 
-README 与图片的新旧由合并评审按共同祖先、提交历史和差异处理：保留合并当时 main 的较新内容，剔除 PR 中的旧版回退，允许经审阅的较新贡献。CI 不自动猜测内容新旧，也不因这一部分阻塞其余代码；具体约定见 [CONTRIBUTING](CONTRIBUTING.md#同步文档)。
+README 与图片的新旧由合并评审按共同祖先、提交历史和差异处理：保留合并当时 main 的较新内容，剔除 PR 中的旧版回退，允许经审阅的较新贡献。具体约定见 [CONTRIBUTING](CONTRIBUTING.md#同步文档)。
 
-## 仓库内直接构建
+## 仓库内直接构建（macOS Apple Silicon）
 
-已有开发环境且从 Git 工作区构建时，可继续使用底层工具：
+在 macOS Apple Silicon（`arm64`）开发机从干净 Git 工作区构建时，可使用：
 
-```powershell
-python -m venv build/release-env
-.\build\release-env\Scripts\python.exe -m pip install -r requirements-windows.lock
-.\build\release-env\Scripts\python.exe scripts/fetch_platform_tools.py
-.\build\release-env\Scripts\python.exe scripts/package_windows.py --adb-dir build/vendor/platform-tools
+```bash
+python3 -m venv build/release-env
+./build/release-env/bin/python -m pip install -r requirements.txt -r requirements-build.txt
+./build/release-env/bin/python scripts/fetch_platform_tools.py
+./build/release-env/bin/python scripts/package_macos.py --adb-dir build/vendor/platform-tools
 ```
 
-默认直接构建要求干净提交；本地未提交候选可加 `--preview`，清单标记预览与实际文件摘要，输出 `-preview.zip`。Release Builder 使用独立的 `--local-source` 构建接口，对清洁副本审计并记录文件摘要，不要求 Git、提交或发布计划，也不伪造提交号；输出正常命名的带环境 ZIP。
+默认直接构建要求干净提交；本地未提交候选可加 `--preview`，清单标记预览与实际文件摘要，输出 `-macos-arm64-preview.zip`。Release Builder 使用独立的 `--local-source` 构建接口，对清洁副本审计并记录文件摘要，输出正常命名的 `MiaoTask-v…-macos-arm64.zip`。
 
-框架内部包含网页、设备与执行组件、共用代码、公共配置、离线 OCR、ADB 及许可声明，不内置具体活动源码；默认按bundle_by_default在exe旁外置预装，`--framework-only`生成不预装活动的包。`--include-activities` 仅用于内置模式的离线兼容验收，生成 `-with-activities.zip`。不会整体压缩项目或塞入虚拟环境、旧 exe、个人日志和设备截图。HDC 可通过 `--hdc-dir` 另行提供，默认只带 Android ADB。
+框架内部包含网页、设备与执行组件、共用代码、公共配置、PyObjC Vision 接口、macOS `adb` 及许可声明，不内置具体活动源码；默认按 `bundle_by_default` 在可执行文件旁外置预装，`--framework-only` 生成不预装活动的包。`--include-activities` 仅用于内置模式的离线兼容验收，生成 `-macos-arm64-with-activities.zip`。
 
-工具也支持已核验构建入口的 0.1.0 源码：仅适配无 Git 来源检查，仍使用该源码自身的业务、构建配置和自检，生成它原有的完整包。不会为旧源码注入新框架或在线活动能力；未知旧入口需使用对应构建器。
-
-包内有 `MiaoTask.exe`、`_internal/`、可选的独立 `activities/` 源码目录、使用与风险文档、许可和第三方声明、`build-manifest.json` 及 `self-test.json`。`bundle-policy.json` 记录框架/完整包模式。
+包内有 `MiaoTask` 可执行文件、`_internal/`、可选的独立 `activities/` 源码目录、使用与风险文档、许可和第三方声明、`build-manifest.json` 及 `self-test.json`（保留 Unix 可执行权限位）。
 
 ## 检查实际 ZIP 与活动获取
 
-完整解压到新目录，保留 `_internal/`，不要混用新旧运行库。执行 `scripts/smoke_packaged.py <exe路径>` 可在 PATH 中移除 Python/ADB 后检查内置工具、OCR、HTTP、图标、重复启动和退出；活动样本也需在真正的冻结 exe 中安装、导入工厂，避免只验证源码环境。
+完整解压到新目录，保留 `_internal/`，不要混用新旧运行库。执行 `python3 scripts/smoke_packaged.py <MiaoTask可执行文件路径>` 可在 PATH 中移除 Python/ADB 后检查内置 `adb`、macOS 系统 Vision OCR、HTTP、静态资源、重复启动和退出；活动样本也需在真正的冻结可执行文件中安装、导入工厂，避免只验证源码环境。
 
 活动分发应覆盖：从官方 main 读取列表、一次安装固定到同一源码提交、只下载目标应用共享文件和所选活动、内容与路径核验、暂存导入失败保留原活动、全局忙碌时拒绝变更、卸载保留记录、断网仍能使用已安装活动。离线合成归档可供单元测试和打包自检使用，不作为用户需部署的下载服务。
 
@@ -117,69 +113,22 @@ GitHub 侧保留既有的发布准备、Windows 构建与审批发布工作流�
 说明开头一句主题，随后用「【新增】」「【优化】」「【修复】」等列主要变化，通常不超过 5 条，保留简短下载解压、使用链接和致谢。不写调试流水、测试数量或过时停用提醒，不承诺随机滚动可以规避风控。历史版本仅在明确授权时修改。
 
 
-GitHub Windows 发布构建使用 `scripts/package_windows.py --preinstall-all`，从本次源码生成并校验全部活动，放入 exe 旁的 `activities/`，同时保留离线恢复副本。只预装部分活动时改用可重复的 `--preinstall-activity taobao/double11`；两种预装方式不能同时使用，也不能和 `--include-activities` 混用。不传预装参数仍生成纯框架，Release Builder 的可选预装机制保留。实际 exe 必须核验只注册所选预装活动；源码 ZIP 保留全部活动代码。普通 PR 不构建 Release。
+GitHub macOS 发布构建运行在 `macos-14`（Apple Silicon `arm64`）Runner 上，使用 `scripts/package_macos.py --preinstall-all`，从本次源码生成并校验全部活动，放入可执行文件旁的 `activities/`，同时保留离线恢复副本。只预装部分活动时改用可重复的 `--preinstall-activity taobao/double11`；两种预装方式不能同时使用，也不能和 `--include-activities` 混用。不传预装参数默认读取 `bundle_by_default`，`--framework-only` 生成纯框架。普通 PR 不构建 Release。
 
-框架候选还需验证：分支切换不会复用另一分支离线缓存、打开活动中心可发现新应用及更新；配置跨安装路径重启保留但不跨工作区改写运行快照；日完成标记跨进程保留并按日/实例隔离；浏览一次预算重启保留，认证不消耗次数；收工重扫不重复计成功；ADB 只清理本次新增同路径进程。测试包可预装全部源码活动，用实际冻结 EXE 验证应用导航、活动工厂、更新与退出，记录本地候选状态，不自动发布。
+框架候选还需验证：分支切换不会复用另一分支离线缓存、打开活动中心可发现新应用及更新；配置跨安装路径重启保留但不跨工作区改写运行快照；日完成标记跨进程保留并按日/实例隔离；浏览一次预算重启保留，认证不消耗次数；收工重扫不重复计成功；ADB 只清理本次新增同路径进程。
 
 ### 静态活动资源与 GitHub Pages
 
-`python scripts/build_activity_site.py --output _site/activities` 从干净提交生成静态目录、固定提交索引和全部活动 ZIP；不构建 exe，不创建 Release，不修改源码。当前默认生成 main；其他分支可在对应干净源码中使用 `--source-ref` 生成同协议目录，可对多个干净源码快照重复写入同一输出目录，分支索引合并，包与提交索引保持独立；未进入镜像的分支仍走官方源码备用通道。
+`python3 scripts/build_activity_site.py --output _site/activities` 从干净提交生成静态目录、固定提交索引和全部活动 ZIP；不构建发行包，不创建 Release，不修改源码。
 
-`.github/workflows/activity-pages.yml` 已提供活动源码更新后的构建/Pages 部署流程，默认受仓库变量 `MIAOTASK_ACTIVITY_PAGES=true` 控制。维护者审阅合并后，在仓库 Settings → Pages 选择 GitHub Actions，设置该变量，再手动运行工作流。官方站点为 `https://h0ll0w-akuzr0guy.github.io/MiaoTask/activities/`，客户端可在 GitHub API 限流时使用该备用来源。Pages 的发布独立于 Windows Release，普通 PR 不部署。Pages 首页由 `scripts/build_preview_site.py` 复制当前前端，并仅在部署副本加载 `scripts/site-preview/` 的内存演示适配器；前端或活动合并到 main 后自动重新部署。演示不进入桌面入口，不连接后端或手机；更新前端 API 契约时同步维护演示适配与浏览器回归。以后国内资源源复用此静态产物与校验协议，经维护者审核后加入来源配置。
-
-容灾验收应模拟 API 403：备用通道列出新应用和最新提交、仅安装所选活动；卸载后断网恢复、整个活动目录丢失后从随包基线恢复、损坏包拒绝恢复、空闲轮询不反复访问远端。打包预装项会同步写入 `_internal/activity-recovery` 和可写活动恢复缓存。
-
-正式发布包使用 `--preinstall-all`，预装本次源码中配置允许打包的全部活动及各自恢复包。它与 `--preinstall-activity` 显式选择及 `--include-activities` 内置模式互斥；纯框架默认构建保持不变。
+`.github/workflows/activity-pages.yml` 提供活动源码更新后的构建/Pages 部署流程。Pages 首页由 `scripts/build_preview_site.py` 复制当前前端，并仅在部署副本加载 `scripts/site-preview/` 的内存演示适配器。演示不进入桌面入口，不连接后端或手机；更新前端 API 契约时同步维护演示适配与浏览器回归。
 
 ## 测试类别与活动预装策略
 
-回归按类别归并至 24 个 `test_*.py`，保留连接、识别、实例、任务、存储、活动分发、前端及发布隔离用例；相近测试直接合并，不用转发文件维持重复入口。共享合成夹具从所属类别模块导入。脚本保留独立的检查、构建和站点职责，总数低于 30。
+回归按类别归并至 `tests/test_*.py`（总数保持低于 30），覆盖 USB 连接过滤、Apple Silicon Vision OCR、实例、任务、存储、活动分发、前端及发布隔离用例；相近测试直接合并，不用转发文件维持重复入口。脚本保留独立的检查、构建和站点职责，总数低于 30。
 
-直接 Windows 构建默认读取各活动配置的 `bundle_by_default`；现有六项活动均为 true，未来非默认活动设为 false。`--preinstall-all` 同样遵循该策略；`--framework-only` 明确生成纯框架，显式活动列表仍可覆盖默认。Release Builder 未提供活动列表时采用源码默认策略；显式空列表保留纯框架选项。
-
-## 可选 CUDA 环境验证
-
-使用独立 Python 3.13 环境安装 configs/environments/requirements-cuda.lock，再运行同一 scripts/check_project.py。共有依赖与 requirements-windows.lock 对齐，CPU 环境不变。CUDA 需要实际模型推理验证，编译执行器列表不等于硬件可用；Windows 识别模型使用单裁剪批量，避免动态批量的 cuDNN ReduceMean 错误。选择 CUDA 但运行库不可用、初始化或推理失败时，验证 CPU 回退。CUDA扩展与CPU基础包分别构建和验收，扩展采用独立版本Release。
-
-### 构建CUDA扩展ZIP
-
-在独立CUDA锁定环境中运行 `python scripts/package_windows.py --cuda-plugin MiaoTask-CUDA-v1.0-windows-x64.zip`。扩展版本由脚本的CUDA_PLUGIN_VERSION维护，写入manifest.json；其版本与框架版本独立。脚本核对CPU/GPU共有依赖版本及实际GPU环境，拒绝ORT混装，仅收集GPU ORT、NVIDIA运行库及其许可/元数据。基础exe仍由CPU环境构建。扩展不自动发布、不替换基础环境。
-
-CUDA扩展 v1.0 的固定入口为 [MiaoTask-CUDA-v1.0](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/releases/tag/MiaoTask-CUDA-v1.0)。完成独立验收后由维护者直接创建该扩展Release并上传ZIP，设置 `--latest=false`，不触发框架发布流水线；说明中列出支持条件、安装/迁移/卸载方式及CPU回退。主程序Release继续走发布准备、CI、云构建和release环境确认流程，正文链接匹配的CUDA扩展，不重复上传该ZIP。扩展有实际依赖变化时才发布新扩展版本，不覆盖已发布版本；ABI或ORT变化必须重新核验并更新兼容链接。README下载徽章仅匹配 `MiaoTask-v*`，避免把扩展版本当作主程序版本。
-
-交付前分别运行基础exe自检、解压扩展后的实际CUDA自检、禁用GPU后的CPU回退自检、移除扩展后的CPU自检；报告中的ocr_backend和ocr_providers须与预期相符。兼容清单损坏/不符时也应保留CPU路径。源码测试不替代冻结包验证。
-
-
-### 0.2.0活动兼容核验范围
-
-| 活动 | 本次重点回归 | 验证边界 |
-| --- | --- | --- |
-| 淘宝双11 | 搜索先提交、加载等待、CPU稀疏观察/CUDA末尾检查、重复进度、停止与实例守卫 | 已有本地CPU/GPU及冻结exe真机结果；本轮焦点修复不接管正在执行的设备 |
-| 淘金币日常、芭芭农场 | 入口优先级、原生菜单补充、叠层推广关闭；CPU/GPU浏览策略；直达奖励页与visit保持原策略 | 真机CPU/CUDA均自动进入并解析任务；CPU最终限两次翻页读取分别为8/7条，CUDA分别为9/8条。任务轮换和扫描范围不同，不将条数视为唯一任务总量 |
-| 成就中心 | 工厂、入口、解析与奖励核验回归 | 本轮不修改入口，沿用已有回归与维护者验收反馈，不宣称重新完整执行 |
-| 红包签到 | 首页入口与活动内容分离；推广关闭，真正滚离顶部时保留有界恢复 | CPU/CUDA真机进入并读取任务；CUDA实际领取定时奖励并通过核验，未声称每日签到全部完成 |
-| 支付宝月月赚 | 所选实例唤起、全局搜索原生输入、排除小程序局部搜索；保留UI优先和短停留、奖励回执及同排核验 | 真机CPU/CUDA均通过搜索进入并解析2条浏览任务；CPU三活动连续切换扫描通过。本轮只验收入口与列表，不宣称执行全部支付宝任务 |
-| 设备与运行时 | 短暂失焦恢复、完整窗口回退、5秒预算、真正跨实例/显示屏拒绝、停止；可选CUDA加载及CPU回退 | 全部使用隔离测试数据；不重启或连接维护者正在运行的设备 |
-
-发布候选的测试结论写明源码回归、合成图像OCR、冻结包自检与真机执行各自范围；不能把工厂注册或合成画面视为真实任务完成。CUDA运行库锁定文件未改变时可复用已验收的扩展ZIP，仍需与本次基础exe验证加载顺序和兼容回退。
-
-验证覆盖快速动画、CPU单次就绪识别、CUDA回退和有界等待；各18张合成竖屏/平板/横屏画面验证实际OCR与坐标映回。日常活动入口另以真机验证；标准浏览动画修复仍需更多账号长程反馈，不将入口验收等同于全部活动任务执行通过。
-
-活动资源构建允许工作区仅有未暂存的CRLF/LF换行差异；对应文件使用HEAD提交中的原始字节打包，保持来源提交与摘要一致。实质代码变化、暂存区变化、未跟踪或缺失文件仍需先处理。换行差异由工具吸收，不为格式单独增加人工评审要求。
-
-0.2.2扩展核验：CPU和现有CUDA环境共享锁定依赖不变；DirectML只做接口与模拟执行器回退回归，发布前未收到AMD运行库包，不打包或另建AMD Release。后续收到实包后需独立验证ABI、清单版本、真实DmlExecutionProvider及CPU回退，再建立独立版本Release。京东瞬态提示等待放在活动配置，复用公共max_tasks限制本轮次数，不引入同义catalog_max_tasks字段。
-
-设备焦点读取统一由 `_capture_focus` 有界实时重读：单次4秒、总计8秒，输入前与截图前共用策略，不跨设备共享身份或缓存旧身份。验证需覆盖无线延迟、两设备并行、停止取消与真实跨实例/跨屏拒绝。DirectML构建可用 `scripts/package_windows.py --dml-plugin ZIP`，使用独立锁定环境；硬件结果目前为贡献者报告，不作为维护者本机验收。
-
-无线窗口与通知恢复验收：925项离线回归、源码审计及Python/JavaScript语法检查通过，CPU便携候选EXE自检通过。双无线实跑约5分钟，手机核验5次、平板6次；这轮未出现身份核定停止或任务执行ERROR，另有一次任务进度未通过核验，未计成功。
-
-真实消息发送后任务继续，但消息横幅本身未复现焦点切换；以平板通知栏取得焦点做受控验证，短暂遮挡消退后恢复，持续遮挡触发定向恢复并重进任务页、结束后续扫描。手机也实际触发窗口读取失败后的自动恢复，之后继续核验任务。不得将这些结果描述为全部ROM通知兼容或长期断流已消除。恢复额度随真实核验进展重新开放；本次维护者验收后仅合入源码，不修改版本或发布Release。
-
+直接 macOS 构建默认读取各活动配置的 `bundle_by_default`；`--preinstall-all` 同样遵循该策略；`--framework-only` 明确生成纯框架，显式活动列表仍可覆盖默认。Release Builder 未提供活动列表时采用源码默认策略；显式空列表保留纯框架选项。
 
 ### 主屏截图兼容回归
 
-PR #36（`354f089`，前置主线 `95cbaa0`）将未压缩主屏截图从直接 `screencap -p` 改为每帧先解析物理映射。后续厂商解析适配保留了这个前置条件，普通设备在格式不支持时也会停止，任务尚未执行即可触发。常规截图优先的修复位于设备适配层，活动调度与多设备工作线程保持既有模型。
-
-离线验证须覆盖有效 PNG 不查询映射、普通路径图片流含警告时显式选屏、已知多屏即使默认 PNG 有效也显式选屏、厂商格式缺失/读取失败后主屏 RPC 回退、回退使用新身份、MTK 格式解析、歧义拒绝、停止取消，以及两个设备并行和同设备跨应用连续截图。回退截图保持原尺寸，使用 JPEG 质量95，不把任意物理 ID 当作主屏。
-
-用户诊断中的普通首页截图可以取得，但任务在首次读取时报告映射失败。原包未包含原始显示屏转储，无法确认具体厂商字段或在离线测试中复现该 ROM。合成回归与冻结包自检用于验证策略和打包，不能替代反馈设备的重新验收。新增回归合并到既有测试文件，不增加测试文件数量。
+常规截图优先位于设备适配层，活动调度与多设备工作线程保持既有模型。离线验证须覆盖有效 PNG 不查询映射、普通路径图片流含警告时显式选屏、已知多屏即使默认 PNG 有效也显式选屏、厂商格式缺失/读取失败后主屏 RPC 回退、回退使用新身份、MTK 格式解析、歧义拒绝、停止取消，以及两个设备并行和同设备跨应用连续截图。回退截图保持原尺寸，使用 JPEG 质量 95，不把任意物理 ID 当作主屏。

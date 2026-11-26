@@ -71,7 +71,7 @@ class DeviceHub(ActivityCatalogHub):
                 raise ValueError('助手正在退出')
             held = self.leases.get(key)
             if held and held != owner:
-                raise ValueError('同一台设备已在其他工作区连接，请先移除原工作区；USB、Wi-Fi 和模拟器别名不能重复控制')
+                raise ValueError('同一台 USB 设备已在其他工作区连接，请先移除原工作区')
             self.leases[key] = owner
         return identity
 

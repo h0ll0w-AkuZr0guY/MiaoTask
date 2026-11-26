@@ -1,9 +1,10 @@
-"""Clean up only newly started ADB processes belonging to this installation."""
-import json
+"""Clean up only newly started bundled ADB processes belonging to this installation."""
 import logging
 import os
 from pathlib import Path
+import signal
 import subprocess
+import sys
 
 
 class OwnedAdb:
@@ -11,21 +12,25 @@ class OwnedAdb:
         self.binary = str(Path(binary).resolve())
         self.before = self._processes()
 
-    def _powershell(self, script):
-        environment = dict(os.environ, MIAO_OWN_ADB=self.binary)
-        return subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
-                              env=environment, capture_output=True, text=True, timeout=8,
-                              creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), check=True)
-
     def _processes(self):
-        if os.name != 'nt':
+        if sys.platform != 'darwin':
             return None
         try:
-            result = self._powershell("@(Get-CimInstance Win32_Process -Filter \"Name='adb.exe'\" | Where-Object { $_.ExecutablePath -eq $env:MIAO_OWN_ADB } | ForEach-Object { @{id=$_.ProcessId;stamp=$_.CreationDate.ToUniversalTime().Ticks.ToString()} }) | ConvertTo-Json -Compress")
-            rows = json.loads(result.stdout or '[]')
-            if isinstance(rows, dict):
-                rows = [rows]
-            return {(int(row['id']), row['stamp']) for row in rows}
+            result = subprocess.run(
+                ['ps', '-axo', 'pid=,lstart=,args='],
+                capture_output=True, text=True, timeout=5, check=True,
+            )
+            owned = set()
+            for raw in result.stdout.splitlines():
+                parts = raw.strip().split(None, 6)
+                if len(parts) < 7 or not parts[0].isdigit():
+                    continue
+                pid = int(parts[0])
+                stamp = ' '.join(parts[1:6])
+                cmd = parts[6]
+                if cmd == self.binary or cmd.startswith(self.binary + ' '):
+                    owned.add((pid, stamp))
+            return owned
         except Exception:
             return None  # Unknown ownership must never lead to killing another tool.
 
@@ -34,9 +39,15 @@ class OwnedAdb:
         if self.before is None or current is None:
             return
         for pid, stamp in current - self.before:
-            if not isinstance(stamp, str) or not stamp.isdigit():
-                continue
             try:
-                self._powershell(f"$p=Get-CimInstance Win32_Process -Filter 'ProcessId={pid}'; if ($p -and $p.ExecutablePath -eq $env:MIAO_OWN_ADB -and $p.CreationDate.ToUniversalTime().Ticks.ToString() -eq '{stamp}') {{ Stop-Process -Id {pid} -ErrorAction Stop }}")
+                verify = subprocess.run(
+                    ['ps', '-p', str(pid), '-o', 'lstart=,args='],
+                    capture_output=True, text=True, timeout=3,
+                )
+                parts = verify.stdout.strip().split(None, 5)
+                if (verify.returncode == 0 and len(parts) >= 6
+                        and ' '.join(parts[:5]) == stamp
+                        and (parts[5] == self.binary or parts[5].startswith(self.binary + ' '))):
+                    os.kill(pid, signal.SIGTERM)
             except Exception:
-                logging.getLogger('backend').warning('无法关闭本次启动的 ADB，请检查设备调试进程')
+                logging.getLogger('backend').warning('无法关闭本次启动的内置 ADB，请检查设备调试进程')

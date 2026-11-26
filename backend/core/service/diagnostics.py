@@ -1,4 +1,4 @@
-"""Offline, device-free checks run inside the packaged executable."""
+"""Offline, device-free checks run inside the packaged macOS executable."""
 import importlib.metadata
 import importlib.util
 import json
@@ -8,32 +8,26 @@ import shutil
 import subprocess
 import sys
 
+from backend.core.device.ocr import OCR_BACKEND, is_apple_silicon_macos
 from backend.core.runtime import assets_dir, version
-
-# onnxruntime-gpu 提供同名 onnxruntime 模块，但发行包元数据名不同。
-_DISTRIBUTION_ALIASES = {'onnxruntime': ('onnxruntime', 'onnxruntime-gpu', 'onnxruntime-directml')}
 
 
 def _distribution_version(name):
-    names = _DISTRIBUTION_ALIASES.get(name, (name,))
-    for candidate in names:
-        try:
-            return importlib.metadata.version(candidate)
-        except importlib.metadata.PackageNotFoundError:
-            continue
-    raise importlib.metadata.PackageNotFoundError(
-        f'No package metadata was found for {" or ".join(names)}')
+    return importlib.metadata.version(name)
 
 
 def self_test(output, *, activity_package=None, activity_sha256=None):
     checks, errors = {}, []
-    for name in ('uiautomator2', 'hmdriver2', 'rapidocr', 'onnxruntime', 'numpy', 'Pillow'):
+    required_packages = ['uiautomator2', 'Pillow', 'PyYAML']
+    if is_apple_silicon_macos():
+        required_packages.extend(['pyobjc-framework-Vision', 'pyobjc-framework-Quartz'])
+    for name in required_packages:
         try:
             checks[name] = _distribution_version(name)
         except Exception as exc:
             errors.append(f'{name}: {exc}')
     for name in ('frontend/index.html', 'frontend/js/app.js', 'frontend/js/api.js',
-                 'frontend/js/components/device-manager.js','frontend/js/components/wifi-connect.js',
+                 'frontend/js/components/device-manager.js',
                  'frontend/css/base.css', 'backend/core/config/defaults.json'):
         checks[name] = (assets_dir() / name).is_file()
         if not checks[name]:
@@ -49,8 +43,6 @@ def self_test(output, *, activity_package=None, activity_sha256=None):
         checks['framework_api'] = policy.get('framework_api', FRAMEWORK_API)
         checks['embedded_activities'] = policy.get('embedded_activity_modules', [])
         if getattr(sys, 'frozen', False) and policy.get('bundle_mode') == 'framework':
-            # Run before loading downloaded code: a framework must neither hide
-            # adapter bytecode in PYZ nor leave adapter resources on disk.
             for module in policy.get('excluded_app_modules', []):
                 if importlib.util.find_spec(module) is not None:
                     raise ValueError('Application code unexpectedly embedded: ' + module)
@@ -70,7 +62,6 @@ def self_test(output, *, activity_package=None, activity_sha256=None):
             for activity in app['activities']:
                 registration = registry.get(app['id'], activity['id'])
                 config = load_resolved(registration).mutable()
-                # Constructor only: this stub has no device I/O methods.
                 device = SimpleNamespace(device_type=registration.activity.device_types[0], selected_instance=None)
                 runner = registry.instantiate(device, config, app=app['id'], activity=activity['id'])
                 if runner.config != config:
@@ -87,8 +78,7 @@ def self_test(output, *, activity_package=None, activity_sha256=None):
         adb = shutil.which('adb')
         if not adb:
             raise RuntimeError('ADB not found')
-        result = subprocess.run([adb, 'version'], capture_output=True, text=True, timeout=10,
-                                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        result = subprocess.run([adb, 'version'], capture_output=True, text=True, timeout=10)
         checks['adb_bundled'] = Path(adb).is_relative_to(assets_dir()) if getattr(sys, 'frozen', False) else True
         checks['adb_version'] = result.stdout.splitlines()[0]
         if result.returncode or not checks['adb_bundled']:
@@ -96,21 +86,21 @@ def self_test(output, *, activity_package=None, activity_sha256=None):
     except Exception as exc:
         errors.append(f'ADB: {exc}')
     try:
+        if not is_apple_silicon_macos():
+            raise RuntimeError('Self-test requires macOS Apple Silicon (arm64) for Vision OCR')
         from PIL import Image, ImageDraw, ImageFont
         from backend.core.device.screen import ScreenReader
         image = Image.new('RGB', (900, 180), 'white')
         ImageDraw.Draw(image).text((30, 45), 'BROWSE 15 SECONDS', fill='black', font=ImageFont.load_default(size=52))
         reader = ScreenReader(None)
         recognized = reader._ocr(image)
-        checks['ocr_backend'] = reader.ocr_backend
+        checks['ocr_backend'] = reader.ocr_backend or OCR_BACKEND
         checks['ocr_providers'] = getattr(getattr(reader._engine, 'engine', None), 'miao_providers', {})
-        import onnxruntime
-        checks['ocr_runtime_source'] = ('plugin' if 'runtime_plugins' in Path(onnxruntime.__file__).parts
-                                        else 'bundled')
+        checks['ocr_runtime_source'] = 'macos-vision'
         text = ' '.join(n.text for n in recognized)
         checks['ocr_text'] = text
         if '15' not in text:
-            errors.append('OCR did not recognize the offline test image')
+            errors.append('Vision OCR did not recognize the offline test image')
     except Exception as exc:
         errors.append(f'OCR: {type(exc).__name__}: {exc}')
     report = dict(ok=not errors, version=version(), frozen=bool(getattr(sys, 'frozen', False)),

@@ -7,7 +7,8 @@ const vm=require('node:vm'),fs=require('node:fs'),path=require('node:path'),asse
   const call=async(p,data)=>ctx.window.fetch('/api/'+p+'?device=default',data?{method:'POST',body:JSON.stringify(data)}:{});
   let state=await (await call('state')).json();assert.equal(state.workspaces.length,2);
   assert.equal((await call('run',{})).status,400);
-  assert.equal((await call('wifi/pair',{pair_code:'000000'})).status,400);
+  assert.equal((await call('connect',{serial:'demo-usb-device'})).status,400);
+  assert.equal((await (await call('preferences')).json()).ocr_device,'vision');
   await call('task_skip',{task_id:'demo-search'});
   state=await (await call('state')).json();assert.equal(state.tasks[1].enabled,false);
   await call('configure',{config:{max_tasks:2}});assert.equal((await (await call('state')).json()).config.max_tasks,2);
