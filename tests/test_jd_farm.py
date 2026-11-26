@@ -545,5 +545,311 @@ class VerificationBoundaryTests(unittest.TestCase):
         runner.device.swipe.assert_not_called()
 
 
+class PlantBeanTests(unittest.TestCase):
+    def runner(self):
+        registry = Registry().discover()
+        config = load_config(app='jd', activity='plant_bean', registry=registry)
+        return registry.instantiate(
+            SimpleNamespace(device_type='uiautomator2', selected_instance=None),
+            config, app='jd', activity='plant_bean')
+
+    def test_registration_and_task_geometry(self):
+        for width, height in ((1080, 2400), (1800, 2880), (2560, 1600)):
+            with self.subTest(size=(width, height)):
+                runner = self.runner()
+
+                def node(text, x, y, w=.4, h=.025):
+                    bounds = (int(width * x), int(height * y),
+                              int(width * (x + w)), int(height * (y + h)))
+                    return TextNode(text, bounds)
+
+                nodes = [node('做任务 得更多收获值', .1, .2),
+                         node('每日领钱(0/1)', .18, .4),
+                         node('浏览页面5s可得+10', .18, .44),
+                         node('逛一逛', .8, .41, .15),
+                         node('邀请好友(0/1)', .18, .6),
+                         node('浏览页面5s可得+10', .18, .64),
+                         node('逛一逛', .8, .61, .15)]
+                screen = Screen(nodes, width, height, PACKAGE)
+                tasks = runner.tasks(screen)
+                self.assertEqual(len(tasks), 2)
+                self.assertEqual((tasks[0].kind, tasks[0].seconds), ('browse', 5))
+                self.assertEqual(tasks[1].kind, 'manual')
+                self.assertFalse(runner.verify(tasks[0], screen, screen))
+                fresh_nodes = [TextNode(n.text, n.bounds) for n in nodes]
+                fresh_nodes[1].text = '每日领钱(1/1)'
+                fresh = Screen(fresh_nodes, width, height, PACKAGE)
+                self.assertTrue(runner.verify(tasks[0], screen, fresh))
+
+    def test_transaction_game_and_external_tasks_are_manual(self):
+        runner = self.runner()
+        for title in ('下单领豆', '开通会员', '守护豆田',
+                      '去百度地图', '邀请好友', '首页进入'):
+            result = runner.classify(title, '浏览页面5s', [], '去完成', 0, 1)
+            self.assertEqual(result[1], 'manual')
+
+    def test_untimed_browse_button_can_be_scheduled(self):
+        runner = self.runner()
+        screen = Screen([
+            TextNode('做任务得更多收获值', (100, 400, 700, 500)),
+            TextNode('逛精选商品(0/1)', (100, 800, 650, 860)),
+            TextNode('去完成', (800, 820, 1000, 900)),
+        ], 1080, 2400, PACKAGE)
+        task, = runner.tasks(screen)
+        self.assertEqual((task.kind, task.seconds, task.browse_once), ('browse', 0, True))
+
+    def test_native_sheet_excludes_obscured_homepage_and_clipped_rows(self):
+        runner = self.runner()
+        header = TextNode('做任务得更多收获值', (100, 600, 900, 700))
+        hidden = TextNode('旧任务(0/1)', (100, 200, 650, 260))
+        hidden_detail = TextNode('浏览页面5s可得+20', (100, 275, 650, 330))
+        hidden_button = TextNode('去完成', (800, 220, 1000, 300))
+        title = TextNode('浏览精选商品(0/1)', (100, 800, 650, 860))
+        detail = TextNode('浏览页面5s可得+20', (100, 875, 650, 930))
+        button = TextNode('去完成', (800, 820, 1000, 900))
+        background = TextNode('好友助力 下单好礼', (100, 815, 650, 870))
+        def tree_node(node):
+            return {'text': node.text, 'bounds': node.bounds}
+        panel_nodes = [header, hidden, hidden_detail, hidden_button, title, detail, button]
+        tree = {'children': [tree_node(background),
+                             {'children': [tree_node(node) for node in panel_nodes]}]}
+        screen = Screen(panel_nodes + [background], 1080, 2400, PACKAGE, tree=tree)
+        tasks = runner.tasks(screen)
+        self.assertEqual([(t.title, t.kind, t.seconds) for t in tasks],
+                         [('浏览精选商品', 'browse', 5)])
+        self.assertFalse(tasks[0].browse_once)
+        self.assertIs(runner.tasks(screen), tasks)
+        self.assertIn(background, screen.nodes)
+
+    def test_loading_page_is_not_a_ready_game(self):
+        runner = self.runner()
+        nodes = [TextNode('小人上车', (100, 600, 650, 700)),
+                 TextNode('加载中...', (100, 900, 650, 1000)),
+                 TextNode('京东又好又便宜', (100, 1200, 650, 1300))]
+        loading = Screen(nodes, 1080, 2400, PACKAGE)
+        self.assertFalse(runner.browse_ready(loading))
+        loaded = Screen([TextNode('关卡1', (100, 600, 650, 700)),
+                         TextNode('排队人数', (100, 900, 650, 1000))], 1080, 2400, PACKAGE)
+        self.assertTrue(runner.browse_ready(loaded))
+
+    def test_browse_caption_can_be_the_task_title(self):
+        runner = self.runner()
+        screen = Screen([
+            TextNode('做任务得更多收获值', (100, 400, 700, 500)),
+            TextNode('浏览页面15秒(0/1)', (100, 800, 650, 860)),
+            TextNode('浏览15秒可得+10', (100, 875, 650, 930)),
+            TextNode('去完成', (800, 820, 1000, 900))], 1080, 2400, PACKAGE)
+        tasks = runner.tasks(screen)
+        self.assertEqual([(t.title, t.kind, t.seconds) for t in tasks],
+                         [('浏览页面15秒', 'browse', 15)])
+
+    def test_browse_timer_starts_after_loading(self):
+        runner = self.return_runner()
+        runner.origin = PACKAGE
+        before = Screen([
+            TextNode('做任务得更多收获值', (100, 400, 700, 500)),
+            TextNode('浏览精选商品(0/1)', (100, 800, 650, 860)),
+            TextNode('浏览页面5s可得+20', (100, 875, 650, 930)),
+            TextNode('去完成', (800, 820, 1000, 900))], 1080, 2400, PACKAGE)
+        loading = Screen([TextNode('加载中...', (100, 800, 650, 900)),
+                          TextNode('京东', (100, 1000, 650, 1100))], 1080, 2400, PACKAGE)
+        loaded = Screen([TextNode('关卡1', (100, 600, 650, 700)),
+                         TextNode('排队人数', (100, 900, 650, 1000))], 1080, 2400, PACKAGE)
+        runner._read = Mock(side_effect=lambda: loading if runner.control.now() < 5 else loaded)
+        runner.config['scroll_browse'] = False
+        runner.browse_swipe = Mock()
+        runner.return_from_browse = Mock(return_value=before)
+        runner.settled_panel = Mock(return_value=before)
+        starts = []
+        runner.update.side_effect = lambda phase=None, **kw: starts.append(runner.control.now()) if phase == 'browsing' else None
+        result, _, _ = runner.execute(runner.tasks(before)[0], before)
+        self.assertIs(result, before)
+        self.assertEqual(starts, [5])
+        self.assertGreaterEqual(runner.control.now(), 5 + runner.config['default_browse_seconds'])
+        runner.browse_swipe.assert_not_called()
+        runner.return_from_browse.assert_called_once_with(loaded)
+
+    def test_five_second_minigames_are_skipped(self):
+        from backend.core.errors import TaskUnavailable
+        for title in ('玩一玩停车场', '玩玩消消乐', '玩游戏得奖励', '玩AI掼蛋', '东东农场'):
+            with self.subTest(title=title):
+                runner = self.runner()
+                screen = Screen([
+                    TextNode('做任务得更多收获值', (100, 400, 700, 500)),
+                    TextNode(title + '(0/1)', (100, 800, 650, 860)),
+                    TextNode('浏览页面5s可得+20', (100, 875, 650, 930)),
+                    TextNode('去完成', (800, 820, 1000, 900))], 1080, 2400, PACKAGE)
+                tasks = runner.tasks(screen)
+                self.assertEqual(len(tasks), 1)
+                self.assertEqual(tasks[0].kind, 'manual')
+                self.assertEqual(tasks[0].seconds, 5)
+                runner.click = Mock()
+                with self.assertRaises(TaskUnavailable):
+                    runner.execute(tasks[0], screen)
+                runner.click.assert_not_called()
+        result = self.runner().classify('玩一玩小人上车', '通过第10关', [], '去完成', 0, 1)
+        self.assertEqual(result[1], 'manual')
+        result = self.runner().classify('玩一玩小人上车', '浏览页面5s可得+20', [], '去完成', 0, 1)
+        self.assertEqual(result[1], 'manual')
+
+    def test_game_capsule_close_is_relative_and_requires_neighbor(self):
+        for width, height in ((1080, 2400), (1800, 2880), (2560, 1600)):
+            with self.subTest(size=(width, height)):
+                runner = self.runner()
+                size = int(min(width * .07, height * .09))
+                x, y = int(width * .85), int(height * .06)
+                menu = TextNode('更多', (x, y, x + size, y + size))
+                close = TextNode('关闭', (x + size, y, x + size * 2, y + size))
+                screen = Screen([menu, close], width, height, PACKAGE)
+                self.assertIs(runner.game_exit_node(screen), close)
+                screen.nodes = [close]
+                self.assertIsNone(runner.game_exit_node(screen))
+                screen.nodes = [menu, close, TextNode('做任务得更多收获值', (10, 300, 600, 350))]
+                self.assertIsNone(runner.game_exit_node(screen))
+
+    def return_runner(self):
+        runner = self.runner()
+        clock = [0.]
+        runner.control.now = lambda: clock[0]
+        runner.control.wait = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+        runner.config['return_timeout'] = 60
+        runner.device.go_back = Mock()
+        runner.click = Mock()
+        runner.update = Mock()
+        runner.panel = lambda frame: bool(frame.find('做任务得更多收获值'))
+        return runner
+
+    def test_game_exit_icon_precedes_back(self):
+        runner = self.return_runner()
+        game = Screen([TextNode('更多', (900, 120, 970, 190)),
+                       TextNode('关闭', (970, 120, 1040, 190))], 1080, 2400, PACKAGE)
+        panel = Screen([TextNode('做任务得更多收获值', (10, 300, 600, 350))],
+                       1080, 2400, PACKAGE)
+        runner._read = Mock(return_value=panel)
+        self.assertIs(runner.return_from_browse(game), panel)
+        runner.click.assert_called_once_with(game.nodes[1])
+        runner.device.go_back.assert_not_called()
+
+    def test_game_icon_accessibility_survives_ocr_canvas(self):
+        runner = self.runner()
+        tree = {'children': [
+            {'description': '更多', 'bounds': '[900,120][970,190]'},
+            {'description': '关闭', 'bounds': '[970,120][1040,190]'}]}
+        game = Screen([TextNode('关卡1', (100, 300, 400, 400))], 1080, 2400, PACKAGE,
+                      source='ocr', tree=tree)
+        self.assertEqual(runner.game_exit_node(game).bounds, (970, 120, 1040, 190))
+        tree['children'][1]['visible-to-user'] = 'false'
+        self.assertIsNone(runner.game_exit_node(game))
+        tree['children'][1]['visible-to-user'] = 'true'
+        tree['children'][1]['package'] = 'com.example.other'
+        self.assertIsNone(runner.game_exit_node(game))
+
+    def test_resume_inside_game_closes_it_before_locating_panel(self):
+        runner = self.return_runner()
+        runner.device.current_app = Mock(return_value={'package': PACKAGE})
+        game = Screen([TextNode('更多', (900, 120, 970, 190)),
+                       TextNode('关闭', (970, 120, 1040, 190))], 1080, 2400, PACKAGE)
+        panel = Screen([
+            TextNode('做任务得更多收获值', (100, 400, 700, 500)),
+            TextNode('每日领钱(0/1)', (100, 800, 650, 860)),
+            TextNode('浏览页面5s', (100, 875, 650, 930)),
+            TextNode('逛一逛', (800, 820, 1000, 900))], 1080, 2400, PACKAGE)
+        runner._read = Mock(side_effect=[game, panel])
+        self.assertIs(runner.ensure_list(True), panel)
+        runner.click.assert_called_once_with(game.nodes[1])
+        runner.device.go_back.assert_not_called()
+
+    def test_back_rounds_keep_double_back_uninterrupted(self):
+        runner = self.return_runner()
+        game = Screen([], 1080, 2400, PACKAGE)
+        panel = Screen([TextNode('做任务得更多收获值', (10, 300, 600, 350))],
+                       1080, 2400, PACKAGE)
+        events = []
+        runner.device.go_back.side_effect = lambda: events.append('back')
+        frames = iter([game, panel])
+        def read():
+            events.append('read')
+            return next(frames)
+        runner._read = Mock(side_effect=read)
+        self.assertIs(runner.return_from_browse(game), panel)
+        self.assertEqual(events, ['back', 'read', 'back', 'back', 'read'])
+
+    def test_game_exit_failed_click_falls_back_to_back(self):
+        runner = self.return_runner()
+        game = Screen([TextNode('更多', (900, 120, 970, 190)),
+                       TextNode('关闭', (970, 120, 1040, 190))], 1080, 2400, PACKAGE)
+        home = Screen([TextNode('我的收获值', (100, 500, 600, 600))], 1080, 2400, PACKAGE)
+        runner._read = Mock(side_effect=[game, home])
+        self.assertIs(runner.return_from_browse(game), home)
+        self.assertEqual(runner.click.call_count, 1)
+        self.assertEqual(runner.device.go_back.call_count, 1)
+
+    def test_back_stops_at_five_rounds_or_timeout(self):
+        from backend.core.errors import NeedsAttention
+        for budget, expected in ((60, 15), (.1, 1)):
+            with self.subTest(budget=budget):
+                runner = self.return_runner()
+                runner.config['return_timeout'] = budget
+                game = Screen([], 1080, 2400, PACKAGE)
+                runner._read = Mock(return_value=game)
+                with self.assertRaises(NeedsAttention):
+                    runner.return_from_browse(game)
+                self.assertEqual(runner.device.go_back.call_count, expected)
+
+    def test_back_preserves_stop_and_security_guards(self):
+        from backend.core.errors import NeedsAttention, Stopped
+        runner = self.return_runner()
+        security = Screen([TextNode('请完成验证', (100, 500, 600, 600))], 1080, 2400, PACKAGE)
+        with self.assertRaises(NeedsAttention):
+            runner.return_from_browse(security)
+        runner.device.go_back.assert_not_called()
+        runner.control.stop()
+        with self.assertRaises(Stopped):
+            runner.return_from_browse(Screen([], 1080, 2400, PACKAGE))
+        runner.device.go_back.assert_not_called()
+
+    def test_missing_row_requires_stable_context(self):
+        from backend.core.models import Task
+        runner = self.runner()
+        target = Task('target', '一次任务', '', '逛一逛', (1, 2, 3, 4))
+        first = Task('first', '前一条', '', '去完成', (1, 2, 3, 4))
+        following = Task('next', '后一条', '', '去完成', (1, 2, 3, 4))
+        before = Screen([], 1080, 2400, PACKAGE)
+        after = Screen([], 1080, 2400, PACKAGE)
+        runner.panel = Mock(return_value=True)
+        runner.tasks = Mock(side_effect=lambda frame:
+                            [first, target, following] if frame is before else [first, following])
+        self.assertTrue(runner.verify(target, before, after))
+        runner.tasks = Mock(side_effect=lambda frame:
+                            [target, following] if frame is before else [following])
+        self.assertFalse(runner.verify(target, before, after))
+
+    def test_no_task_header_does_not_parse_storefront(self):
+        self.assertEqual(self.runner().parse_tasks([], 1080, 2400), [])
+
+    def test_loading_after_entry_does_not_press_back(self):
+        runner = self.runner()
+        home = Screen([TextNode('种豆得豆', (100, 300, 300, 400))], 1080, 2400, PACKAGE)
+        loading = Screen([], 1080, 2400, PACKAGE)
+        landing = Screen([TextNode('我的收获值', (100, 300, 400, 400))], 1080, 2400, PACKAGE)
+        painted = Screen([TextNode('赚收获值', (800, 1200, 1000, 1300))],
+                         1080, 2400, PACKAGE, 'ocr')
+        panel = Screen([
+            TextNode('做任务得更多收获值', (100, 400, 700, 500)),
+            TextNode('每日领钱(0/1)', (100, 800, 650, 860)),
+            TextNode('浏览页面5s', (100, 875, 650, 930)),
+            TextNode('逛一逛', (800, 820, 1000, 900))], 1080, 2400, PACKAGE)
+        clock = [0.]
+        runner.control.now = lambda: clock[0]
+        runner.control.wait = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+        runner.device.current_app = Mock(return_value={'package': PACKAGE})
+        runner.device.go_back = Mock()
+        runner._read = Mock(side_effect=[home, loading, landing, painted, panel])
+        runner.click = Mock()
+        self.assertIs(runner.ensure_list(True), panel)
+        runner.device.go_back.assert_not_called()
+        self.assertEqual(runner.click.call_count, 2)
+
+
 if __name__ == '__main__':
     unittest.main()
