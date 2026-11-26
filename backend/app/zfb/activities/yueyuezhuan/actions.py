@@ -22,7 +22,7 @@ class TaskActions:
     def _button_node(self, screen, task):
         """按标题在列表中匹配任务按钮，返回带 center 的 TextNode。"""
         for t in self.tasks(screen):
-            if t.title == task.title or t.key == task.key:
+            if t.key == task.key and t.kind == 'browse' and t.current == task.current:
                 return TextNode('', t.bounds)
         return None
 

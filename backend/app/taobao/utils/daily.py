@@ -725,7 +725,12 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
             self._retreat_screen = None
             screen = retreat
         manual = self.page.get('manual_entry_markers')
-        if manual and screen.find(manual):
+        if manual and screen.find(manual) and not self.known_promotion(screen):
+            if screen.source == 'ui' and self.config['ocr'] and self.page.get('known_promotions'):
+                painted = self.read(force_ocr=True)
+                self.guard(painted)
+                if painted.package == screen.package and self.known_promotion(painted):
+                    return painted
             reason = self.page['manual_entry_message']
             saved = self.report_failure(reason, phase='attention')
             raise NeedsAttention(reason, evidence_saved=saved)
@@ -1308,7 +1313,72 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
             # Submitting can still use the freshly painted right-hand button.
             return None
 
+    def known_promotion(self, screen):
+        if not self.application.matches(screen.package):
+            return None
+        return next((item for item in self.page.get('known_promotions', [])
+                     if all(screen.find(pattern) for pattern in item['markers'])), None)
+
+    def promotion_close(self, screen, region):
+        left, top, right, bottom = (round(value * size)
+                                    for value, size in zip(region, (screen.width, screen.height) * 2))
+
+        def in_region(node):
+            x, y = node.center
+            return (left <= x <= right and top <= y <= bottom
+                    and (screen.geometry is None or screen.geometry.contains(x, y)))
+
+        def labelled_close(frame):
+            matches = {node.bounds: node for node in frame.nodes if in_region(node)
+                       and re.fullmatch(r'关闭|关闭按钮|[Xx×✕✖]', normalize(node.text))
+                       and 0 < node.bounds[3] - node.bounds[1] < screen.height * .12}
+            return next(iter(matches.values())) if len(matches) == 1 else None
+
+        close = labelled_close(screen)
+        if close is not None or not screen.source.startswith('ocr'):
+            return close
+        image = self.reader.last_image
+        if image is not None and self.reader.last_screen is screen and image.size == (screen.width, screen.height):
+            # Some canvases draw a white X without any accessibility text, and OCR can
+            # omit it. Require a distinct glyph inside the confirmed promotion's close area.
+            import cv2
+            import numpy as np
+            pixels = np.asarray(image.crop((left, top, right, bottom)).convert('RGB'))
+            light = (pixels.min(axis=2) >= 215).astype('uint8')
+            _, components, stats, _ = cv2.connectedComponentsWithStats(light, connectivity=8)
+            candidates = []
+            for index, (x, y, width, height, _) in enumerate(stats[1:].tolist(), 1):
+                if not (.017 * screen.width <= width <= .085 * screen.width
+                        and .7 <= height / width <= 1.4):
+                    continue
+                glyph = cv2.resize((components[y:y+height, x:x+width] == index).astype('uint8'),
+                                   (24, 24), interpolation=cv2.INTER_NEAREST)
+                corners = (glyph[:8, :8], glyph[:8, -8:], glyph[-8:, :8], glyph[-8:, -8:])
+                edges = (glyph[:5, 9:15], glyph[-5:, 9:15], glyph[9:15, :5], glyph[9:15, -5:])
+                if (all(part.mean() >= .15 for part in corners) and glyph[10:14, 10:14].mean() >= .55
+                        and all(part.mean() <= .15 for part in edges)):
+                    node = TextNode('关闭', (left+x, top+y, left+x+width, top+y+height), 'ocr')
+                    if in_region(node):
+                        candidates.append(node)
+            if len(candidates) == 1:
+                return candidates[0]
+        native = self.read()
+        self.guard(native)
+        if native.package == screen.package and (native.width, native.height) == (screen.width, screen.height):
+            if self.known_promotion(native):
+                return labelled_close(native)
+        return None
+
     def dismiss_overlay(self, screen):
+        known = self.known_promotion(screen)
+        if known:
+            close = self.promotion_close(screen, known['close_region'])
+            if close and not self.dismiss_budget_used() and not self.close_is_dead(screen, close):
+                self.click(close)
+                self.pause(.4)
+                self.count_dismiss()
+                return close
+            raise NeedsAttention('活动推广浮层遮挡任务面板，请关闭浮层后继续', kind='navigation')
         closers = [n for n in screen.nodes if re.fullmatch(
             r'关闭|关闭按钮|取消|以后再说|暂不|下次再说|我知道了|×|✕|✖|[Xx]', normalize(n.text))
             and not self.is_search_input_node(screen, n)
@@ -1352,7 +1422,7 @@ class DailyActivity(RescanPolicy, SearchPolicy, DestinationPolicy, TaskActions, 
         return False
 
     def promotion_visible(self, screen):
-        return bool(self.page.get('promotion_markers') and (
+        return bool(self.known_promotion(screen) or self.page.get('promotion_markers') and (
             screen.find(self.page['promotion_markers']) or self.page.get('inline_only')
             and screen.find(r'^(?:X|×|✕|✖)$')))
 

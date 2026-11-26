@@ -16,7 +16,7 @@ from backend.core.plugins.manager import PluginManager
 from backend.core.registry import Registry, default_registry
 from backend.core.config.loader import load_config
 from backend.core.device.screen import Screen
-from backend.core.models import TextNode
+from backend.core.models import Task, TextNode
 from backend.core.service.devices import DeviceHub
 from backend.core.service.panel import make_handler
 from test_activity_distribution import package_fixture
@@ -267,6 +267,49 @@ class AlipayTaskPanelTests(unittest.TestCase):
         outside = panel('1/10')
         outside.package = 'com.example.foreign'
         self.assertFalse(runner.verify(task, before, outside))
+
+    def test_gold_home_visit_confirms_only_its_observed_prompt(self):
+        runner = self.runner('gold_beans')
+        runner.origin = self.package
+        forward = TextNode('立即前往', (620, 2050, 1040, 2200))
+        prompt = Screen([TextNode('从支付宝-常用访问金豆夺宝', (110, 1000, 900, 1080)),
+                         TextNode('每日领金豆', (200, 1090, 700, 1150)), forward],
+                        1080, 2400, self.package, 'ocr')
+        shortcut = TextNode('金豆夺宝', (200, 550, 370, 625))
+        home = Screen([TextNode('搜索框', (100, 90, 900, 150)),
+                       TextNode('首页', (80, 2220, 210, 2300)), shortcut], 1080, 2400, self.package)
+        landing = Screen([TextNode('兑换明细', (50, 300, 200, 360)),
+                          TextNode('立即兑', (850, 1000, 1010, 1070))], 1080, 2400, self.package)
+        task = Task('home', '从支付宝首页访问金豆', '', '去访问', (820, 880, 1050, 960))
+        runner._read = Mock(side_effect=[home, landing])
+        runner.click = Mock()
+        runner.control.wait = Mock()
+        self.assertIs(runner._browse_confirmation(prompt, task), landing)
+        self.assertEqual([call.args[0] for call in runner.click.call_args_list], [forward, shortcut])
+        runner.click.reset_mock()
+        prompt.nodes.pop(1)
+        self.assertIs(runner._browse_confirmation(prompt, task), prompt)
+        runner.click.assert_not_called()
+
+    def test_forest_external_checkin_is_not_a_claim(self):
+        runner = self.runner('ant_forest')
+        self.assertEqual(runner._classify('去淘宝签到领红包', '', [], '立即领取', 0, 1)[1], 'manual')
+
+    def test_farm_open_sheet_waits_for_rendered_tasks_before_using_entry_again(self):
+        runner = self.runner('baba_farm')
+        runner.origin = self.package
+        header = TextNode('做任务集肥料', (70, 640, 830, 730))
+        loading = Screen([header, TextNode('关闭做任务集肥料弹窗', (900, 650, 1000, 740)),
+                          TextNode('支付宝·芭芭农场', (70, 190, 420, 250)),
+                          TextNode('任务列表', (810, 1810, 1010, 1950))], 1080, 2400, self.package)
+        ready = Screen([*loading.nodes, TextNode('去完成', (810, 980, 1010, 1070))],
+                       1080, 2400, self.package)
+        runner._read = Mock(return_value=ready)
+        runner.control.wait = Mock()
+        runner.click = Mock()
+        self.assertIs(runner._locate(loading, True), ready)
+        runner._read.assert_called_once()
+        runner.click.assert_not_called()
 
     def test_farm_combined_row_separates_timed_browse_from_game(self):
         runner = self.runner('baba_farm')

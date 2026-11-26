@@ -5,6 +5,12 @@
   "progressless_rows": true,
   "browse_confirmation": "^浏览精选页面[0-9]+秒$",
   "browse_confirmation_task": "逛精选页面得大额金豆",
+  "homepage_visit": {
+    "title": "从支付宝首页访问金豆",
+    "prompt": [["访问金豆夺宝"], ["每日领金豆"]],
+    "confirm_labels": ["立即前往"],
+    "shortcut_labels": ["金豆夺宝", "支付宝金豆夺宝"]
+  },
   "entry_labels": [
     "金豆夺宝"
   ],

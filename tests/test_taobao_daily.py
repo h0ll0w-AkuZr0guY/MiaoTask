@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import re
 import unittest
 from unittest.mock import Mock, patch
+from PIL import Image, ImageDraw
 
 from backend.core.config.loader import load_config
 from backend.core.device.screen import Screen
@@ -195,8 +196,9 @@ class TaobaoDailyTests(unittest.TestCase):
         registry = Registry(Path(__file__).resolve().parents[1] / 'backend/app').discover()
         self.assertIn('已结束', registry.get('taobao', 'double11').description)
         achievements = self.runner('achievements')
-        for caption in ('点此设置默认地址', '请先选择地址', '免费领正版周边'):
+        for caption in ('点此设置默认地址', '请先选择地址'):
             self.assertRegex(caption, achievements.page['manual_entry_markers'])
+        self.assertNotRegex('免费领正版周边', achievements.page['manual_entry_markers'])
 
     def test_all_channels_keeps_its_entry_without_homepage_bottom_tabs(self):
         runner = self.runner('farm')
@@ -276,6 +278,50 @@ class TaobaoDailyTests(unittest.TestCase):
         runner.click.reset_mock()
         self.assertTrue(runner.dismiss_overlay(screen))
         runner.click.assert_called_once_with(front)
+
+    def test_confirmed_farm_promotion_accepts_graphic_close_over_text(self):
+        runner = self.runner('farm')
+        screen = Screen([
+            TextNode('肥料明细', (30, 430, 230, 490)),
+            TextNode('品质农场上新季', (290, 550, 730, 635)),
+            TextNode('看看更多新品', (335, 1400, 660, 1470)),
+            TextNode('去淘金币逛买更省钱(0/1)', (220, 1530, 720, 1590)),
+        ], 1000, 2000, 'com.taobao.taobao', 'ocr')
+        image = Image.new('RGB', (1000, 2000), '#313131')
+        draw = ImageDraw.Draw(image)
+        draw.line((483, 1543, 517, 1577), fill='white', width=6)
+        draw.line((517, 1543, 483, 1577), fill='white', width=6)
+        runner.reader.last_image, runner.reader.last_screen = image, screen
+        runner.click = Mock()
+        runner.control.wait = Mock()
+        runner.device.go_back = Mock()
+        self.assertTrue(runner.dismiss_overlay(screen))
+        x, y = runner.click.call_args.args[0].center
+        self.assertLessEqual(abs(x - 500), 1)
+        self.assertLessEqual(abs(y - 1560), 1)
+        runner.device.go_back.assert_not_called()
+        screen.nodes.pop(2)
+        self.assertIsNone(runner.known_promotion(screen))
+
+    def test_farm_signin_checks_completed_at_the_original_button(self):
+        runner = self.runner('farm')
+        header = TextNode('肥料明细', (40, 430, 220, 490))
+        button = TextNode('去签到', (810, 580, 940, 640))
+        before = Screen([header, button], 1000, 2000, 'com.taobao.taobao')
+        after = Screen([header, TextNode('已完成', button.bounds)], 1000, 2000, before.package)
+        task, = runner.tasks(before)
+        self.assertEqual(task.title, '农场每日签到')
+        self.assertTrue(runner.verify(task, before, after))
+
+    def test_farm_search_requires_official_card_subtitle_next_to_title(self):
+        runner = self.runner('farm')
+        title = TextNode('芭芭农场', (150, 230, 360, 285), 'ocr')
+        field = TextNode('芭芭农场', (130, 50, 760, 120), 'ocr')
+        subtitle = TextNode('施肥种树，1分钱兑水果百货', (150, 305, 630, 342), 'ocr')
+        result = Screen([field, title, subtitle], 1000, 2000, 'com.taobao.taobao', 'ocr')
+        self.assertIs(runner.official_activity_entry(result), title)
+        result.nodes.pop()
+        self.assertIsNone(runner.official_activity_entry(result))
 
     def test_confirmed_home_uses_native_icon_when_ocr_merges_adjacent_captions(self):
         runner=self.runner('farm')
@@ -832,6 +878,7 @@ class TaobaoDailyTests(unittest.TestCase):
         runner = self.runner('achievements')
         tab = TextNode('我的成就',(790,2650,1000,2720))
         screen = Screen([TextNode('淘宝成就',(180,100,560,210)),
+                         TextNode('免费领正版周边',(50,280,860,380)),
                          TextNode('未开启签到抽奖快去开启吧~',(50,560,860,630)),tab],
                         1800,2880,'com.taobao.taobao','ocr')
         runner.read = Mock(return_value=screen); runner.click = Mock()
@@ -839,6 +886,18 @@ class TaobaoDailyTests(unittest.TestCase):
         self.assertFalse(runner.is_task_list(screen.nodes))
         self.assertIs(runner.entry_node(screen,runner.config['task_entry_labels']),tab)
         runner.click.assert_not_called()
+
+    def test_achievement_merchandise_signin_is_not_the_points_panel(self):
+        runner = self.runner('achievements')
+        tab = TextNode('我的成就', (790, 2650, 1000, 2720))
+        native = Screen([TextNode('淘宝成就', (180, 100, 560, 210)),
+                         TextNode('今日打卡任务0/1', (50, 1500, 760, 1600)),
+                         TextNode('签到', (1300, 1620, 1620, 1710)), tab],
+                        1800, 2880, 'com.taobao.taobao')
+        self.assertFalse(runner.is_task_list(native.nodes))
+        self.assertIsNone(runner.entry_node(native, runner.config['task_entry_labels']))
+        native.source = 'ocr'
+        self.assertIs(runner.entry_node(native, runner.config['task_entry_labels']), tab)
 
     def test_achievement_initialization_never_selects_an_address(self):
         runner = self.runner('achievements')
@@ -848,6 +907,22 @@ class TaobaoDailyTests(unittest.TestCase):
         with self.assertRaisesRegex(NeedsAttention,'本人先设置收货地址'):
             runner.read_page()
         runner.click.assert_not_called()
+
+    def test_achievement_reads_painted_promotion_before_stopping_on_underlying_address(self):
+        runner = self.runner('achievements')
+        native = Screen([TextNode('点此设置默认地址', (100, 500, 800, 550))],
+                        1000, 2000, 'com.taobao.taobao')
+        close = TextNode('X', (920, 460, 965, 510), 'ocr')
+        painted = Screen([TextNode('淘宝成就', (50, 50, 330, 120)),
+                          TextNode('免费领正版周边', (60, 260, 800, 360)),
+                          TextNode('开启60天打卡', (200, 1690, 800, 1780)), close],
+                         1000, 2000, native.package, 'ocr')
+        runner.read = Mock(side_effect=[native, painted])
+        runner.click = Mock()
+        runner.control.wait = Mock()
+        self.assertIs(runner.read_page(), painted)
+        self.assertIs(runner.dismiss_overlay(painted), close)
+        runner.click.assert_called_once_with(close)
 
     def test_direct_reward_grid_does_not_type_into_hidden_search_field(self):
         runner = self.runner()

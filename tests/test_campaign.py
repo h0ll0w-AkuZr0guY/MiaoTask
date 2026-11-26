@@ -2157,6 +2157,17 @@ class YueYueZhuanEntryTests(unittest.TestCase):
         foreign = Screen([node('恭喜获得',100,600)],1000,2000,'org.example.other')
         self.assertFalse(r.verify(task, before, foreign, explicit=True))
 
+    def test_monthly_scrolled_rows_under_title_bar_are_not_clickable(self):
+        r = self.activity_runner()
+        frame = self.frame([node('月月赚', 100, 100, 300, 70),
+                            node('逛动动有金天天赚现金', 100, 67, 560, 48),
+                            node('去看看', 790, 80, 140, 60),
+                            node('逛一逛玩游戏赚现金', 100, 420, 560),
+                            node('去看看', 790, 430, 140, 60),
+                            node('逛一逛领福利红包', 100, 720, 560),
+                            node('去看看', 790, 730, 140, 60)])
+        self.assertEqual([task.title for task in r.tasks(frame)], ['逛一逛领福利红包'])
+
     def test_monthly_claim_click_without_receipt_is_not_explicit_success(self):
         r = self.activity_runner()
         panel = self.monthly_panel()

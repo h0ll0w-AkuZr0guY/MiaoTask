@@ -115,7 +115,9 @@ class AlipayTaskPanel(DestinationPolicy, Activity):
         return True
 
     def _locate(self, screen, auto_open):
-        deadline = self.control.now() + self.config['return_timeout'] + 2 * self.config['page_timeout']
+        page_timeout = self.config['page_timeout']
+        deadline = self.control.now() + self.config['return_timeout'] + 2 * page_timeout
+        hard_deadline = deadline + page_timeout
         backs = entry_attempts = panel_attempts = 0
         typed = launched = False
         checked_overlay = False
@@ -146,6 +148,12 @@ class AlipayTaskPanel(DestinationPolicy, Activity):
                         screen = self._read()
                         continue
                 return screen
+            if self._groups(screen.nodes, self.config.get('loading_panel_groups', [])):
+                # The landscape canvas can expose the task sheet and its close
+                # control a frame before the rows. Leave the sheet open to render.
+                self.control.wait(.55)
+                screen = self._read()
+                continue
             if self._groups(screen.nodes, self.config['landing_groups']):
                 if not checked_overlay:
                     checked_overlay = True
@@ -166,6 +174,7 @@ class AlipayTaskPanel(DestinationPolicy, Activity):
                     self.click(target)
                     panel_attempts += 1
                     wait_until = self.control.now() + 2
+                    deadline = min(hard_deadline, max(deadline, self.control.now() + page_timeout))
             elif auto_open and self.control.now() >= wait_until:
                 field = self._search_field(screen)
                 if field and not typed:
@@ -174,9 +183,12 @@ class AlipayTaskPanel(DestinationPolicy, Activity):
                     wait_until = self.control.now() + 1.1
                 elif field and typed:
                     target = self._search_result(screen, field)
-                    if target is None and self.config['ocr']:
+                    if self.config['ocr'] and (target is None or target.center[1] < screen.height * .17):
+                        # Heads-up notifications can cover the first search result while
+                        # the underlying accessibility tree still exposes it.
                         painted = self._read(visual=True)
-                        target = self._search_result(painted, field)
+                        target = (self._search_result(painted, field) if painted.package == self.origin
+                                  and (painted.width, painted.height) == (screen.width, screen.height) else None)
                     if target and entry_attempts < 3:
                         self.click(target)
                         entry_attempts += 1
@@ -210,7 +222,8 @@ class AlipayTaskPanel(DestinationPolicy, Activity):
         seconds = int(duration[1]) if duration else 0
         if action in _DONE or current >= total and action not in _CLAIM:
             kind, reason = 'done', ''
-        elif _MANUAL.search(title + detail):
+        elif (_MANUAL.search(title + detail)
+              or any(re.search(pattern, title) for pattern in self.config.get('manual_task_titles', []))):
             kind, reason = 'manual', '需要本人处理的任务'
         elif action in _CLAIM:
             kind, reason = 'claim', ''
@@ -363,7 +376,8 @@ class AlipayTaskPanel(DestinationPolicy, Activity):
             deadline = self.control.now() + self.config['page_timeout']
             while self.control.now() < deadline:
                 self._check_browse_destination(screen)
-                if not self.is_task_list(screen.nodes) and len(screen.nodes) >= 4 and not screen.find(r'加载中|请稍候'):
+                if (not self.is_task_list(screen.nodes) and len(screen.nodes) >= 4
+                        and not screen.find(r'加载中|请稍候|正在加载|正在努力加载|重新加载')):
                     break
                 if self.verify(task, before, screen):
                     return screen, False, False

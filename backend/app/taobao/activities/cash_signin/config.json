@@ -13,6 +13,10 @@
     "list_support_markers": "累计签到奖励|再攒",
     "remaining_reward_balance": "再攒[●]?([0-9]+)(?:元宝)?提现",
     "promotion_markers": "送你.{0,10}(?:提现机会|限时折扣|优惠)|无门槛下单|连续打卡必得|累计签到7天|浏览商品\\d+秒",
+    "known_promotions": [
+      {"markers": ["红包签到[·・•]领现金|累计签到奖励", "恭喜获得红包", "后优惠失效|去逛逛"], "close_region": [0.43, 0.68, 0.57, 0.9]},
+      {"markers": ["累计签到奖励", "送你限时折扣|无门槛下单|现金立即到账"], "close_region": [0.43, 0.68, 0.57, 0.84]}
+    ],
     "browse_reward": {
       "prompt": "浏览商品(\\d+)秒",
       "button": "去领元宝"
