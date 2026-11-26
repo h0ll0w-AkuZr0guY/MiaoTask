@@ -9,16 +9,16 @@ import time
 from backend.core.models import TextNode, bounds_of, normalize
 from backend.core.device.geometry import IdentityImageProcessor, DisplayGeometry, ocr_tiles
 from backend.core.context import workspace_scope
-from backend.core.device.ocr import (OCR_DEVICE_ENV, device_ocr_scope, engine_generation,
-                                     ocr_engine_params as _ocr_engine_params, reset_engines,
-                                     resolve_ocr_backend, scoped_engine as _scoped_ocr_engine)
+from backend.core.device.ocr import (OCR_BACKEND, OCR_DEVICE_ENV, device_ocr_scope, engine_generation,
+                                     reset_engines, resolve_ocr_backend,
+                                     scoped_engine as _scoped_ocr_engine)
 
 def local_ocr_engine(scope=None, threads=4):
     return _scoped_ocr_engine(scope if scope is not None else workspace_scope.get() or 'default', threads)
 
 
 def reset_ocr_engines():
-    """Drop cached recognizers so the next frame rebuilds with a new backend."""
+    """Drop cached recognizers so the next frame rebuilds cleanly."""
     reset_engines()
 
 
@@ -134,25 +134,22 @@ class ScreenReader:
 
     def _ocr_tile(self, image):
         self._check_ocr()
-        # A backend switch bumps the generation; rebuild instead of reusing an
-        # engine whose provider no longer matches the saved preference.
         if self._engine is None or self._engine_generation != engine_generation():
             generation = engine_generation()
             self._engine = local_ocr_engine(self._ocr_scope, self.ocr_threads)
             self._engine_generation = generation
-        import numpy as np
         prepared = self.image_processor.prepare(image)
         image = prepared.image
-        # Limit image width to reduce CPU work, then map boxes back to the phone.
-        scale = min(1.0, 1000 / image.width)
-        resized = image.resize((round(image.width * scale), round(image.height * scale)))
+        scale = min(1.0, 1440 / image.width)
+        resized = (image if scale == 1.0
+                   else image.resize((round(image.width * scale), round(image.height * scale))))
         managed = callable(getattr(type(self._engine), 'infer', None))
-        result = (self._engine.infer(np.asarray(resized), self._check_ocr)
-                  if managed else self._engine(np.asarray(resized), use_cls=False))
+        result = (self._engine.infer(resized, self._check_ocr)
+                  if managed else self._engine(resized, use_cls=False))
         results = zip(result.boxes, result.txts, result.scores) if result.boxes is not None else []
         nodes = []
         for box, text, confidence in results:
-            if confidence < .65:
+            if confidence < .35:
                 continue
             xs, ys = zip(*box)
             bounds = prepared.to_device.bounds(tuple(round(v / scale) for v in (min(xs), min(ys), max(xs), max(ys))))

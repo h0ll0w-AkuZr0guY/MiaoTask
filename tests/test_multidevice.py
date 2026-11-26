@@ -117,12 +117,12 @@ class HubTests(unittest.TestCase):
         finally:
             release.set();logging.getLogger().removeHandler(handler)
 
-    def test_usb_wifi_and_emulator_aliases_share_one_physical_lease(self):
+    def test_duplicate_usb_workspaces_share_one_physical_lease(self):
         hub=DeviceHub();second=hub.add()
         with patch('backend.core.device.discovery.android_identity',return_value='synthetic-handset'):
-            hub.claim('default','uiautomator2','usb')
-            with self.assertRaisesRegex(ValueError,'同一台设备'):hub.claim(second,'uiautomator2','192.0.2.1:5555')
-            hub.release('default');hub.claim(second,'uiautomator2','emulator-5554')
+            hub.claim('default','uiautomator2','usb-port-a')
+            with self.assertRaisesRegex(ValueError,'同一台'):hub.claim(second,'uiautomator2','usb-port-b')
+            hub.release('default');hub.claim(second,'uiautomator2','usb-port-b')
 
     def test_remove_running_workspace_is_rejected_and_late_dispatch_stays_closed(self):
         hub=DeviceHub();second=hub.add();c=hub.resolve(second)
@@ -192,17 +192,6 @@ class GeometryTests(unittest.TestCase):
         session=Mock();session.passive_login_banner=lambda s:False
         with self.assertRaises(NeedsAttention):check_attention(session,screen)
         device.click.assert_not_called()
-
-    def test_mumu_discovery_reads_running_instance_ports_only(self):
-        from backend.core.device import emulators
-        output={'1':dict(is_android_started=True,adb_host_ip='127.0.0.1',adb_port=12345,name='synthetic'),
-                '2':dict(is_android_started=False,adb_host_ip='127.0.0.1',adb_port=12346),
-                '3':dict(is_android_started=True,adb_host_ip='192.0.2.10',adb_port=5555)}
-        with patch.object(emulators,'find_mumu_cli',return_value='vendor-cli'),patch.object(
-                emulators.subprocess,'run',return_value=Mock(returncode=0,stdout=json.dumps(output))) as run:
-            rows=emulators.discover_emulators()
-        self.assertEqual(run.call_args.args[0],['vendor-cli','info','--vmindex','all'])
-        self.assertEqual([d['serial'] for d in rows['devices']],['127.0.0.1:12345'])
 
     def test_sparse_logical_display_maps_unique_id_not_hwc_port_or_list_index(self):
         dump='Display 7:\n mDisplayId=7\n mPrimaryDisplayDevice=screen006(local:123456789)\n mHasContent=true\n'

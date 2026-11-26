@@ -2,14 +2,11 @@ import threading
 import unittest
 from unittest.mock import Mock, patch
 
-import numpy as np
 from PIL import Image
-from rapidocr.ch_ppocr_rec import TextRecInput, TextRecOutput
 
 from backend.app.taobao.activities.double11.activity import CampaignRunner, NeedsAttention
 from backend.app.taobao.activities.double11.tasks import TextNode
 from backend.core.device.adapter import DeviceAdapter
-from backend.core.device.ocr import ExactTextCache
 from backend.core.device.screen import Screen, ScreenReader
 
 
@@ -199,46 +196,6 @@ class RegionOCRTests(unittest.TestCase):
         self.assertEqual(sizes, [(1440, 3200)])
 
 # performance_paths
-
-
-class ExactTextCacheTests(unittest.TestCase):
-    def backend(self):
-        return Mock(side_effect=lambda args: TextRecOutput(
-            imgs=args.img, txts=tuple(str(int(im.flat[0])) for im in args.img),
-            scores=tuple(.99 for _ in args.img), word_results=tuple(None for _ in args.img)))
-
-    def test_unchanged_text_is_reused_but_one_pixel_change_is_recognized(self):
-        backend = self.backend()
-        cache = ExactTextCache(backend)
-        first = np.zeros((8, 20, 3), dtype=np.uint8)
-        cache(TextRecInput(img=[first]))
-        same = cache(TextRecInput(img=[first.copy()]))
-        self.assertEqual(same.txts, ('0',))
-        self.assertEqual(backend.call_count, 1)
-        changed = first.copy()
-        changed[0, 0, 0] = 7
-        result = cache(TextRecInput(img=[first, changed]))
-        self.assertEqual(result.txts, ('0', '7'))
-        self.assertEqual(len(backend.call_args.args[0].img), 1)
-        self.assertEqual((cache.last_hits, cache.last_misses), (1, 1))
-
-    def test_equal_bytes_with_different_geometry_are_not_reused(self):
-        backend = self.backend()
-        cache = ExactTextCache(backend)
-        cache(TextRecInput(img=[np.zeros((8, 20, 3), dtype=np.uint8)]))
-        cache(TextRecInput(img=[np.zeros((20, 8, 3), dtype=np.uint8)]))
-        self.assertEqual(backend.call_count, 2)
-
-    def test_cache_is_bounded_and_word_geometry_requests_bypass_it(self):
-        backend = self.backend()
-        cache = ExactTextCache(backend, capacity=2)
-        images = [np.full((8, 20, 3), i, dtype=np.uint8) for i in range(3)]
-        cache(TextRecInput(img=images))
-        self.assertEqual(len(cache.cache), 2)
-        cache(TextRecInput(img=[images[0]]))
-        self.assertEqual(cache.last_misses, 1)
-        cache(TextRecInput(img=[images[0]], return_word_box=True))
-        self.assertTrue(backend.call_args.args[0].return_word_box)
 
 
 class FreshFrameTests(unittest.TestCase):

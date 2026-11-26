@@ -7,8 +7,8 @@
 | 需求 | 首选能力 | 业务适配负责什么 |
 | --- | --- | --- |
 | 接入一个应用 / 活动 | `ApplicationProfile`、`Registry`、`Activity` | 包名范围、页面入口、解析、动作与核验 |
-| 连接 USB / Wi-Fi / MuMu | `discovery`、`wifi`、`emulators`、`DeviceAdapter` | 使用明确设备目标，不自行猜端口或替换授权 |
-| 获取控件与画面文字 | `ScreenReader`、`Screen`、`TextNode` | 页面判定与匹配词；需要时限定本帧识别区域 |
+| 连接 macOS ADB USB 设备 | `discovery`、`inventory`、`DeviceAdapter` | 使用明确 USB 设备目标，拒绝无线/模拟器地址，不替换授权 |
+| 获取控件与画面文字 | `ScreenReader`、`Screen`、`TextNode`、`AppleVisionEngine` | 页面判定与匹配词；需要时限定本帧识别区域 |
 | 裁剪 / 缩放 OCR、适配比例 | `ImageProcessor`、`CoordinateTransform`、`DisplayGeometry` | 声明图像到输入坐标的变换，尊重安全区域 |
 | 解析任务行 | `Task`、`TaskRules`、共享 `parse_tasks` | 注入本活动词表和分类；布局不符则自行解析 |
 | 执行、暂停、停止、返回 | `Activity` / `Session`、`RunControl`、`Navigator` | 页面动作与有限恢复钩子 |
@@ -18,7 +18,7 @@
 | 按需获取活动源码 | `GitHubSourceProvider`、`PluginManager`、`ActivityCatalogHub` | 提供审阅过的 manifest 与兼容声明，复用固定提交、下载与安装事务 |
 | 顺序执行多个活动 | `ActivityPipeline`、`select_pipeline` | 显式提供应用/活动 ID 与正确实例，不并发控制同一设备 |
 
-路径下文均相对仓库根目录；示例中的 `sample`、`org.example.sample` 和地址均为虚构占位。
+路径下文均相对仓库根目录；示例中的 `sample`、`org.example.sample` 和序列号均为虚构占位。
 
 ## 1. 应用注册与分层配置
 
@@ -41,7 +41,7 @@ load_config(path=None, *, app=None, activity=None,
 ```
 
 * `factory` 为 `完整模块路径:类名`，公开 ID 与 Python 包目录不要求同名。ID 只接受小写字母、数字、下划线和连字符，必须以字母或数字开头。
-* `ApplicationProfile.matches(package)` 使用声明的包名模式核对身份；`package_for(driver)` 返回该驱动对应包名，没有声明则报错。
+* `ApplicationProfile.matches(package)` 使用声明的包名模式核对身份；`package_for(driver)` 返回该驱动对应包名，保留 `native_package` 与 `ActivityMeta.device_types` 兼容字段以便无修改加载上游活动源码。
 * `create_runner` / `registry.instantiate` 选择注册工厂、检查活动驱动范围及设备当前所选实例归属，返回活动对象；不负责连接设备或自动绑定每日记录。
 * 配置逐层按顶层字段覆盖并校验。`snapshot.sources` 标明字段来自 `core`、`app`、`activity` 或 `user`；`snapshot.mutable()` 获取独立字典。读取嵌套值也不会修改快照。
 
@@ -58,21 +58,18 @@ config = snapshot.mutable()
 
 注册的 Python manifest 属于受审阅的仓库代码，不作为不可信插件执行。`default_registry()` 在进程内缓存，新增活动后重启服务。
 
-## 2. 设备发现、无线接入与实例
+## 2. macOS ADB USB 设备发现与实例
 
-实现：[discovery.py](../backend/core/device/discovery.py)、[wifi.py](../backend/core/device/wifi.py)、[inventory.py](../backend/core/device/inventory.py)、[emulators.py](../backend/core/device/emulators.py)。
+实现：[discovery.py](../backend/core/device/discovery.py)、[inventory.py](../backend/core/device/inventory.py)、[endpoints.py](../backend/core/device/endpoints.py)。
 
 | 调用 | 返回 / 行为 | 约束 |
 | --- | --- | --- |
-| `list_android_devices(adb_path=None, *, timeout=8, env=None)` | `serial/state/model` 字典列表 | 只查询，不重启 ADB，不等待授权 |
-| `prepare_android_connection(serial=None, on_status=None, timeout=45)` | 已授权的连接标识 | 多设备时必须显式选择；等待用户在手机授权，不能代替确认 |
-| `android_identity(serial)` | 序列属性，或带 `android-` 前缀的 Android ID | 用于连接别名去重，无法核定抛 `AndroidConnectionError` |
-| `inventory()` | `{devices: [...], errors: [...]}` | 对已知授权连接去重，身份查询有短时缓存 |
-| `discover_emulators()` | `{devices: [...], errors: [...]}` | 只读已安装 MuMu 配置 / CLI，使用实际运行端口 |
-| `discover_wifi()` | `{services, devices, errors}` | 只读 mDNS 和已知 ADB 连接，不扫描网段 |
-| `endpoint(value)` | 规范化 IP:端口 | 接受 IPv4 或方括号 IPv6，拒绝缺端口、无效地址和命令参数 |
-| `pair_wifi(address, code, on_status=None)` | 成功返回 `None` | 当前六位码经标准输入传递，不写入命令行、配置或日志 |
-| `connect_wifi(address, on_status=None)` | 规范化连接地址 | 有限连接尝试，配对端口与连接端口分开 |
+| `is_usb_serial(serial)` | 布尔值 | 仅接受直接 USB 序列号；拒绝含 `:` 的 TCP/IP 地址、`._adb-tls-` mDNS 与 `emulator-*` |
+| `list_android_devices(adb_path=None, *, timeout=8, env=None)` | USB 设备的 `serial/state/model` 字典列表 | 只查询并过滤非 USB 传输，不重启 ADB，不等待授权 |
+| `prepare_android_connection(serial=None, on_status=None, timeout=45)` | 已授权的 USB 序列号 | 非 USB 序列号直接抛 `ValueError`；多设备时必须显式选择；等待用户在手机授权 |
+| `android_identity(serial)` | 序列属性，或带 `android-` 前缀的 Android ID | 仅接受 USB 序列号，用于物理设备租约去重，无法核定抛 `AndroidConnectionError` |
+| `inventory()` | `{devices: [...], errors: [...]}` | 对已连接的 USB 设备去重，身份查询有短时缓存 |
+| `UsbEndpointProvider(serials, label='Android USB 设备')` | `discover() -> list[DeviceEndpoint]` | 显式 USB 端点提供者，拒绝 TCP/IP 与模拟器标识 |
 
 连接初始化使用 [adapter.py](../backend/core/device/adapter.py)：
 
@@ -81,11 +78,11 @@ DeviceAdapter(device_type, serial=None, on_status=None,
               application=None, on_resolved=None)
 ```
 
-构造时会连接和查询实例。现有 `device_type` 为 `uiautomator2` / `hmdriver2`；`application` 传当前注册应用的 Profile。多设备服务通过 `on_resolved(kind, serial)` 先取得物理租约再初始化 Android 自动化驱动，应用活动应使用控制器已经提供的 `device`，不重复构造连接。
+构造时会校验 `device_type == 'uiautomator2'` 且 `serial` 为有效 USB 序列号（已移除 `wifi.py`、`emulators.py` 与 `hmdriver2` 驱动支持），再连接和查询实例。多设备服务通过 `on_resolved(kind, serial)` 先取得物理租约再初始化 Android 自动化驱动，应用活动应使用控制器已经提供的 `device`，不重复构造连接。
 
 实例能力在 [instances.py](../backend/core/device/instances.py)：
 
-* `AppInstance(package, user_id, label).id` 为 `包名@用户空间`，原生无 Android 用户空间时为 `包名@native`。
+* `AppInstance(package, user_id, label).id` 为 `包名@用户空间`。
 * `device.refresh_app_instances()` 返回实例字典列表；`device.select_app_instance(instance_id)` 返回选中 `AppInstance`。运行期间禁止刷新或切换。
 * `with device.instance_session(): ...` 开启输入层实例核对并在退出时清理。服务已统一包裹活动执行，活动不要再嵌套开启。
 * `InstanceMismatch` 表示选定应用实例与实际前台不符或无法核定。应停止输入，不能把它转换成普通任务失败后继续点击。
@@ -315,7 +312,7 @@ controller.snapshot()                            # 独立状态副本
 
 `POST /api/workspaces/rename` 接受 `{id, label}`，按原有令牌、Host 和 Origin 校验；名称去空白后为 1～60 字符。只修改当前服务中该工作区的展示名称，允许执行期间改名；不改连接、运行配置、租约或日记录，失效 ID 和退出中的服务拒绝修改。
 
-`device-manager.js` 的 `MiaoDevices.prepare()` 用于连接提交前保存名称和解析目标。新增时先创建、选择并等待该工作区的 `miaotask:state`，最长 10 秒，再返回 ID；已有编辑仅重命名显式 ID，发生工作区切换时拒绝误投。USB/Wi-Fi 调用方在准备前捕获用户填写的地址，准备后再次核定当前工作区；无线配对码仍仅用于当前请求。`creating/preparing` 为只读界面状态，`refresh()` 在主页面渲染后同步弹窗控件。`miaotask:editor-mode` 通知无线编辑器清理新建设备的旧地址。设备名称与工作区一样保留在本次服务期间，不把原始地址保存到浏览器偏好。
+`device-manager.js` 的 `MiaoDevices.prepare()` 用于连接提交前保存名称和解析目标。新增时先创建、选择并等待该工作区的 `miaotask:state`，最长 10 秒，再返回 ID；已有编辑仅重命名显式 ID，发生工作区切换时拒绝误投。USB 调用方在准备前捕获用户选择的序列号，准备后再次核定当前工作区。`creating/preparing` 为只读界面状态，`refresh()` 在主页面渲染后同步弹窗控件。设备名称与工作区一样保留在本次服务期间，不把原始序列号保存到浏览器偏好。
 
 工作区摘要新增 `connection_issue`，由预览连续三次失败产生；成功 `on_image` 清零，旧设备的迟到失败忽略。这是展示诊断标志，不改 `connected`、统计、执行目标或停止状态，也不触发重连。卡片同时显示颜色和文字，不能以颜色作为任务是否可执行的后端依据。
 
@@ -339,8 +336,8 @@ HTTP 为 `GET /api/rankings?group=activity&period=today&metric=completed`，设�
 
 | 接缝 | 目前能做什么 | 接入产品前仍需完成什么 |
 | --- | --- | --- |
-| `DeviceBackend` / `DriverFactory` | 结构协议、显式注册并创建后端 | Controller / CLI 装配、驱动选择、身份 / 实例 / 显示屏及停止语义；当前不会自动出现在网页 |
-| `EndpointProvider` / `ConfiguredEmulatorProvider` | 返回已配置的 `DeviceEndpoint` | 新厂商发现方式、明确授权 / 连接流程、重复物理身份核对；不猜端口 |
+| `DeviceBackend` / `DriverFactory` | 结构协议、显式注册并创建后端 | Controller / CLI 装配、驱动选择、身份 / 实例 / 显示屏及停止语义；当前仅开放 `uiautomator2` |
+| `EndpointProvider` / `UsbEndpointProvider` | 返回已校验的 USB `DeviceEndpoint` | 保持仅 USB 序列号约束与重复物理身份核对；拒绝 TCP/IP 与模拟器 |
 | `ImageProcessor` / `PreparedImage` | 自定义图像预处理及坐标回映 | 在读屏器创建处显式注入、布局选择、缓存策略及目标设备覆盖；当前无用户可选自动策略目录 |
 | `DisplayGeometry.rotation` | 表达方向字段 | 厂商姿态采集、变换与输入对齐；不代表全部折叠 / 分屏模式已支持 |
 | 应用 manifest / `Activity` | 无需修改 core 注册新活动 | 对真实 App 的入口、任务、动作、核验与异常适配；合成示例不算真实支持 |
@@ -367,12 +364,12 @@ validate_archive(path, expected_sha256, *, expected_app=None, expected_activity=
 reload_plugin_registry()                          # 清理活动模块缓存并重建默认注册表
 hub.plugins_snapshot(origin, refresh=False)
 hub.change_plugin(action, {'app': ..., 'activity': ..., 'source_commit': ...}, origin)
-hub.open_activity_folder(origin)                  # Windows 打开固定安装目录，返回路径字符串
+hub.open_activity_folder(origin)                  # macOS 使用 open 打开固定安装目录，返回路径字符串
 ```
 
 产品默认使用官方 `main` 源码。目录先解析提交与树，只静态读取 manifest 和兼容声明，不执行远端 Python；源码按固定提交从官方地址获取，核对 Git blob 摘要、长度、路径及数量。每个目录项有 `source='github-source'`、`source_ref`、`source_commit`、短 `revision`、合成版本 `0.0.0+git.<revision>` 和兼容信息；客户端安装/更新传已展示的完整提交，目录变化时拒绝静默改装。
 
-新活动或修改过的 manifest 在活动目录提供 `compat.json`，例如 `{"schema": 1, "framework_api": 1, "python": "3.13"}`。少量已审阅的旧 manifest 使用明确摘要白名单兼容，不能借此推断任意新活动兼容。目录中的 `warnings` 报告无效声明；`installed_source_commit`、`update_available` 和 `compatible` 用于界面展示。
+新活动或修改过的 manifest 在活动目录提供 `compat.json`，例如 `{"schema": 1, "framework_api": 1, "python": "3.12"}`。少量已审阅的旧 manifest 使用明确摘要白名单兼容，不能借此推断任意新活动兼容。目录中的 `warnings` 报告无效声明；`installed_source_commit`、`update_available` 和 `compatible` 用于界面展示。
 
 普通产品请求只通过 `hub.change_plugin` 提交 `install/uninstall`，让服务检查全部设备线程空闲并串行替换模块；不能从单设备控制器绕过此门，也不能让网页传任意源码 URL。`build_archive` 是安装器内部复用归档校验的实现，客户端不依赖活动 Release。低层 `install_local` 和注入测试源仅供离线用例/打包验证，产品没有本机测试源路由或启动参数；调用方必须保证没有活动线程运行。
 
@@ -380,11 +377,11 @@ hub.open_activity_folder(origin)                  # Windows 打开固定安装�
 
 `PluginManager()` 默认根目录为 `activities_dir()`，源码在其 `apps/<app_module>/` 下，`installed.json` 与 `catalog.json` 保存在活动根。`snapshot` 的 `activities_dir` 是活动根的绝对路径，`source_dir` 是其中 `apps/` 的绝对路径。不要根据 `data_dir()` 自行拼接旧 `plugins/` 位置。显式 `PluginManager(root=...)` 用于受控构建或隔离用例，由调用方管理该目录。
 
-`activities_dir()` 优先使用显式 `MIAO_ACTIVITIES_DIR`，不可写则报错；否则便携版使用 exe 旁的 `activities/`，源码使用仓库根的 `activities/`。设置 `MIAO_DATA_DIR` 会同时将活动隔离到该根下，避免测试读写正式活动。默认位置不可写时回退到私人数据根的 `activities/`。新目录不存在时复制旧 `plugins/`，或只读便携目录内的预装活动；保留源文件，不覆盖已有活动根。日记录和设备信息仍由 `data_dir()` 管理，不写入活动源码目录。
+`activities_dir()` 优先使用显式 `MIAO_ACTIVITIES_DIR`，不可写则报错；否则便携版使用可执行文件（或 `.app` 包）旁的 `activities/`，源码使用仓库根的 `activities/`。设置 `MIAO_DATA_DIR` 会同时将活动隔离到该根下，避免测试读写正式活动。默认位置不可写时回退到私人数据根（`~/Library/Application Support/MiaoTask`）的 `activities/`。新目录不存在时复制旧 `plugins/`，或只读便携目录内的预装活动；保留源文件，不覆盖已有活动根。日记录和设备信息仍由 `data_dir()` 管理，不写入活动源码目录。
 
 默认 `Registry()` 合并源码资源与 `activities_dir()/apps`，插件应用目录按模块名覆盖对应内置应用，避免同一 ID 重复注册。自定义 `Registry(app_dir)` 默认只发现该目录；需加载外部包时显式传 `plugin_dir`。框架空包的 `has_activities` 为 false，`load_config()` 返回通用界面配置，但不能据此执行默认应用；执行前必须安装、选择真实活动。
 
-`POST /api/plugins/open-folder` 以空 JSON 对象请求，必须通过现有令牌、Host 与 Origin 校验。服务只打开已解析的 `manager.root`，忽略客户端路径；响应 `{ok: true, path: ...}`。非 Windows 或无法打开时返回可读错误，活动中心保留实际路径供手动访问。
+`POST /api/plugins/open-folder` 以空 JSON 对象请求，必须通过现有令牌、Host 与 Origin 校验。服务只打开已解析的 `manager.root`，忽略客户端路径；响应 `{ok: true, path: ...}`。macOS 下通过 `open` 在访达打开，不支持的系统返回可读错误，活动中心保留实际路径供手动访问。
 
 目录失败时保留经验证的缓存并附错误，不能把缓存声称为最新 main。已安装代码留在本地可离线执行；更新需要重新访问官方源。缓存与安装记录不包含账号或设备授权，卸载不删除任务日记录。
 
@@ -404,9 +401,9 @@ controller.dispatch('run', {'auto_open': True})
 
 ## 11. 有界 Android 元数据回退
 
-实现：[read_shell.py](../backend/core/device/read_shell.py)。`AdbReadShell(serial, *, timeout=8, budget=24)` 是绑定明确设备的可调用只读通道，返回 `ReadResult(output, exit_code)`。仅接受用户空间、包列表和显示/焦点查询白名单，通过 ADB `exec-out` 避开 SDK shell 哨兵/PTY 处理；不能用于点击、启动、输入或任意 shell 命令。
+实现：[read_shell.py](../backend/core/device/read_shell.py)。`AdbReadShell(serial, *, timeout=8, budget=24)` 是绑定明确 USB 设备的可调用只读通道（构造时通过 `is_usb_serial` 拒绝非 USB 序列号），返回 `ReadResult(output, exit_code)`。仅接受用户空间、包列表和显示/焦点查询白名单，通过 ADB `exec-out` 避开 SDK shell 哨兵/PTY 处理；不能用于点击、启动、输入或任意 shell 命令。
 
-实例枚举使用总计最多 24 秒预算，安装列表与焦点回退分别限定 12 秒、8 秒；调用方复用预算对象，不能每个回退重新开始无限等待。空输出、诊断文本和失败按未知处理，不能据此记录应用未安装；确认可读的用户空间单独保留，坏分身空间通过 warning 报告，不推测额外用户或实例。已选实例失效仍停止，不能因读取失败转而执行主账号。本轮属于本地回归覆盖，未声称已在 Issue #7 的设备上复现验证。
+实例枚举使用总计最多 24 秒预算，安装列表与焦点回退分别限定 12 秒、8 秒；调用方复用预算对象，不能每个回退重新开始无限等待。空输出、诊断文本和失败按未知处理，不能据此记录应用未安装；确认可读的用户空间单独保留，坏分身空间通过 warning 报告，不推测额外用户或实例。已选实例失效仍停止，不能因读取失败转而执行主账号。
 
 ## 12. Android UI 调用与可选系统输入
 
@@ -417,11 +414,9 @@ controller.dispatch('run', {'auto_open': True})
 `DeviceAdapter.input_ascii(text)` 是可选能力，仅 Android 接受 1～32 位 ASCII 字母或数字；调用者先确认和聚焦可见输入框，适配器再次检查所选实例，按当前逻辑显示屏执行系统输入，命令预算 8 秒。它不清空任意文本、不安装或切换输入法，不接受空格、Shell 字符或 Unicode；通用 Unicode 输入继续使用 `input_text`。旧框架及其他后端未必有此能力，活动应使用 `getattr` 检查，不把它列为所有 `DeviceBackend` 的强制方法。
 
 
-### 自动分身与无线表单
+### 自动分身
 
 `configure/run` 可携带布尔 `all_instances`，保存在当前服务工作区的状态中，默认关闭。流水线在每个活动装配后，开启时从当前 `app_instances` 重新生成全部 ID；显式关闭时选主应用，不继承上次的全部分身队列。批量启动沿用各工作区自身开关，不复制发起设备的选择；原有显式 `instance_ids` API 保留。身份核对、串行执行、异常中断及日记录隔离继续生效。
-
-无线表单统一用 `wifi-full-address` 控制两项地址的四段 IPv4/完整地址模式，保留独立的配对与连接端口；切换模式同步已填值，设备切换恢复该工作区草稿。表单布局不再套用通用连接网格的跨列按钮规则。退出操作统一由系统托盘提供，未加入浏览器关闭自动退出，避免刷新或关闭一个标签时停止其他设备。
 
 ## 分支、用户配置与会话收尾
 
@@ -431,7 +426,7 @@ controller.dispatch('run', {'auto_open': True})
 * `device_comfort(device, config)` 是可选 Android 会话上下文，读原值再修改并在 finally 恢复；每条 shell 有界且复用设备 IO 锁。权限不足仅日志提示，不安装工具、不更换输入法。
 * `apply_browse_contract(task)` 基于副标题解释浏览约束，不能绕过支付/登录/邀请等边界。可选 `Task.browse_once` 默认为 False，序列化默认任务保持旧字段；`TaskPolicy.mark_browse_once` 按日保存普通尝试，认证和停止不消耗该次数。共用控制器仍负责隔离。
 * `DailyState.activity_finished()/mark_activity_finished()` 是设备、实例、活动和日期范围内的完成标记；旧记录缺失时默认 False。仅正常耗尽候选且无未核验任务的会话标记，任务选择变更解除。流水线在启动该实例前读取；不跨应用或跨实例继承。
-* `OwnedAdb` 在启动前记录同一路径已有进程，退出时只清理新增且创建时间仍一致的进程，归属不明则不操作。不会调用共享服务器的全局 kill-server。
+* `OwnedAdb` 在 macOS 启动前通过 `ps -axo pid=,lstart=,args=` 记录同一内置二进制路径已有进程，退出时再次核对启动时间与完整路径，仅向本次新增进程发送 `SIGTERM`，归属不明则不操作，不会调用共享服务器的全局 `kill-server`。
 
 ### 活动资源多通道与恢复
 
@@ -532,40 +527,22 @@ controller.dispatch('run', {'auto_open': True})
 任务分类器只返回动作类型；文案跳过统一调用 `keyword_skip_reason`，不得在活动中重复硬编码关键词。`Session.next_search_keyword` 每次 `random.choice`，不保存轮询索引。默认词与迁移规则见[配置核验表](CONFIGURATION.md)；偏好通过 `task_wordlists_schema=1` 标识已完成一次迁移，用户再次清空必须保留。
 
 
-### 控制台级OCR后端与下载代理
+### 控制台级 Vision OCR 与下载代理
 
-`core.preferences.load_preferences/save_preferences` 复用 `core/storage/preferences.py` 的原子文档和锁，返回/修改 `ocr_device` 与 `download_proxy`，不得覆盖config、词表、分支和浏览器退出偏好。环境变量MIAO_OCR_DEVICE、MIAO_DOWNLOAD_PROXY优先于保存偏好；未配置代理继续使用系统代理，off明确直连。
+实现：[ocr.py](../backend/core/device/ocr.py)、[preferences.py](../backend/core/preferences.py)。
 
-`resolve_ocr_backend` 先选择候选执行器，模型真正初始化后读取det/rec执行器作为实际结果。编译包含CUDA不保证硬件或DLL可用。CUDA初始化或推理失败只回退CPU重试一次，CPU再次失败保留原异常，不吞掉停止/身份/认证检查。`get_preferences.cuda_available`只表示当前安装包声明含CUDA执行器，不表示硬件健康检查已经通过。
+`core.preferences.load_preferences/save_preferences` 复用 `core/storage/preferences.py` 的原子文档和锁，返回 `ocr_device='vision'` 与 `download_proxy`，不得覆盖 `config`、词表和分支偏好。磁盘旧配置中的 `auto/cpu/cuda/dml` 在读取时自动迁移为 `vision`，`save_preferences` 拒绝非 `vision` 的 `ocr_device` 值。环境变量 `MIAO_DOWNLOAD_PROXY` 优先于保存偏好；未配置代理继续使用系统代理，`off` 明确直连。
 
-修改ocr_device需要所有设备空闲，后台不恢复持续采集或识别并发；代理变化不重建识别引擎。模型世代使旧reader下次读取重建，控制器运行租约和物理设备隔离保持不变。GET/POST `/api/preferences`沿用Host/Origin与写入令牌守卫。
-
-`core.device.runtime_plugin.activate_runtime_plugin()` 在RapidOCR导入ORT前仅尝试一次本地扩展，校验平台、Python ABI与ORT版本；不下载、不运行pip、不覆盖基础包，添加的DLL目录句柄随进程存活。更换扩展必须退出服务重启。`ScreenReader.ocr_backend`只读取已加载模型的实际后端，不触发初始化，CUDA回退后返回cpu；浏览策略据此决定首轮末尾是否做一次有界检查。不要据编译执行器列表启用高速策略。
+`AppleVisionEngine` 在构造时通过 `require_apple_silicon_macos()` 强制校验 `darwin` + `arm64`，并通过 `pyobjc-framework-Vision` 调用 `VNRecognizeTextRequest`（`VNRequestTextRecognitionLevelAccurate`，语言 `('zh-Hans', 'zh-Hant', 'en-US')`）。`vision_observation_to_box(x, y, w, h, width, height)` 将左下角归一化框转换为左上角像素四角坐标。`ScreenReader.ocr_backend` 读取已加载引擎的 `miao_backend`（固定为 `'vision'`），已移除 `runtime_plugin.py` 与 CUDA/DirectML 外部扩展机制。`GET /api/preferences` 返回 `ocr_device='vision'`、`ocr_backend='vision'`、`ocr_providers=['AppleVision']` 与 `apple_silicon` 布尔标志。
 
 ### 截图前台核定与过渡焦点
 
-`DeviceAdapter.capture_observation` 在Android主屏截图前通过私有 `_capture_focus(transport=None)` 读取窗口身份。正常仅一次display摘要；摘要不含焦点时读windows详情，最多3轮、共享5秒总预算，单条查询最多2秒。轮间短暂等待支持停止，不发送输入、不使用上次前台缓存；真实非主屏和所选应用实例冲突立即拒绝，HDC与既有非主屏路径不变。预算耗尽抛出InstanceMismatch，附capture_diagnostics的查询种类、焦点是否可读及错误类别；控制器写入私有失败记录，不包含原始窗口内容。
+`DeviceAdapter.capture_observation` 在 Android 主屏截图前通过私有 `_capture_focus(transport=None)` 读取窗口身份。正常仅一次 display 摘要；摘要不含焦点时读 windows 详情，共享 8 秒总预算，单次最多 4 秒。轮间短暂等待支持停止，不发送输入、不使用上次前台缓存；真实非主屏和所选应用实例冲突立即拒绝。预算耗尽抛出 `InstanceMismatch`，附 `capture_diagnostics` 的查询种类、焦点是否可读及错误类别；控制器写入私有失败记录，不包含原始窗口内容。已移除离线无线重连 `reconnect_offline_wireless`，所有焦点与截图通道均限定 USB 序列号。
 
-淘宝标准浏览的CUDA首轮检查仅用于同应用browse/search；visit、跨应用跳转和支付宝月月赚保持活动自身停留策略。日常搜索先核定当前应用，只有不带搜索提交控件的直接奖励页可免输入；可见表单复用SearchPolicy。月月赚完成依据为真实奖励回执或该任务同排完成反馈，缺行、空白和其他行已完成均不足以证明成功。
+淘宝标准浏览在 `vision` 后端下对同应用 `browse/search` 执行首轮末尾完成检查；`visit`、跨应用跳转和支付宝月月赚保持活动自身停留策略。`TaskActions.page_transition_wait()` 在任务点击、主页搜索聚焦及搜索提交后等待 1.2 秒再采集，不计入浏览时长；当观察耗时不足 0.6 秒时，`execute` 与 `SearchPolicy.handle_search` 间隔 0.4 秒复核 `destination_layout(screen)`，比较包名、尺寸及顶部搜索/任务控件的相对位置。
 
-`TaskActions.page_transition_wait()` 在任务点击、主页搜索聚焦及搜索提交后等待1.2秒再采集，不计入浏览时长。CPU及未知/回退后端接受首张就绪画面，不强制增加识别；实际CUDA且观察耗时不足0.6秒时，`execute` 与 `SearchPolicy.handle_search` 间隔0.4秒复核 `destination_layout(screen)`，比较包名、尺寸及顶部搜索/任务控件的相对位置，忽略状态栏和商品动画。明显加载提示、空画面或移动中的控件继续留在既有page_timeout内；搜索再次提交间隔至少3秒，避免动画期间连发。安全和实例检查每帧保留。
+完成反馈后的等待使用 `Session.settle_completion(deadline=...)`，默认随机 0～1000 毫秒、0 关闭，等待不超过剩余浏览预算并可暂停/停止。任务成功核验并完成统计后，`SessionLoop._refresh_after_success()` 设置新帧门槛，开启 OCR 时以新截图读取任务列表；当前画面不是任务列表时调用 `recover()`，之后才用所得页面选择下一任务。
 
-`SearchPolicy.is_search_input_node` 保护搜索框清除控件及输入法X键，不将其作为弹窗关闭；有键盘时奖励提示也不能解除该保护。原生输入框重新定位后再填写，不使用上一页面的旧bounds，不更换输入法。
+压缩截图的私有 HTTP 通道使用 8 秒读取超时；传输超时/断流只重试一次，重试前重新核定实例与显示屏，不重发输入，不把传输异常当任务完成。
 
-完成反馈后的等待使用 `Session.settle_completion(deadline=...)`，默认随机0～1000毫秒、0关闭，等待不超过剩余浏览预算并可暂停/停止；由活动显式调用，不对所有动作统一插入等待。屏幕映射优先当前逻辑块自身的物理ID，设备清单同名歧义时拒绝猜测。
-
-任务成功核验并完成统计后，`SessionLoop._refresh_after_success()` 设置新帧门槛，开启 OCR 时以新截图读取任务列表；当前画面不是任务列表时调用 `recover()`，之后才用所得页面选择下一任务。关闭 OCR 时沿用读屏配置，不强制启动 OCR。流水线关闭全部实例时使用显式实例或该应用已确认的实例计划，不覆盖为主实例；开启全部实例仍执行设备发现的全部实例。
-
-实例选择补充：显式空列表属于无效请求，不触发主实例或全部实例兜底；同应用的后续活动复用本轮实例集合。成功后的列表刷新只在本轮仍有尝试额度时执行，普通读取异常沿用 recover_task 的恢复预算，停止、认证和实例错误继续传播；此框架变更不会由活动源码下载更新已有exe。
-
-DirectML扩展：偏好增加dml，单独目录runtime_plugins/dml、kind=dml、runtime_version声明实际ORT版本；平台/Python ABI仍必须一致，导入后核对版本与执行器。auto保留CUDA优先，显式dml才优先选DML；实际后端标记dml，初始化或推理失败回退CPU。CUDA v1.0的原目录和ORT校验保留。通用click越界仍抛异常，仅京东活动可忽略本次越界；无时长浏览的一次预算规则保留在core，日常活动自行覆盖。
-
-设备焦点读取统一由 `_capture_focus` 有界实时重读：单次4秒、总计8秒，输入前与截图前共用策略，不跨设备共享身份或缓存旧身份。验证需覆盖无线延迟、两设备并行、停止取消与真实跨实例/跨屏拒绝。DirectML构建可用 `scripts/package_windows.py --dml-plugin ZIP`，使用独立锁定环境；硬件结果目前为贡献者报告，不作为维护者本机验收。
-
-无线窗口查询失败时可在同一总预算内调用 `reconnect_offline_wireless(serial, timeout, transport=None)`：只接受明确IPv4调试端点，先get-state，已在线不重连；离线仅connect原地址。USB/mDNS别名不猜测地址，不kill-server；重连不构成身份凭据，必须重新读取窗口并通过实例/显示屏守卫。空闲预览1.5秒起，停止/异常4秒起，失败退避到8秒；运行任务仍共享自己的观察帧。双11收工检查限于活动内累计领奖，遵守用户选择、领奖开关、本轮预算及领取状态核验。
-
-压缩截图的私有HTTP通道使用8秒读取超时；传输超时/断流只重试一次，重试前重新核定实例与显示屏，不重发输入，不把传输异常当任务完成。
-
-通知与观察恢复：`focused_notification()`只识别当前焦点通知面，不借用其下方Activity作为可操作身份。瞬态空焦点使用完整8秒预算，明确通知允许最多20秒等待；结束仍未知时抛`ObservationUnavailable`，与已证实的实例/显示屏冲突区分。网页与CLI通过`run_with_observation_recovery()`复用同一活动对象，最多两次定向恢复（唤回、再冷启），不清统计、词表或已核验标记，不重发原点击。通知面阻塞时只折叠系统通知栏，不打开消息；恢复后自动重进任务页。认证、停止和真实身份冲突不进入该恢复。初始预览不可读不否定已取得租约的设备连接，执行仍必须重新核定身份。
-
-自动观察恢复预算以连续失败计算：核验完成或领奖计数增加后恢复额度重新开放；没有任何核验进展时最多两次恢复。总任务次数和主动停止继续约束执行，不通过反复重启规避验证。
+通知与观察恢复：`focused_notification()` 只识别当前焦点通知面，不借用其下方 Activity 作为可操作身份。瞬态空焦点使用完整 8 秒预算，明确通知允许最多 20 秒等待；结束仍未知时抛 `ObservationUnavailable`，与已证实的实例/显示屏冲突区分。网页与 CLI 通过 `run_with_observation_recovery()` 复用同一活动对象，最多两次定向恢复（唤回、再冷启），不清统计、词表或已核验标记，不重发原点击。认证、停止和真实身份冲突不进入该恢复。

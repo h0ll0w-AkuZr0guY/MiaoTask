@@ -13,7 +13,7 @@ import zipfile
 from scripts.local_release import (REQUIRED, build, copy_source, extract_source,
                                   github_archive_url, rollup_local, plan_version,
                                   record_success, builder_lock)
-from scripts import package_windows
+from scripts import package_macos
 from scripts import local_release
 from scripts.smoke_packaged import synthetic_activity_package
 
@@ -24,7 +24,7 @@ def source_tree(root):
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('# source\n', encoding='utf-8')
-    (root / 'scripts/package_windows.py').write_text('# supports --local-source\n', encoding='utf-8')
+    (root / 'scripts/package_macos.py').write_text('# supports --local-source\n', encoding='utf-8')
     (root / 'version.json').write_text(json.dumps({'version': 'MiaoTask-v0.1.1', 'app_version': 'MiaoTask-v0.1.1'}), encoding='utf-8')
     (root / 'docs').mkdir()
     (root / 'docs/UNRELEASED.md').write_text('# 贡献\n\n## 待发布\n\n* 【修复】合成问题 (#4)\n* 【新增】合成功能\n', encoding='utf-8')
@@ -125,13 +125,13 @@ class LocalReleaseTests(unittest.TestCase):
             self.assertEqual((self.source / name).read_bytes(), content)
 
     def test_older_source_is_rejected_without_overlaying_host_business_code(self):
-        (self.source / 'scripts/package_windows.py').write_text('# older builder', encoding='utf-8')
+        (self.source / 'scripts/package_macos.py').write_text('# older builder', encoding='utf-8')
         with self.assertRaisesRegex(ValueError, '不会替换业务代码'):
             copy_source(self.source, self.root / 'old-copy')
         self.assertEqual((self.source / 'backend/main.py').read_text(encoding='utf-8'), '# source\n')
 
     def test_legacy_adapter_requires_both_reviewed_version_and_exact_build_entry(self):
-        entry = self.source / 'scripts/package_windows.py'
+        entry = self.source / 'scripts/package_macos.py'
         entry.write_text('# reviewed old packaging entry\n', encoding='utf-8')
         version = self.source / 'version.json'
         version.write_text(json.dumps({'version':'MiaoTask-v0.1.0','app_version':'MiaoTask-v0.1.0'}), encoding='utf-8')
@@ -147,7 +147,7 @@ class LocalReleaseTests(unittest.TestCase):
     def test_legacy_adapter_preserves_input_business_and_marks_local_provenance(self):
         version = self.source / 'version.json'
         version.write_text(json.dumps({'version':'MiaoTask-v0.1.0','app_version':'MiaoTask-v0.1.0'}), encoding='utf-8')
-        entry = self.source / 'scripts/package_windows.py'
+        entry = self.source / 'scripts/package_macos.py'
         entry.write_text('''import json
 from pathlib import Path
 import zipfile
@@ -157,7 +157,7 @@ def source_commit():
 def main():
     output=ROOT/'dist'
     output.mkdir()
-    with zipfile.ZipFile(output/'MiaoTask-v0.1.0-windows-x64.zip','w') as archive:
+    with zipfile.ZipFile(output/'MiaoTask-v0.1.0-macos-arm64.zip','w') as archive:
         archive.writestr('MiaoTask/build-manifest.json',json.dumps({'version':'MiaoTask-v0.1.0','source_commit':source_commit()}))
         archive.writestr('MiaoTask/business-marker.txt',(ROOT/'backend/main.py').read_bytes())
 ''', encoding='utf-8')
@@ -167,7 +167,7 @@ def main():
                 patch('sys.path', list(sys.path)), patch('sys.argv', ['fixture']):
             local_release.legacy_build_worker(self.source, self.root/'tools')
         self.assertEqual((self.source/'backend/main.py').read_bytes(), original)
-        with zipfile.ZipFile(self.source/'dist/MiaoTask-v0.1.0-windows-x64.zip') as result:
+        with zipfile.ZipFile(self.source/'dist/MiaoTask-v0.1.0-macos-arm64.zip') as result:
             self.assertEqual(result.read('MiaoTask/business-marker.txt'), original)
             manifest = json.loads(result.read('MiaoTask/build-manifest.json'))
         self.assertTrue(manifest['local_source'])
@@ -185,9 +185,9 @@ def main():
                 github_archive_url(value)
 
     def test_local_snapshot_is_audited_without_git_commands(self):
-        with patch.object(package_windows, 'ROOT', self.source), \
-                patch.object(package_windows.subprocess, 'check_output') as git:
-            self.assertEqual(len(package_windows.worktree_snapshot(local_source=True)), 64)
+        with patch.object(package_macos, 'ROOT', self.source), \
+                patch.object(package_macos.subprocess, 'check_output') as git:
+            self.assertEqual(len(package_macos.worktree_snapshot(local_source=True)), 64)
             git.assert_not_called()
 
     def test_success_exports_notes_and_clean_source_but_never_mutates_input_by_default(self):
@@ -195,11 +195,11 @@ def main():
         calls = []
         def fake_run(command, cwd, env, log):
             calls.append([str(item) for item in command])
-            if 'scripts/package_windows.py' in [str(item) for item in command]:
+            if 'scripts/package_macos.py' in [str(item) for item in command]:
                 folder = Path(cwd) / 'dist'
                 folder.mkdir()
                 version = json.loads((Path(cwd) / 'version.json').read_text(encoding='utf-8'))['version']
-                write_test_bundle(folder / f'{version}-windows-x64.zip')
+                write_test_bundle(folder / f'{version}-macos-arm64.zip')
             self.assertNotIn('MIAO_ACTIVITIES_DIR', env)
         with patch('scripts.local_release.run_logged', side_effect=fake_run), patch('builtins.print'), \
                 patch.dict(os.environ, MIAO_ACTIVITIES_DIR='not-the-users-installed-activities'):
@@ -235,10 +235,10 @@ def main():
     def test_preview_and_failed_build_do_not_consume_a_version(self):
         home = self.root / 'builder'
         def fake_run(command, cwd, env, log):
-            if 'scripts/package_windows.py' in [str(item) for item in command]:
+            if 'scripts/package_macos.py' in [str(item) for item in command]:
                 version = json.loads((Path(cwd) / 'version.json').read_text())['version']
                 (Path(cwd) / 'dist').mkdir()
-                write_test_bundle(Path(cwd) / 'dist' / f'{version}-windows-x64.zip')
+                write_test_bundle(Path(cwd) / 'dist' / f'{version}-macos-arm64.zip')
         with patch('scripts.local_release.run_logged', side_effect=RuntimeError('synthetic failure')), patch('builtins.print'):
             with self.assertRaisesRegex(RuntimeError, 'synthetic failure'):
                 build(self.source, home, adb_dir=self.root / 'tools')
@@ -310,13 +310,13 @@ def main():
     def test_preinstall_repacked_zip_keeps_core_empty_and_updates_instructions(self):
         provider, _ = self.activity_provider()
         workspace = self.root / 'workspace'
-        package = workspace / 'dist/windows-fixture/MiaoTask'
+        package = workspace / 'dist/macos-fixture/MiaoTask'
         (package / '_internal').mkdir(parents=True)
         (package / '_internal/core.txt').write_text('synthetic core')
-        (package / 'MiaoTask.exe').write_bytes(b'synthetic executable')
+        (package / 'MiaoTask').write_bytes(b'synthetic executable')
         (package / 'README.md').write_text('默认仅包含框架与运行环境。首次打开网页，在「活动中心」下载需要的应用与活动。', encoding='utf-8')
         (package / 'build-manifest.json').write_text(json.dumps({'bundle_mode':'framework','embedded_activities':[]}), encoding='utf-8')
-        archive = workspace / 'dist/MiaoTask-v0.1.2-windows-x64.zip'
+        archive = workspace / 'dist/MiaoTask-v0.1.2-macos-arm64.zip'
         archive.write_bytes(b'initial archive')
         selected = [{'app':'smokefixture', 'activity':'daily', 'source_commit':'a' * 40}]
         run = self.root / 'run'
@@ -342,7 +342,7 @@ def main():
         self.assertTrue(manifest['preinstalled_activity_self_test'])
 
     def test_legacy_source_rejects_external_preinstall_without_counter_or_overlay(self):
-        entry = self.source / 'scripts/package_windows.py'
+        entry = self.source / 'scripts/package_macos.py'
         entry.write_text('# known legacy entry\n')
         digest = hashlib.sha256(entry.read_bytes()).hexdigest()
         home = self.root / 'builder'

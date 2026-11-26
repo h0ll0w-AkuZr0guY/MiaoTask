@@ -1,3 +1,3 @@
-# Build with Python 3.13 on Windows x64.
-pyinstaller==6.22.3
-pyinstaller-hooks-contrib==2026.8
+# Build with Python 3.12+ on macOS Apple Silicon (arm64).
+pyinstaller>=6.10
+pyinstaller-hooks-contrib>=2024.8

@@ -26,8 +26,8 @@ from scripts.release_notes import extract_notes
 
 MAX_SOURCE_BYTES = 512 * 1024 * 1024
 LEGACY_BUILDERS = {'MiaoTask-v0.1.0': '0526a749b3ca54742a2f050c3bdb0c685a17066cd572c4c4902ae5038a72af7d'}
-REQUIRED = ('main.py', 'build.spec', 'version.json', 'scripts/package_windows.py',
-            'backend/main.py', 'requirements-windows.lock')
+REQUIRED = ('main.py', 'build.spec', 'version.json', 'scripts/package_macos.py',
+            'backend/main.py', 'requirements.txt')
 
 
 def public_name(name):
@@ -100,14 +100,14 @@ def validate_source(root):
     missing = [name for name in REQUIRED if not (root / name).is_file()]
     if missing:
         raise ValueError('目录不是完整 MiaoTask 源码，缺少：' + '、'.join(missing))
-    if '--local-source' not in (root / 'scripts/package_windows.py').read_text(encoding='utf-8-sig'):
+    if '--local-source' not in (root / 'scripts/package_macos.py').read_text(encoding='utf-8-sig'):
         if not legacy_supported(root):
             raise ValueError('此源码尚未提供本地构建接口，且不属于已核验的旧版入口；请更新源码或使用对应构建器，工具不会替换业务代码')
 
 
 def legacy_supported(root, original_version=None):
     metadata = json.loads((root / 'version.json').read_text(encoding='utf-8-sig'))
-    digest = hashlib.sha256((root / 'scripts/package_windows.py').read_bytes()).hexdigest()
+    digest = hashlib.sha256((root / 'scripts/package_macos.py').read_bytes()).hexdigest()
     return LEGACY_BUILDERS.get(original_version or metadata.get('version')) == digest
 
 
@@ -117,17 +117,14 @@ def legacy_build_worker(root, adb_dir, original_version=None):
     if not legacy_supported(root, original_version):
         raise ValueError('旧版构建入口的版本或内容不属于已核验范围，拒绝自动适配')
     sys.path[:0] = [str(root), str(root / 'scripts')]
-    spec = importlib.util.spec_from_file_location('_miaotask_verified_legacy_build', root / 'scripts/package_windows.py')
+    spec = importlib.util.spec_from_file_location('_miaotask_verified_legacy_build', root / 'scripts/package_macos.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    # The reviewed function only reads git/provenance and calls an index audit.
-    # Source content was independently audited before the isolated copy. Do not
-    # replace specs, smoke tests, resources, dependencies or application code.
     module.source_commit = lambda: ''
-    sys.argv = ['package_windows.py', '--skip-tests', '--adb-dir', str(Path(adb_dir).resolve())]
+    sys.argv = ['package_macos.py', '--skip-tests', '--adb-dir', str(Path(adb_dir).resolve())]
     module.main()
     version = json.loads((root / 'version.json').read_text(encoding='utf-8-sig'))['version']
-    archive = root / 'dist' / f'{version}-windows-x64.zip'
+    archive = root / 'dist' / f'{version}-macos-arm64.zip'
     temporary = archive.with_suffix('.zip.tmp')
     with zipfile.ZipFile(archive) as original, zipfile.ZipFile(temporary, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as rebuilt:
         for info in original.infolist():
@@ -331,7 +328,7 @@ def rollup_local(root, summary=''):
                 body = body[:position] + '\n' + '\n'.join(additions) + body[position:]
             history = history[:heading.end()] + body + '\n\n' + history[following:]
         else:
-            section = f'## {version}\n\n' + ((summary.strip() + '\n\n') if summary.strip() else '') + '\n'.join(lines) + '\n\n下载 MiaoTask Windows x64 ZIP，完整解压后运行 `MiaoTask.exe`，保留 `_internal/` 与 `activities/`。安全认证需本人处理。\n\n'
+            section = f'## {version}\n\n' + ((summary.strip() + '\n\n') if summary.strip() else '') + '\n'.join(lines) + '\n\n下载 MiaoTask macOS Apple Silicon (arm64) ZIP，完整解压后运行 `./MiaoTask`，保留 `_internal/` 与 `activities/`。安全认证需本人处理。\n\n'
             position = headings[0].start() if headings else len(history.rstrip())
             history = history[:position].rstrip() + '\n\n' + section + history[position:]
         history_path.write_text(history, encoding='utf-8')
@@ -343,18 +340,16 @@ def rollup_local(root, summary=''):
     return version, len(entries)
 
 
-def environment_check(python, lock, cwd, env, log):
-    code = ("import importlib.metadata as m,pathlib,re,sys; bad=[]\n"
-            "if sys.version_info[:2]!=(3,13): bad.append('需要 Python 3.13')\n"
-            "for line in pathlib.Path(sys.argv[1]).read_text(encoding='utf-8-sig').splitlines():\n"
-            " p=re.fullmatch(r'([A-Za-z0-9_.-]+)==([^ ;]+)',line.strip())\n"
-            " if p:\n"
-            "  try: actual=m.version(p[1])\n"
-            "  except m.PackageNotFoundError: actual='未安装'\n"
-            "  if actual!=p[2]: bad.append(p[1]+': '+actual+'，需要 '+p[2])\n"
-            "if bad: print('环境与源码锁定依赖不一致，请使用 --create-env：\\n'+'\\n'.join(bad))\n"
+def environment_check(python, req_file, cwd, env, log):
+    code = ("import importlib.metadata as m,sys\n"
+            "bad=[]\n"
+            "if sys.version_info[:2]<(3,12): bad.append('需要 Python 3.12 或更高版本')\n"
+            "for pkg in ('uiautomator2','Pillow','PyYAML','pyinstaller'):\n"
+            " try: m.version(pkg)\n"
+            " except m.PackageNotFoundError: bad.append(pkg+': 未安装')\n"
+            "if bad: print('构建环境缺少必要依赖，请使用 --create-env：\\n'+'\\n'.join(bad))\n"
             "raise SystemExit(bool(bad))")
-    run_logged([python, '-c', code, lock], cwd, env, log)
+    run_logged([python, '-c', code, req_file], cwd, env, log)
 
 
 def export_source(workspace, archive):
@@ -426,20 +421,19 @@ def install_preselected(destination, activities, downloads, *, provider_factory=
         if record.get('source_commit') != revision:
             raise ValueError('安装活动未保留所选 GitHub 提交')
         installed.append({key: record[key] for key in ('app', 'activity', 'version', 'source_commit', 'sha256')})
-        # Offline clients see the latest pinned catalog fetched in this build;
-        # installed.json separately preserves every selected activity's commit.
         manager.cache_path.write_text(json.dumps(catalog, ensure_ascii=False, indent=2), encoding='utf-8')
     return installed
 
 
 def repack_directory(package, archive):
+    from scripts.package_macos import _write_zip_preserving_mode
     temporary = Path(archive).with_suffix('.zip.tmp')
     with zipfile.ZipFile(temporary, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as bundle:
         for path in sorted(Path(package).rglob('*')):
             if path.is_file() and '__pycache__' not in path.parts and path.suffix not in ('.pyc', '.pyo'):
                 if path.is_symlink() or not path.resolve().is_relative_to(Path(package).resolve()):
                     raise ValueError('发行包存在不安全链接')
-                bundle.write(path, Path('MiaoTask') / path.relative_to(package))
+                _write_zip_preserving_mode(bundle, path, Path('MiaoTask') / path.relative_to(package))
     os.replace(temporary, archive)
     checksum = hashlib.sha256(Path(archive).read_bytes()).hexdigest()
     Path(archive).with_suffix('.zip.sha256').write_text(f'{checksum}  {Path(archive).name}\n', encoding='ascii')
@@ -448,7 +442,7 @@ def repack_directory(package, archive):
 def preload_package(workspace, archive, activities, executable, env, log, run):
     if not activities:
         return []
-    packages = list((workspace / 'dist').glob('windows-*/MiaoTask'))
+    packages = list((workspace / 'dist').glob('macos-*/MiaoTask'))
     if len(packages) != 1:
         raise ValueError('不能唯一定位本次核心程序目录')
     package = packages[0]
@@ -462,11 +456,11 @@ def preload_package(workspace, archive, activities, executable, env, log, run):
     verify_env.pop('PYTHONHOME', None)
     verify_env.pop('PYTHONPATH', None)
     report = run / 'preinstalled-self-test.json'
-    run_logged([package / 'MiaoTask.exe', '--self-test', '--output', report], run, verify_env, log)
+    run_logged([package / 'MiaoTask', '--self-test', '--output', report], run, verify_env, log)
     proof = json.loads(report.read_text(encoding='utf-8'))
     if (not proof.get('ok') or not proof.get('frozen')
             or proof.get('checks', {}).get('registered_activities') != len(installed)):
-        raise ValueError('预装活动未通过实际 exe 的离线发现与工厂验证')
+        raise ValueError('预装活动未通过实际可执行文件的离线发现与工厂验证')
     manifest['preinstalled_activities'] = installed
     manifest['preinstalled_activity_self_test'] = True
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -541,12 +535,13 @@ def _build(source, home, *, python=None, adb_dir=None, summary='', create_env=Fa
     log = run / 'build.log'
     if create_env:
         environment = home / 'environment'
-        if not (environment / 'Scripts/python.exe').is_file():
+        venv_python = environment / 'bin/python'
+        if not venv_python.is_file():
             run_logged([executable, '-m', 'venv', environment], workspace, env, log)
-        executable = environment / 'Scripts/python.exe'
-        run_logged([executable, '-m', 'pip', 'install', '-r', workspace / 'requirements-windows.lock'], workspace, env, log)
+        executable = venv_python
+        run_logged([executable, '-m', 'pip', 'install', '-r', workspace / 'requirements.txt', '-r', workspace / 'requirements-build.txt'], workspace, env, log)
     run_logged([executable, '-m', 'pip', 'check'], workspace, env, log)
-    environment_check(executable, workspace / 'requirements-windows.lock', workspace, env, log)
+    environment_check(executable, workspace / 'requirements.txt', workspace, env, log)
     run_logged([executable, '-m', 'unittest', 'discover', '-s', 'tests', '-q'], workspace, env, log)
     run_logged([executable, '-m', 'compileall', '-q', 'main.py', 'backend', 'scripts'], workspace, env, log)
     node = shutil.which('node')
@@ -554,7 +549,7 @@ def _build(source, home, *, python=None, adb_dir=None, summary='', create_env=Fa
         run_logged([node, '--check', script], workspace, env, log)
     if adb_dir is None:
         candidate = TOOL_ROOT / 'build/vendor/platform-tools'
-        if (candidate / 'adb.exe').is_file():
+        if (candidate / 'adb').is_file():
             adb_dir = candidate
         else:
             run_logged([executable, 'scripts/fetch_platform_tools.py'], workspace, env, log)
@@ -565,10 +560,10 @@ def _build(source, home, *, python=None, adb_dir=None, summary='', create_env=Fa
                     '--legacy-original-version', original_version, '--adb-dir', Path(adb_dir).resolve()], workspace, env, log)
     else:
         policy_args = (['--framework-only'] if activities is not None and
-                       '--framework-only' in (workspace / 'scripts/package_windows.py').read_text(encoding='utf-8') else [])
-        run_logged([executable, 'scripts/package_windows.py', '--local-source', *policy_args, '--skip-tests', '--adb-dir',
+                       '--framework-only' in (workspace / 'scripts/package_macos.py').read_text(encoding='utf-8') else [])
+        run_logged([executable, 'scripts/package_macos.py', '--local-source', *policy_args, '--skip-tests', '--adb-dir',
                     Path(adb_dir).resolve()], workspace, env, log)
-    archive = workspace / 'dist' / f'{version}-windows-x64.zip'
+    archive = workspace / 'dist' / f'{version}-macos-arm64.zip'
     if not archive.is_file():
         raise RuntimeError('构建没有生成预期 ZIP')
     preinstalled = preload_package(workspace, archive, activities or [], executable, env, log, run)

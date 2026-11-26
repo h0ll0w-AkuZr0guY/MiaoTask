@@ -4,7 +4,7 @@
   <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light"><title>MiaoTask · 设备任务工作台</title>
   <link rel="icon" type="image/png" sizes="32x32" href="/assets/miaotask-32.png"><link rel="icon" type="image/png" sizes="16x16" href="/assets/miaotask-16.png"><link rel="apple-touch-icon" sizes="180x180" href="/assets/miaotask-180.png">
-  <script src="/js/components/themes.js"></script><link rel="stylesheet" href="/css/base.css"><link rel="stylesheet" href="/css/themes.css"><script src="/js/api.js" defer></script><script src="/js/components/dialogs.js" defer></script><script src="/js/components/rankings.js" defer></script><script src="/js/components/preview-controls.js" defer></script><script src="/js/components/activity-selector.js" defer></script><script src="/js/components/activity-center.js" defer></script><script src="/js/components/wifi-connect.js" defer></script><script src="/js/components/device-manager.js" defer></script><script src="/js/app.js" defer></script>
+  <script src="/js/components/themes.js"></script><link rel="stylesheet" href="/css/base.css"><link rel="stylesheet" href="/css/themes.css"><script src="/js/api.js" defer></script><script src="/js/components/dialogs.js" defer></script><script src="/js/components/rankings.js" defer></script><script src="/js/components/preview-controls.js" defer></script><script src="/js/components/activity-selector.js" defer></script><script src="/js/components/activity-center.js" defer></script><script src="/js/components/device-manager.js" defer></script><script src="/js/app.js" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -60,10 +60,10 @@
           </section>
           <section class="settings-panel" id="settings-tasks" data-settings-panel="tasks" aria-labelledby="settings-tasks-button" hidden>
             <div class="settings-panel-heading"><div><h3>任务设置</h3><p>首轮浏览与失败后的补滑复查用于淘宝标准浏览；月月赚保留活动短停留策略。</p></div></div>
-            <div class="options-grid task-options"><label>浏览基础时长 / 秒（不低于任务要求）<input type="number" id="browse-seconds" value="15" min="1" max="120" required></label><label>完成后随机返回延时 / 毫秒（0 立即返回）<input type="number" id="completion-return-ms" value="1000" min="0" max="10000" step="1" required><span class="field-hint">默认随机0～1000毫秒；CPU识别较慢可设为0。不保证避免验证。</span></label><label>重试时补滑复查次数<input type="number" id="browse-recheck-rounds" value="3" min="0" max="10" step="1" required></label><label>同一任务今日失败上限<input type="number" id="max-attempts" value="2" min="1" max="3" required></label><label>本轮最多执行次数<input type="number" id="max-tasks" value="80" min="1" max="300" required></label></div>
+            <div class="options-grid task-options"><label>浏览基础时长 / 秒（不低于任务要求）<input type="number" id="browse-seconds" value="15" min="1" max="120" required></label><label>完成后随机返回延时 / 毫秒（0 立即返回）<input type="number" id="completion-return-ms" value="1000" min="0" max="10000" step="1" required><span class="field-hint">默认随机 0～1000 毫秒；不保证避免验证。</span></label><label>重试时补滑复查次数<input type="number" id="browse-recheck-rounds" value="3" min="0" max="10" step="1" required></label><label>同一任务今日失败上限<input type="number" id="max-attempts" value="2" min="1" max="3" required></label><label>本轮最多执行次数<input type="number" id="max-tasks" value="80" min="1" max="300" required></label></div>
             <span class="field-label settings-field-label">本轮任务类型</span><div class="task-kind-options" aria-label="本轮任务类型"><label><input type="checkbox" id="kind-browse" checked>浏览</label><label><input type="checkbox" id="kind-search" checked>搜索</label><label><input type="checkbox" id="kind-visit" checked>跳转</label><label><input type="checkbox" id="kind-claim" checked>累计领奖</label></div>
 
-            <p class="field-hint">确认页面后连续浏览，不并发截图。实际使用CUDA时首轮结束也检查并有界补滑；CPU首轮到时返回列表，未完成的任务再次进入后停1秒复查。列表进度决定是否成功。支付、邀请、关注及答题留待本人处理。</p>
+            <p class="field-hint">确认页面后连续浏览，不并发截图。使用 macOS Apple Silicon 系统 Vision OCR 在首轮结束检查并有界补滑；列表进度决定是否成功。支付、邀请、关注及答题留待本人处理。</p>
           </section>
           <section class="settings-panel" id="settings-scroll" data-settings-panel="scroll" aria-labelledby="settings-scroll-button" hidden>
             <div class="settings-panel-heading"><div><h3>滚动节奏</h3><p>在设置范围内变化滑动，默认不增加额外等待。</p></div></div>
@@ -79,17 +79,16 @@
           <section class="settings-panel" id="settings-advanced" data-settings-panel="advanced" aria-labelledby="settings-advanced-button" hidden>
             <div class="settings-panel-heading"><div><h3>高级选项</h3><p>跨应用访问、页面识别与设备运行选项。</p></div></div>
             <div class="settings-switch"><label><input type="checkbox" id="cross-app" checked><span>完成跨应用跳转并返回<small>返回失败时有限尝试恢复所选应用实例</small></span></label></div>
-            <div class="settings-switch"><label><input type="checkbox" id="ocr" checked><span>页面不可读时使用本地 OCR<small>手机截图在电脑本地识别</small></span></label></div>
+            <div class="settings-switch"><label><input type="checkbox" id="ocr" checked><span>页面不可读时使用 macOS 系统 OCR<small>固定使用 Apple Silicon M 系列芯片 Vision 框架本地识别</small></span></label></div>
             <div class="advanced-network">
-              <label class="field-label" for="ocr-device">OCR 推理后端</label>
-              <select id="ocr-device"><option value="auto">自动（检测到 GPU 加速包就用，否则 CPU）</option><option value="cpu">强制 CPU</option><option value="cuda">强制 CUDA（需 NVIDIA 显卡）</option><option value="dml">强制 DirectML（AMD / Intel 显卡）</option></select>
-              <p class="field-hint" id="ocr-device-hint">GPU 加速包可用时，自动或对应后端会使用 GPU；保存后下次识别生效。</p>
+              <span class="field-label">OCR 推理引擎</span>
+              <p class="field-hint" id="ocr-device-hint">已固定为 macOS Apple Silicon（M 系列芯片）系统 Vision OCR。</p>
               <label class="field-label" for="download-proxy">活动下载代理</label>
               <input type="text" id="download-proxy" autocomplete="off" spellcheck="false" placeholder="留空沿用系统代理；http://127.0.0.1:7890；off 强制直连">
-              <p class="field-hint">仅用于活动中心访问 GitHub 下载活动，不影响设备连接。</p>
+              <p class="field-hint">仅用于活动中心访问 GitHub 下载活动，不影响 USB 设备连接。</p>
             </div>
             <div class="settings-switch"><label><input type="checkbox" id="reset-after-activity"> 活动结束后清理标记并复查一次</label></div><div class="settings-switch"><label><input type="checkbox" id="clear-clipboard" checked><span>开始前清空设备剪贴板<small>减少残留助力链接弹窗；不读取内容，不更换输入法</small></span></label></div><div class="resource-setting-row"><label class="resource-toggle"><input type="checkbox" id="keep-screen-on"><span>开始时唤醒并设置息屏时间<small>修改设备的自动息屏超时，结束后恢复原值</small></span></label><label class="resource-value">息屏 / 分钟<input type="number" id="screen-timeout-minutes" min="1" max="1440" step="1" value="10" required></label></div><div class="settings-switch"><label><input type="checkbox" id="minimum-volume"><span>执行时媒体音量最低<small>开始时降低设备媒体音量并核验，结束后恢复</small></span></label></div><div class="settings-switch"><label><input type="checkbox" id="minimum-brightness"><span>执行时屏幕亮度最低<small>暂时关闭自动亮度，结束后恢复；不关闭屏幕</small></span></label></div><p class="field-hint">公共配置应用或开始时保存到系统用户目录，升级保留。设备不支持的设置仅记录提示。</p>
-          <div class="resource-setting-row"><label class="resource-toggle"><input type="checkbox" id="compressed-screenshots"><span>使用压缩截图<small>默认全分辨率 PNG；开启同尺寸 JPEG，减少无线传输量。</small></span></label><label class="resource-value">JPEG 质量<input type="number" id="screenshot-quality" min="30" max="95" step="1" value="70" required></label></div></section>
+          <div class="resource-setting-row"><label class="resource-toggle"><input type="checkbox" id="compressed-screenshots"><span>使用压缩截图<small>默认全分辨率 PNG；开启同尺寸 JPEG，减少 USB 截图传输量。</small></span></label><label class="resource-value">JPEG 质量<input type="number" id="screenshot-quality" min="30" max="95" step="1" value="70" required></label></div></section>
           <div class="settings-save" id="settings-save" hidden><span>关闭保留本页修改，下次开始时使用</span><button type="button" class="button settings-apply" id="save-settings">应用设置</button></div>            </div>
           </dialog></form>
         </section>
@@ -117,40 +116,11 @@
             <div id="instance-options" hidden></div><div id="instance-results" class="instance-results" aria-live="polite"></div>
           </section>
     <div class="device-name-row"><label>设备名称<input id="new-device-name" maxlength="60" placeholder="例如：我的手机、平板"></label><button type="button" class="feature-button" id="confirm-add-device">保存名称</button></div>
-    <div class="device-editor-tools"><label>已发现设备<select id="new-device-address"><option value="">选择设备或填写下方地址</option></select></label><button type="button" class="text-button" id="discover">↻ 检测设备</button><button type="button" class="text-button" id="find-emulators">查找模拟器</button></div>
+    <div class="device-editor-tools"><label>已发现 USB 设备<select id="new-device-address"><option value="">选择已发现的 USB 设备或填写下方序列号</option></select></label><button type="button" class="text-button" id="discover">↻ 检测 USB 设备</button></div>
     <p id="add-device-message" class="field-hint" role="status"></p>
-    <div class="connection-methods" role="group" aria-label="连接方式"><button type="button" class="feature-button" data-connection-mode="usb" aria-pressed="true">USB / 模拟器</button><button type="button" class="feature-button" data-connection-mode="wifi" aria-pressed="false">Wi-Fi 无线</button></div>
     <div id="device-connection-fields">
-<div class="connection-grid" id="wired-connection"><label>设备平台<select id="device-type" form="settings-form"><option value="uiautomator2">Android · 安卓</option><option value="hmdriver2">HarmonyOS · 鸿蒙</option></select></label><label class="device-field">设备 / 无线调试地址<input id="serial" form="settings-form" placeholder="自动选择已连接手机" list="device-options" maxlength="128"><datalist id="device-options"></datalist></label><button type="button" class="button dark" id="connect">连接设备 <span>↗</span></button></div>
-          <p class="field-hint" id="device-hint">请保持手机解锁，并开启 USB 调试。</p>
-          <details class="wifi-manager" id="wifi-manager">
-            <summary>无线调试连接<span>Android 11 及以上</span></summary>
-            <p class="field-hint">手机和电脑连接同一 Wi-Fi。在手机「设置 → 开发者选项 → 无线调试」中开启无线调试，并允许当前网络。不同系统的设置位置可能不同。</p>
-            <label class="wifi-address-mode"><input type="checkbox" id="wifi-full-address">使用完整地址 / IPv6</label><div class="settings-buttons" aria-label="无线连接方式">
-              <button type="button" class="feature-button is-open" id="wifi-first" aria-pressed="true">首次配对</button>
-              <button type="button" class="feature-button" id="wifi-known" aria-pressed="false">已经配对</button>
-              <button type="button" class="text-button" id="wifi-discover">↻ 查找无线设备</button>
-            </div>
-            <section id="wifi-pair-panel" aria-label="首次无线配对">
-              <h3>1. 配对这台电脑</h3>
-              <p class="field-hint">在手机点击「使用配对码配对设备」，按弹窗填写下方两项。点击配对后请保持弹窗打开，旧配对码失效时重新填写。</p>
-              <div class="connection-grid">
-                <label>弹窗里的 IP 地址和端口<input id="wifi-pair-address" placeholder="例如 192.168.1.8:37123" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="128" list="wifi-pair-options"><datalist id="wifi-pair-options"></datalist></label>
-                <label>六位 Wi-Fi 配对码<input id="wifi-code" type="password" inputmode="numeric" placeholder="手机配对弹窗显示的 6 位数字" maxlength="6" autocomplete="off"></label>
-                <button type="button" class="button dark" id="wifi-pair">配对手机</button>
-              </div>
-              <p class="field-hint">配对码仅用于本次配对，不写入日志或设置。</p>
-            </section>
-            <section aria-label="连接已配对手机">
-              <h3 id="wifi-connect-title">2. 连接手机</h3>
-              <p class="field-hint">配对成功后关闭手机配对弹窗，IP 会沿用刚才的配对地址，只需填写「无线调试」主页面的连接端口；换网时可修改 IP。<strong>这是连接端口，通常与刚才的配对端口不同。</strong></p>
-              <div class="wifi-connect-grid">
-                <label>无线调试主页面的 IP 地址和端口<input id="wifi-connect-address" placeholder="例如 192.168.1.8:40567" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="128" list="wifi-connect-options"><datalist id="wifi-connect-options"></datalist></label>
-                <button type="button" class="button dark" id="wifi-connect">无线连接</button>
-              </div>
-            </section>
-            <p id="wifi-status" class="field-hint" role="status" aria-live="polite">无法自动发现时也可以手动填写地址；校园网可能限制手机和电脑互访，可改用同一个个人热点。重开无线调试或换网后，请核对新地址。</p>
-          </details>
+      <div class="connection-grid" id="wired-connection"><label>连接方式<select id="device-type" form="settings-form"><option value="uiautomator2">Android · macOS ADB USB</option></select></label><label class="device-field">USB 设备序列号<input id="serial" form="settings-form" placeholder="自动选择已连接的 USB 手机" list="device-options" maxlength="128"><datalist id="device-options"></datalist></label><button type="button" class="button dark" id="connect">连接设备 <span>↗</span></button></div>
+      <p class="field-hint" id="device-hint">请使用支持数据传输的 USB 线连接 Mac，保持手机解锁并开启 USB 调试。</p>
     </div>
   </div>
   <div class="device-editor-footer"><span id="device-editor-state" role="status">尚未连接</span><button type="button" class="text-button danger-button" id="remove-device">移除设备</button></div>

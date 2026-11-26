@@ -124,14 +124,14 @@ class ActivityServiceTests(unittest.TestCase):
     def test_activity_folder_is_visible_and_opening_requires_token_and_ignores_client_path(self):
         snapshot = self.get('/api/plugins')
         self.assertEqual(Path(snapshot['activities_dir']), self.hub.plugin_manager.root)
-        with patch('os.startfile', create=True) as opener:
+        with patch('sys.platform', 'darwin'), patch('subprocess.run') as run:
             with self.assertRaises(HTTPError) as denied:
                 self.post('/api/plugins/open-folder', {}, token='bad')
             self.assertEqual(denied.exception.code, 403)
-            opener.assert_not_called()
-            status, result = self.post('/api/plugins/open-folder', {'path': 'C:/unrelated'})
+            run.assert_not_called()
+            status, result = self.post('/api/plugins/open-folder', {'path': '/tmp/unrelated'})
             self.assertEqual(status, 200)
-            opener.assert_called_once_with(str(self.hub.plugin_manager.root))
+            run.assert_called_once_with(['open', str(self.hub.plugin_manager.root)], check=True, timeout=8)
             self.assertEqual(result['path'], str(self.hub.plugin_manager.root))
 
     def test_normal_polling_never_requests_catalog_and_test_server_cannot_read_other_files(self):

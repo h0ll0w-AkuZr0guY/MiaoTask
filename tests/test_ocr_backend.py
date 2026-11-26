@@ -1,233 +1,224 @@
-import os
+"""Unit tests for fixed macOS Apple Silicon Vision OCR."""
+from contextlib import contextmanager
 import sys
-import unittest
+import threading
 from types import SimpleNamespace
+import unittest
 from unittest.mock import Mock, patch
 
-from backend.core.device import screen
+from PIL import Image
 
-# Preload OpenCV: ``patch.dict(sys.modules, ...)`` restores the mapping and
-# would otherwise drop a module first imported inside the patched block.
-import cv2  # noqa: F401
+from backend.core.device import ocr, screen
 
 
-class ResolveOCRBackendTests(unittest.TestCase):
-    def test_default_auto_uses_cpu_without_cuda_ep(self):
-        self.assertEqual(screen.resolve_ocr_backend(None, ['CPUExecutionProvider']),
-                         ('cpu', None))
-        self.assertEqual(screen.resolve_ocr_backend('auto', ()), ('cpu', None))
+def _fake_vision_modules(*, observations=(), perform_result=(True, None),
+                         handler_none=False, supported_languages=('zh-Hans', 'zh-Hant', 'en-US', 'ja-JP')):
+    pool_entries = []
 
-    def test_auto_enables_cuda_when_ep_available(self):
-        self.assertEqual(
-            screen.resolve_ocr_backend('auto', ['CUDAExecutionProvider', 'CPUExecutionProvider']),
-            ('cuda', None))
+    @contextmanager
+    def autorelease_pool():
+        pool_entries.append(True)
+        yield
 
-    def test_explicit_cpu_never_enables_cuda(self):
-        self.assertEqual(screen.resolve_ocr_backend('cpu', ['CUDAExecutionProvider']),
-                         ('cpu', None))
+    fake_objc = SimpleNamespace(autorelease_pool=autorelease_pool, pool_entries=pool_entries)
 
-    def test_forced_cuda_uses_cuda_when_available(self):
-        self.assertEqual(screen.resolve_ocr_backend('cuda', ['CUDAExecutionProvider']),
-                         ('cuda', None))
+    created_requests = []
+    created_handlers = []
 
-    def test_forced_cuda_without_ep_reports_fallback(self):
-        self.assertEqual(screen.resolve_ocr_backend('cuda', ['CPUExecutionProvider']),
-                         ('cpu', 'cuda-unavailable'))
+    class FakeTextRequest:
+        @classmethod
+        def alloc(cls):
+            return cls()
 
-    def test_unknown_preference_follows_auto(self):
-        self.assertEqual(screen.resolve_ocr_backend('tpu', ['CUDAExecutionProvider']),
-                         ('cuda', None))
-        self.assertEqual(screen.resolve_ocr_backend('tpu', []), ('cpu', None))
+        def init(self):
+            self.level = None
+            self.language_correction = None
+            self.languages = None
+            created_requests.append(self)
+            return self
 
-    def test_params_carry_cuda_flag_only_for_cuda(self):
-        cpu_params = screen._ocr_engine_params('cpu')
-        self.assertNotIn('EngineConfig.onnxruntime.use_cuda', cpu_params)
-        self.assertNotIn('Rec.rec_batch_num', cpu_params)
-        self.assertEqual(screen._ocr_engine_params('cuda')['Rec.rec_batch_num'], 1)
-        self.assertIs(screen._ocr_engine_params('cuda')[
-                      'EngineConfig.onnxruntime.use_cuda'], True)
+        def supportedRecognitionLanguagesAndReturnError_(self, _error):
+            return supported_languages, None
+
+        def setRecognitionLevel_(self, level):
+            self.level = level
+
+        def setUsesLanguageCorrection_(self, enabled):
+            self.language_correction = enabled
+
+        def setRecognitionLanguages_(self, languages):
+            self.languages = list(languages)
+
+        def results(self):
+            return list(observations)
+
+    class FakeImageHandler:
+        @classmethod
+        def alloc(cls):
+            return cls()
+
+        def initWithData_options_(self, raw_data, options):
+            if handler_none:
+                return None
+            self.raw_data = raw_data
+            self.options = options
+            self.performed_requests = None
+            created_handlers.append(self)
+            return self
+
+        def performRequests_error_(self, requests, _error):
+            self.performed_requests = list(requests)
+            return perform_result
+
+    fake_vision = SimpleNamespace(
+        VNRecognizeTextRequest=FakeTextRequest,
+        VNImageRequestHandler=FakeImageHandler,
+        VNRequestTextRecognitionLevelAccurate=1,
+        created_requests=created_requests,
+        created_handlers=created_handlers,
+    )
+    fake_quartz = SimpleNamespace()
+    return fake_objc, fake_vision, fake_quartz
 
 
-class ScopedOCRBackendTests(unittest.TestCase):
-    """Engine wiring without importing real rapidocr/onnxruntime packages."""
+def _make_observation(text, confidence, x, y, w, h):
+    candidate = SimpleNamespace(string=lambda: text, confidence=lambda: confidence)
+    rect = SimpleNamespace(
+        origin=SimpleNamespace(x=x, y=y),
+        size=SimpleNamespace(width=w, height=h),
+    )
+    return SimpleNamespace(
+        topCandidates_=lambda _n: [candidate] if text is not None else [],
+        boundingBox=lambda: rect,
+    )
 
-    def _wire(self, providers, env_value):
-        engine = Mock()
-        engine.text_det.session.session.get_providers.return_value = providers
-        rapid = SimpleNamespace(RapidOCR=Mock(return_value=engine))
-        ort = SimpleNamespace(get_available_providers=Mock(return_value=list(providers)),
-                              preload_dlls=Mock())
-        self.ort = ort
-        env = dict(os.environ)
-        if env_value is None:
-            env.pop(screen.OCR_DEVICE_ENV, None)
-        else:
-            env[screen.OCR_DEVICE_ENV] = env_value
-        screen.reset_ocr_engines()
-        with patch.dict(sys.modules, {'rapidocr': rapid, 'onnxruntime': ort}), \
-                patch.dict(os.environ, env, clear=True):
-            screen.local_ocr_engine()
-        return rapid.RapidOCR.call_args.kwargs['params']
 
+class AppleSiliconGuardTests(unittest.TestCase):
+    def test_platform_detection_requires_darwin_arm64(self):
+        self.assertTrue(ocr.is_apple_silicon_macos('darwin', 'arm64'))
+        self.assertTrue(ocr.is_apple_silicon_macos('Darwin', 'ARM64'))
+        self.assertFalse(ocr.is_apple_silicon_macos('darwin', 'x86_64'))
+        self.assertFalse(ocr.is_apple_silicon_macos('linux', 'aarch64'))
+        self.assertFalse(ocr.is_apple_silicon_macos('win32', 'AMD64'))
+
+    def test_require_apple_silicon_rejects_intel_mac_and_non_macos(self):
+        with patch.object(ocr.sys, 'platform', 'darwin'), patch.object(ocr.platform, 'machine', return_value='x86_64'):
+            with self.assertRaisesRegex(RuntimeError, 'Apple Silicon'):
+                ocr.require_apple_silicon_macos()
+        with patch.object(ocr.sys, 'platform', 'linux'), patch.object(ocr.platform, 'machine', return_value='x86_64'):
+            with self.assertRaisesRegex(RuntimeError, 'Apple Silicon'):
+                ocr.require_apple_silicon_macos()
+
+    def test_fixed_backend_helpers_always_return_vision(self):
+        self.assertEqual(ocr.resolve_ocr_backend(None, None), ('vision', None))
+        self.assertEqual(ocr.resolve_ocr_backend('cuda', ['CUDAExecutionProvider']), ('vision', None))
+        self.assertEqual(ocr.preferred_ocr_device(), 'vision')
+
+
+class VisionCoordinateMappingTests(unittest.TestCase):
+    def test_bottom_left_normalized_rect_maps_to_top_left_pixel_box(self):
+        # x=0.1..0.5 on width=1000 -> 100..500
+        # y=0.2, h=0.1 from bottom on height=2000 -> top=(1-0.3)*2000=1400, bottom=(1-0.2)*2000=1600
+        box = ocr.vision_observation_to_box(0.1, 0.2, 0.4, 0.1, 1000, 2000)
+        self.assertEqual(box, ((100.0, 1400.0), (500.0, 1400.0), (500.0, 1600.0), (100.0, 1600.0)))
+
+    def test_out_of_range_normalized_coordinates_are_clamped_to_image(self):
+        box = ocr.vision_observation_to_box(-0.1, -0.2, 1.5, 1.5, 400, 800)
+        self.assertEqual(box, ((0.0, 0.0), (400.0, 0.0), (400.0, 800.0), (0.0, 800.0)))
+
+
+class AppleVisionEngineTests(unittest.TestCase):
     def tearDown(self):
         screen.reset_ocr_engines()
 
-    def test_default_engine_stays_cpu(self):
-        params = self._wire(['CPUExecutionProvider'], None)
-        self.assertNotIn('EngineConfig.onnxruntime.use_cuda', params)
+    def _build_engine(self, **kwargs):
+        fake_objc, fake_vision, fake_quartz = _fake_vision_modules(**kwargs)
+        with patch.object(ocr, 'is_apple_silicon_macos', return_value=True), \
+                patch.dict(sys.modules, {'objc': fake_objc, 'Vision': fake_vision, 'Quartz': fake_quartz}):
+            engine = ocr.AppleVisionEngine()
+        return engine, fake_objc, fake_vision
 
-    def test_cuda_env_enables_cuda_flag(self):
-        params = self._wire(['CUDAExecutionProvider', 'CPUExecutionProvider'], 'cuda')
-        self.assertIs(params['EngineConfig.onnxruntime.use_cuda'], True)
+    def test_engine_configures_accurate_chinese_and_english_recognition(self):
+        obs = [
+            _make_observation('去完成', 0.92, 0.7, 0.5, 0.2, 0.05),
+            _make_observation('15秒', 0.5, 0.1, 0.5, 0.2, 0.05),
+            _make_observation('   ', 0.99, 0.1, 0.1, 0.2, 0.05),
+        ]
+        engine, fake_objc, fake_vision = self._build_engine(observations=obs)
+        self.assertEqual(engine.miao_backend, 'vision')
+        self.assertEqual(engine.miao_providers, {'det': ['AppleVision'], 'rec': ['AppleVision']})
+        self.assertEqual(engine.languages, ('zh-Hans', 'zh-Hant', 'en-US'))
 
-    def test_auto_env_uses_cuda_when_available(self):
-        params = self._wire(['CUDAExecutionProvider', 'CPUExecutionProvider'], 'auto')
-        self.assertIs(params['EngineConfig.onnxruntime.use_cuda'], True)
+        image = Image.new('RGBA', (1000, 2000), (255, 255, 255, 255))
+        result = engine(image)
+        self.assertEqual(result.txts, ('去完成', '15秒'))
+        self.assertEqual(result.scores, (0.92, 0.5))
+        self.assertEqual(result.boxes[0], ((700.0, 900.0), (900.0, 900.0), (900.0, 1000.0), (700.0, 1000.0)))
+        self.assertGreaterEqual(len(fake_objc.pool_entries), 2)
+        req = fake_vision.created_requests[-1]
+        self.assertEqual(req.level, 1)
+        self.assertTrue(req.language_correction)
+        self.assertEqual(req.languages, ['zh-Hans', 'zh-Hant', 'en-US'])
 
-    def test_forced_cuda_without_ep_falls_back_to_cpu_params(self):
-        params = self._wire(['CPUExecutionProvider'], 'cuda')
-        self.assertNotIn('EngineConfig.onnxruntime.use_cuda', params)
+    def test_engine_raises_clear_error_when_vision_request_fails(self):
+        engine, _, _ = self._build_engine(perform_result=(False, 'synthetic error'))
+        with self.assertRaisesRegex(RuntimeError, 'Vision OCR 执行失败'):
+            engine(Image.new('RGB', (200, 100), 'white'))
 
-    def test_explicit_cpu_env_keeps_cpu_even_with_cuda_ep(self):
-        params = self._wire(['CUDAExecutionProvider', 'CPUExecutionProvider'], 'cpu')
-        self.assertNotIn('EngineConfig.onnxruntime.use_cuda', params)
-
-    def test_cuda_backend_preloads_bundled_cuda_dlls(self):
-        self._wire(['CUDAExecutionProvider', 'CPUExecutionProvider'], 'cuda')
-        self.ort.preload_dlls.assert_called_once_with()
-
-    def test_cpu_backend_skips_dll_preload(self):
-        self._wire(['CPUExecutionProvider'], 'cpu')
-        self.ort.preload_dlls.assert_not_called()
-
-    def test_missing_preload_api_still_builds_the_cuda_engine(self):
-        engine = Mock()
-        rapid = SimpleNamespace(RapidOCR=Mock(return_value=engine))
-        ort = SimpleNamespace(get_available_providers=Mock(
-            return_value=['CUDAExecutionProvider', 'CPUExecutionProvider']))
-        screen.reset_ocr_engines()
-        with patch.dict(sys.modules, {'rapidocr': rapid, 'onnxruntime': ort}), \
-                patch.dict(os.environ, {screen.OCR_DEVICE_ENV: 'cuda'}, clear=True):
-            screen.local_ocr_engine()
-        self.assertIs(rapid.RapidOCR.call_args.kwargs['params'][
-                      'EngineConfig.onnxruntime.use_cuda'], True)
+    def test_screen_reader_ocr_tile_scales_large_frames_and_keeps_vision_half_tier_scores(self):
+        obs_result = ocr.OCRResult(
+            boxes=(
+                ((720.0, 100.0), (900.0, 100.0), (900.0, 160.0), (720.0, 160.0)),
+                ((100.0, 100.0), (200.0, 100.0), (200.0, 160.0), (100.0, 160.0)),
+            ),
+            txts=('去浏览', '噪点'),
+            scores=(0.5, 0.2),
+            elapse=0.04,
+        )
+        fake_engine = Mock(return_value=obs_result)
+        fake_engine.miao_backend = 'vision'
+        managed = ocr.ManagedEngine(fake_engine)
+        reader = screen.ScreenReader(None)
+        with patch.object(screen, 'local_ocr_engine', return_value=managed):
+            # 2880x1600 scales by 0.5 -> 1440x800, then maps back by 2x -> 1440..1800, 200..320
+            nodes = reader._ocr_tile(Image.new('RGB', (2880, 1600), 'white'))
+        self.assertEqual(reader.ocr_backend, 'vision')
+        self.assertEqual([n.text for n in nodes], ['去浏览'])
+        self.assertEqual(nodes[0].bounds, (1440, 200, 1800, 320))
+        resized_arg = fake_engine.call_args.args[0]
+        self.assertEqual(resized_arg.size, (1440, 800))
 
     def test_reset_drops_cached_engine_even_while_a_reader_holds_it(self):
-        from backend.core.device.ocr import scoped_engine
         scope = ('device', 'reset-sample')
         with patch('backend.core.device.ocr._create_engine', return_value=Mock()) as build:
-            first = scoped_engine(scope)
-            self.assertIs(scoped_engine(scope), first)
+            first = ocr.scoped_engine(scope)
+            self.assertIs(ocr.scoped_engine(scope), first)
             screen.reset_ocr_engines()
-            self.assertIsNot(scoped_engine(scope), first)
+            self.assertIsNot(ocr.scoped_engine(scope), first)
             self.assertEqual(build.call_count, 2)
 
-    def test_preload_failure_falls_back_to_the_system_search_path(self):
-        engine = Mock()
-        rapid = SimpleNamespace(RapidOCR=Mock(return_value=engine))
-        ort = SimpleNamespace(get_available_providers=Mock(
-            return_value=['CUDAExecutionProvider', 'CPUExecutionProvider']),
-            preload_dlls=Mock(side_effect=OSError('missing dll')))
-        screen.reset_ocr_engines()
-        with patch.dict(sys.modules, {'rapidocr': rapid, 'onnxruntime': ort}), \
-                patch.dict(os.environ, {screen.OCR_DEVICE_ENV: 'cuda'}, clear=True):
-            screen.local_ocr_engine()
-        ort.preload_dlls.assert_called_once_with()
-        self.assertIs(rapid.RapidOCR.call_args.kwargs['params'][
-                      'EngineConfig.onnxruntime.use_cuda'], True)
+    def test_managed_engine_checks_cancellation_while_waiting_for_lock(self):
+        inner = Mock(return_value='ok')
+        managed = ocr.ManagedEngine(inner)
+        entered = threading.Event()
+        release = threading.Event()
 
+        def hold():
+            with managed.lock:
+                entered.set()
+                release.wait(2)
 
-class CUDAFailureRegressionTests(unittest.TestCase):
-    def test_runtime_manifest_requires_matching_python_ort_and_platform(self):
-        from backend.core.device.runtime_plugin import validate_manifest
-        manifest = dict(schema=1, kind='cuda', python='3.13', onnxruntime='1.31.0',
-                        system='Windows', machine='amd64')
-        expected = dict(python_version='3.13', ort_version='1.31.0', system='Windows', machine='AMD64')
-        validate_manifest(manifest, **expected)
-        for key in manifest:
-            with self.subTest(key=key), self.assertRaises(ValueError):
-                validate_manifest({**manifest, key: 'incompatible'}, **expected)
-
-    def test_runtime_locks_share_identical_common_dependencies(self):
-        from pathlib import Path
-        from packaging.requirements import Requirement
-        root = Path(__file__).resolve().parents[1]
-        def locked(name):
-            return {Requirement(line).name: str(Requirement(line).specifier)
-                    for line in (root / name).read_text(encoding='utf-8').splitlines()
-                    if line.strip() and not line.startswith('#')}
-        cpu = locked('requirements-windows.lock')
-        gpu = locked('configs/environments/requirements-cuda.lock')
-        self.assertEqual(cpu.pop('onnxruntime'), gpu.pop('onnxruntime-gpu'))
-        self.assertEqual(cpu, {key: value for key, value in gpu.items() if not key.startswith('nvidia-')})
-
-    def test_model_initialization_failure_retries_cpu_once(self):
-        from backend.core.device import ocr
-        fake=SimpleNamespace(RapidOCR=Mock(side_effect=[RuntimeError('CUDA dll missing'),Mock()]))
-        with patch.dict(sys.modules,{'rapidocr':fake}),patch.object(ocr,'engine_params',return_value=ocr.ocr_engine_params('cuda')):
-            engine=ocr._create_engine(2)
-        self.assertEqual(fake.RapidOCR.call_count,2)
-        self.assertFalse(fake.RapidOCR.call_args.kwargs['params'].get('EngineConfig.onnxruntime.use_cuda',False))
-
-    def test_runtime_failure_retries_same_image_on_cpu(self):
-        from backend.core.device import ocr
-        gpu=Mock(side_effect=RuntimeError('CUDA device lost'));gpu.miao_backend='cuda'
-        cpu=Mock(return_value='recognized');cpu.miao_backend='cpu'
-        managed=ocr.ManagedEngine(gpu)
-        with patch.object(ocr,'_create_engine',return_value=cpu) as build:
-            self.assertEqual(managed.infer('frame',lambda:None),'recognized')
-            self.assertEqual(managed.infer('next',lambda:None),'recognized')
-        build.assert_called_once_with(4,backend='cpu')
-        cpu.assert_any_call('frame',use_cls=False)
-
-    def test_non_spinning_session_preserves_provider_options(self):
-        from backend.core.device import ocr
-        session = Mock(_model_path='model.onnx')
-        session.get_providers.return_value = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-        session.get_provider_options.return_value = {
-            'CUDAExecutionProvider': {'device_id': '1', 'cudnn_conv_algo_search': 'HEURISTIC'},
-            'CPUExecutionProvider': {'arena_extend_strategy': 'kSameAsRequested'},
-        }
-        ort = SimpleNamespace(InferenceSession=Mock(), ExecutionMode=SimpleNamespace(ORT_SEQUENTIAL=0))
-        model = SimpleNamespace(session=SimpleNamespace(session=session))
-        with patch.dict(sys.modules, {'onnxruntime': ort}):
-            ocr._sleeping_session(model)
-        self.assertEqual(ort.InferenceSession.call_args.kwargs['provider_options'], [
-            {'device_id': '1', 'cudnn_conv_algo_search': 'HEURISTIC'},
-            {'arena_extend_strategy': 'kSameAsRequested'},
-        ])
+        holder = threading.Thread(target=hold)
+        holder.start()
+        try:
+            self.assertTrue(entered.wait(1))
+            with self.assertRaisesRegex(RuntimeError, 'stopped'):
+                managed.infer(Image.new('RGB', (20, 20), 'white'),
+                              Mock(side_effect=RuntimeError('stopped')))
+        finally:
+            release.set()
+            holder.join(2)
 
 
 if __name__ == '__main__':
     unittest.main()
-
-
-class DirectMLCompatibilityTests(unittest.TestCase):
-    def test_dml_selection_preserves_cpu_and_cuda(self):
-        from backend.core.device.ocr import resolve_ocr_backend, ocr_engine_params
-        providers=['CPUExecutionProvider','DmlExecutionProvider','CUDAExecutionProvider']
-        self.assertEqual(resolve_ocr_backend('auto',providers)[0],'cuda')
-        self.assertEqual(resolve_ocr_backend('cpu',providers)[0],'cpu')
-        self.assertEqual(resolve_ocr_backend('dml',providers)[0],'dml')
-        self.assertEqual(resolve_ocr_backend('dml',['CPUExecutionProvider'])[0],'cpu')
-        params=ocr_engine_params('dml')
-        self.assertTrue(params['EngineConfig.onnxruntime.use_dml'])
-        self.assertNotIn('EngineConfig.onnxruntime.use_cuda',params)
-        self.assertNotIn('EngineConfig.onnxruntime.dml_ep_cfg',params)
-
-    def test_dml_manifest_is_separate_but_still_requires_abi(self):
-        from backend.core.device.runtime_plugin import validate_manifest
-        m=dict(schema=1,kind='dml',python='3.13',runtime_version='1.24.4',system='Windows',machine='amd64')
-        expected=dict(python_version='3.13',ort_version='1.31.0',system='Windows',machine='AMD64',folder='dml')
-        validate_manifest(m,**expected)
-        with self.assertRaises(ValueError):validate_manifest({**m,'python':'3.12'},**expected)
-        with self.assertRaises(ValueError):validate_manifest(m,**{**expected,'folder':'cuda'})
-
-    def test_dml_inference_failure_retries_cpu_once(self):
-        from backend.core.device import ocr
-        gpu=Mock(side_effect=RuntimeError('synthetic DML failure'));gpu.miao_backend='dml'
-        cpu=Mock(return_value='cpu result');cpu.miao_backend='cpu'
-        with patch.object(ocr,'_create_engine',return_value=cpu) as create:
-            managed=ocr.ManagedEngine(gpu,1)
-            self.assertEqual(managed('frame'),'cpu result')
-            create.assert_called_once_with(1,backend='cpu')

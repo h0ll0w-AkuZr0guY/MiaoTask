@@ -35,8 +35,8 @@
       else if(path==='/api/plugins')result=plugins();
       else if(path==='/api/plugins/branches')result={branches:['main']};
       else if(/^\/api\/plugins\/(install|restore|uninstall)$/.test(path)){const key=payload.app+'/'+payload.activity;if(path.endsWith('uninstall'))installed.delete(key);else installed.add(key);result={ok:true};}
-      else if(path==='/api/inventory'||path==='/api/emulators')result={devices:[{serial:'demo-device',model:'演示设备（非真实连接）',type:'uiautomator2',status:'device'}],errors:[],candidates:[]};
-      else if(path==='/api/wifi/devices')result={services:[],devices:[]};
+      else if(path==='/api/inventory')result={devices:[{serial:'demo-usb-device',model:'演示 USB 设备（非真实连接）',type:'uiautomator2',status:'device'}],errors:[],candidates:[]};
+      else if(path==='/api/preferences')result={download_proxy:'',ocr_device:'vision',ocr_backend:'vision',ocr_providers:['AppleVision'],apple_silicon:true};
       else if(!w)throw Error('演示工作区不存在');
       else if(path==='/api/state')result=snapshot(w);
       else if(path==='/api/select_pipeline'){w.activity_plan=payload.activities;const first=payload.activities[0];if(first){w.app=first.app;w.activity=first.activity;}result={ok:true};}

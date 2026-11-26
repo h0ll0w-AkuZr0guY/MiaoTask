@@ -17,7 +17,7 @@ from backend.core.device.rpc_limits import install_rpc_limits
 
 
 class AdbTransportTests(unittest.TestCase):
-    def run_connection(self, listings, serial=None, timeout=2, windows=True):
+    def run_connection(self, listings, serial=None, timeout=2):
         clock = [0.]
         calls, notices = [], []
         output = list(listings)
@@ -35,17 +35,24 @@ class AdbTransportTests(unittest.TestCase):
 
         patches = (
             patch.object(transport, 'resolve_adb_binary', return_value='chosen-adb'),
-            patch.object(transport, '_is_windows', return_value=windows),
             patch.object(transport, '_run_adb', side_effect=invoke),
             patch.object(transport.time, 'monotonic', side_effect=lambda: clock[0]),
             patch.object(transport.time, 'sleep', side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)),
         )
-        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        with patches[0], patches[1], patches[2], patches[3]:
             try:
                 result = transport.prepare_android_connection(serial, notices.append, timeout)
             except transport.AndroidConnectionError as exc:
                 result = exc
         return result, calls, notices
+
+    def test_is_usb_serial_accepts_usb_and_rejects_wireless_mdns_and_emulator(self):
+        for valid in ('phone-a', 'R58M123456A', '00008101-001234567890001E', 'usb_device.01'):
+            self.assertTrue(transport.is_usb_serial(valid), valid)
+        for rejected in ('192.0.2.10:5555', '[2001:db8::1]:5555', 'phone._adb-tls-connect._tcp',
+                         'ADB-phone._adb-tls-pairing._tcp', 'emulator-5554', 'EMULATOR-5556',
+                         '', '-s', 'phone a', 'phone\nnext'):
+            self.assertFalse(transport.is_usb_serial(rejected), rejected)
 
     def test_first_authorization_waits_then_returns_authorized_serial(self):
         result, calls, notices = self.run_connection([
@@ -76,28 +83,26 @@ class AdbTransportTests(unittest.TestCase):
         self.assertIn('离线', str(result))
         self.assertFalse(any(args == ['kill-server'] for _, args, _, _ in calls))
 
-    def test_empty_windows_list_falls_back_once_with_child_env_only(self):
-        original = os.environ.get('ADB_LIBUSB')
-        result, calls, notices = self.run_connection(['', '', 'phone-a device model:Phone_A\n'])
-        self.assertEqual(result, 'phone-a')
-        self.assertEqual(sum(args == ['kill-server'] for _, args, _, _ in calls), 1)
-        restarted = [(args, env) for _, args, env, _ in calls if args == ['kill-server']]
-        self.assertEqual(restarted[0][1]['ADB_LIBUSB'], '1')
-        self.assertEqual(os.environ.get('ADB_LIBUSB'), original)
-        self.assertEqual({binary for binary, _, _, _ in calls}, {'chosen-adb'})
-        self.assertTrue(any('兼容' in notice for notice in notices))
-
-    def test_device_appearing_before_fallback_keeps_its_server(self):
+    def test_device_appearing_after_initial_empty_poll_keeps_its_server(self):
         result, calls, _ = self.run_connection(['', 'phone-a unauthorized usb:1-1\n', 'phone-a device\n'])
         self.assertEqual(result, 'phone-a')
         self.assertFalse(any(args == ['kill-server'] for _, args, _, _ in calls))
 
-    def test_wireless_address_never_restarts_server(self):
-        address = '192.0.2.10:5555'
-        result, calls, _ = self.run_connection(['', address + ' device model:Phone_A\n'], serial=address)
-        self.assertEqual(result, address)
-        self.assertTrue(any(args == ['connect', address] for _, args, _, _ in calls))
-        self.assertFalse(any(args == ['kill-server'] for _, args, _, _ in calls))
+    def test_wireless_and_emulator_targets_are_rejected_before_adb_invocation(self):
+        from backend.core.device.read_shell import AdbReadShell
+        with patch.object(transport, '_run_adb') as run:
+            for invalid in ('192.0.2.10:5555', '[2001:db8::1]:5555', 'phone._adb-tls-connect._tcp', 'emulator-5554'):
+                with self.assertRaises(ValueError):
+                    transport.prepare_android_connection(invalid)
+                with self.assertRaises(ValueError):
+                    transport.android_identity(invalid)
+                with self.assertRaises(ValueError):
+                    DeviceAdapter('uiautomator2', invalid)
+                with self.assertRaises(ValueError):
+                    AdbReadShell(invalid)
+            with self.assertRaises(ValueError):
+                DeviceAdapter('hmdriver2', 'phone-a')
+            run.assert_not_called()
 
     def test_multiple_or_unknown_devices_require_selection(self):
         result, calls, _ = self.run_connection(['phone-a device\nphone-b unauthorized\n'])
@@ -110,22 +115,21 @@ class AdbTransportTests(unittest.TestCase):
 
     def test_mismatched_selected_device_does_not_choose_another(self):
         result, calls, _ = self.run_connection(['phone-a device\n'], serial='phone-b')
-        self.assertIn('指定设备', str(result))
+        self.assertIn('指定 USB 设备', str(result))
         self.assertFalse(any(args == ['kill-server'] for _, args, _, _ in calls))
 
-    def test_empty_non_windows_list_does_not_restart(self):
-        result, calls, _ = self.run_connection([''], windows=False)
+    def test_empty_device_list_times_out_without_restarting_server(self):
+        result, calls, _ = self.run_connection([''])
         self.assertIsInstance(result, transport.AndroidConnectionError)
         self.assertFalse(any(args == ['kill-server'] for _, args, _, _ in calls))
 
-    def test_subprocess_is_hidden_bounded_and_uses_argument_list(self):
-        with patch.object(transport, '_is_windows', return_value=True), patch.object(
-                transport.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '', '')) as run:
-            transport._run_adb('adb.exe', ['-s', 'phone-a', 'get-state'], {'TASK_ENV': '1'}, .5)
-        self.assertEqual(run.call_args.args[0], ['adb.exe', '-s', 'phone-a', 'get-state'])
+    def test_subprocess_is_bounded_and_uses_argument_list(self):
+        with patch.object(transport.subprocess, 'run',
+                          return_value=subprocess.CompletedProcess([], 0, '', '')) as run:
+            transport._run_adb('adb', ['-s', 'phone-a', 'get-state'], {'TASK_ENV': '1'}, .5)
+        self.assertEqual(run.call_args.args[0], ['adb', '-s', 'phone-a', 'get-state'])
         self.assertEqual(run.call_args.kwargs['timeout'], .5)
         self.assertEqual(run.call_args.kwargs['env'], {'TASK_ENV': '1'})
-        self.assertEqual(run.call_args.kwargs['creationflags'], getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         self.assertNotIn('shell', run.call_args.kwargs)
 
     def test_subprocess_timeout_has_actionable_error(self):
@@ -133,17 +137,26 @@ class AdbTransportTests(unittest.TestCase):
             with self.assertRaisesRegex(transport.AndroidConnectionError, '超时'):
                 transport._run_adb('adb', ['devices'], {}, 1)
 
-    def test_discovery_exposes_states_and_model_without_mutating_server(self):
-        output = '* daemon started successfully\nList of devices attached\nphone-a unauthorized usb:1-1\nphone-b device model:Phone_B transport_id:2\n'
+    def test_discovery_exposes_usb_devices_only_and_filters_wireless_and_emulators(self):
+        output = (
+            '* daemon started successfully\n'
+            'List of devices attached\n'
+            'phone-a unauthorized usb:1-1\n'
+            '192.0.2.10:5555 device model:Wifi_Phone\n'
+            'phone._adb-tls-connect._tcp device model:Mdns_Phone\n'
+            'emulator-5554 device model:Emulator\n'
+            'phone-b device model:Phone_B transport_id:2\n'
+        )
         with patch.object(transport, '_run_adb', return_value=subprocess.CompletedProcess([], 0, output, '')) as run:
             devices = transport.list_android_devices('adb')
+        self.assertEqual([device['serial'] for device in devices], ['phone-a', 'phone-b'])
         self.assertEqual([device['state'] for device in devices], ['unauthorized', 'device'])
         self.assertEqual(devices[1]['model'], 'Phone_B')
         self.assertEqual(run.call_args.args[1], ['devices', '-l'])
 
     def test_explicit_adb_path_has_priority_over_path_for_all_clients(self):
         with tempfile.TemporaryDirectory() as folder:
-            chosen = Path(folder) / 'adb.exe'
+            chosen = Path(folder) / 'adb'
             chosen.write_bytes(b'test-executable')
             with patch.dict(os.environ, {'ADBUTILS_ADB_PATH': str(chosen)}), patch.object(
                     transport.shutil, 'which', return_value='different-adb') as which:
@@ -151,7 +164,7 @@ class AdbTransportTests(unittest.TestCase):
                 which.assert_not_called()
 
     def test_missing_explicit_executable_does_not_silently_use_another_adb(self):
-        with patch.dict(os.environ, {'ADBUTILS_ADB_PATH': '/missing/task-adb.exe'}), patch.object(
+        with patch.dict(os.environ, {'ADBUTILS_ADB_PATH': '/missing/task-adb'}), patch.object(
                 transport.shutil, 'which', return_value='different-adb') as which:
             with self.assertRaisesRegex(transport.AndroidConnectionError, '不存在'):
                 transport.resolve_adb_binary()
@@ -161,7 +174,7 @@ class AdbTransportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             tools = Path(folder) / 'shared' / 'tools'
             tools.mkdir(parents=True)
-            executable = tools / 'adb.exe'
+            executable = tools / 'adb'
             executable.write_bytes(b'test-executable')
             with patch.dict(os.environ, {'ADBUTILS_ADB_PATH': ''}), patch.object(
                     transport.sys, 'frozen', True, create=True), patch.object(
@@ -171,31 +184,90 @@ class AdbTransportTests(unittest.TestCase):
                 which.assert_not_called()
 
 
+class OwnedAdbLifecycleTests(unittest.TestCase):
+    def test_close_terminates_only_newly_started_bundled_adb_with_matching_start_time(self):
+        import signal
+        from backend.core.device import adb_lifecycle
+        with tempfile.TemporaryDirectory() as folder:
+            adb_bin = Path(folder) / 'adb'
+            adb_bin.write_bytes(b'bin')
+            resolved = str(adb_bin.resolve())
+            before_ps = f'  101 Mon Nov 25 10:00:00 2026 {resolved} -L tcp:5037 fork-server server\n'
+            after_ps = (
+                before_ps
+                + f'  202 Mon Nov 25 10:01:00 2026 {resolved} -L tcp:5037 fork-server server\n'
+                + '  303 Mon Nov 25 10:01:05 2026 /usr/local/bin/adb devices\n'
+            )
+            verify_ps = f'Mon Nov 25 10:01:00 2026 {resolved} -L tcp:5037 fork-server server\n'
+            calls = [
+                subprocess.CompletedProcess([], 0, before_ps, ''),
+                subprocess.CompletedProcess([], 0, after_ps, ''),
+                subprocess.CompletedProcess([], 0, verify_ps, ''),
+            ]
+            with patch.object(adb_lifecycle.sys, 'platform', 'darwin'), \
+                    patch.object(adb_lifecycle.subprocess, 'run', side_effect=calls), \
+                    patch.object(adb_lifecycle.os, 'kill') as kill:
+                owned = adb_lifecycle.OwnedAdb(adb_bin)
+                owned.close()
+            kill.assert_called_once_with(202, signal.SIGTERM)
+
+
 class PanelDiscoveryTests(unittest.TestCase):
     def test_panel_uses_shared_android_helper_and_keeps_unauthorized_selectable(self):
         from backend.core.service.panel import discover_devices
         devices = [dict(serial='phone-a', state='unauthorized', model='Phone_A', description='usb:1-1'),
                    dict(serial='phone-b', state='recovery', model='', description='usb:1-2')]
-        with patch.object(transport, 'list_android_devices', return_value=devices) as listing, patch(
-                'backend.core.service.panel.shutil.which', return_value=None), patch(
-                'backend.core.service.panel.subprocess.run') as run:
+        with patch.object(transport, 'list_android_devices', return_value=devices) as listing:
             discovered = discover_devices()
         listing.assert_called_once_with()
-        run.assert_not_called()
         self.assertEqual(discovered['devices'], [
             dict(serial='phone-a', type='uiautomator2', status='unauthorized', model='Phone_A'),
             dict(serial='phone-b', type='uiautomator2', status='recovery', model='')])
 
-    def test_android_discovery_failure_preserves_harmony_detection(self):
-        from backend.core.service.panel import discover_devices
-        with patch.object(transport, 'list_android_devices', side_effect=transport.AndroidConnectionError('未找到 ADB')), patch(
-                'backend.core.service.panel.shutil.which', return_value='chosen-hdc'), patch(
-                'backend.core.service.panel.subprocess.run', return_value=subprocess.CompletedProcess([], 0, 'harmony-a\n', '')) as run:
+    def test_discovery_errors_and_removed_wifi_or_emulator_routes_are_rejected(self):
+        import json
+        import threading
+        from http.server import ThreadingHTTPServer
+        from urllib.error import HTTPError
+        from urllib.request import Request, urlopen
+        from backend.core.service.devices import DeviceHub
+        from backend.core.service.panel import discover_devices, make_handler
+
+        with patch.object(transport, 'list_android_devices',
+                          side_effect=transport.AndroidConnectionError('未找到 macOS ADB')):
             discovered = discover_devices()
-        self.assertEqual(discovered['devices'], [
-            dict(serial='harmony-a', type='hmdriver2', status='device', model='HarmonyOS')])
-        self.assertIn('adb: 未找到 ADB', discovered['errors'])
-        self.assertEqual(run.call_args.args[0], ['chosen-hdc', 'list', 'targets'])
+        self.assertEqual(discovered['devices'], [])
+        self.assertEqual(discovered['errors'], ['adb: 未找到 macOS ADB'])
+
+        hub = DeviceHub()
+        controller = hub.resolve('default')
+        existing_device = object()
+        controller.device = existing_device
+        for bad_payload in ({'serial': '192.0.2.10:5555'}, {'serial': 'emulator-5554'},
+                            {'device_type': 'hmdriver2', 'serial': 'phone-a'}):
+            with self.assertRaises(ValueError):
+                controller.dispatch('connect', bad_payload)
+        self.assertIs(controller.device, existing_device)
+
+        server = ThreadingHTTPServer(('127.0.0.1', 0), make_handler(hub, 'test-token'))
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        base = f'http://127.0.0.1:{server.server_port}'
+        try:
+            for removed_get in ('/api/wifi/devices', '/api/emulators', '/js/components/wifi-connect.js'):
+                with self.assertRaises(HTTPError) as err:
+                    urlopen(base + removed_get, timeout=3)
+                self.assertEqual(err.exception.code, 404)
+            for removed_post in ('/api/wifi/pair', '/api/wifi/connect'):
+                req = Request(base + removed_post, data=json.dumps({}).encode(),
+                              headers={'Content-Type': 'application/json', 'X-Miao-Token': 'test-token'})
+                with self.assertRaises(HTTPError) as err:
+                    urlopen(req, timeout=3)
+                self.assertIn(err.exception.code, (400, 404))
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join(3)
 
 # rpc_limits
 """Socket deadlines and text input stay per driver, display and instance."""
@@ -580,11 +652,6 @@ class SwipeFallbackTests(unittest.TestCase):
         adapter._device = Mock()
         adapter.clear_clipboard()
         self.assertEqual(adapter._device.method_calls, [unittest.mock.call.set_clipboard('')])
-        adapter.device_type = 'hmdriver2'
-        adapter._device.reset_mock()
-        with self.assertRaises(NotImplementedError):
-            adapter.clear_clipboard()
-        adapter._device.set_clipboard.assert_not_called()
 
     def test_timeout_scroll_uses_bounded_system_input(self):
         from backend.core.device.adapter import DeviceAdapter
@@ -664,27 +731,6 @@ class DirectAdbReadTests(unittest.TestCase):
         with patch('backend.core.device.read_shell.AdbReadShell',return_value=Mock(return_value=ReadResult('',1))):
             result=phone._read_metadata(['dumpsys','window','windows'])
         self.assertEqual(result.exit_code,1);phone._device.shell.assert_not_called()
-
-
-class WirelessFocusRecoveryTests(unittest.TestCase):
-    @patch('backend.core.device.read_shell.resolve_adb_binary', return_value='synthetic-adb')
-    def test_reconnect_is_targeted_and_never_restarts_adb_server(self, _adb):
-        from backend.core.device.read_shell import reconnect_offline_wireless
-        owner = Mock()
-        owner.run.side_effect = [SimpleNamespace(returncode=1), SimpleNamespace(returncode=0)]
-        self.assertTrue(reconnect_offline_wireless('192.0.2.1:5555', 3, owner))
-        self.assertEqual(owner.run.call_args_list[0].args[0][-3:], ['-s', '192.0.2.1:5555', 'get-state'])
-        self.assertEqual(owner.run.call_args_list[1].args[0][-2:], ['connect', '192.0.2.1:5555'])
-
-    @patch('backend.core.device.read_shell.resolve_adb_binary', return_value='synthetic-adb')
-    def test_live_transport_or_usb_is_not_reconnected(self, _adb):
-        from backend.core.device.read_shell import reconnect_offline_wireless
-        owner = Mock(); owner.run.return_value.returncode = 0
-        self.assertFalse(reconnect_offline_wireless('192.0.2.1:5555', 3, owner))
-        self.assertEqual(owner.run.call_count, 1)
-        owner.reset_mock()
-        self.assertFalse(reconnect_offline_wireless('synthetic-usb', 3, owner))
-        owner.run.assert_not_called()
 
 
 class CaptureStreamRecoveryTests(unittest.TestCase):

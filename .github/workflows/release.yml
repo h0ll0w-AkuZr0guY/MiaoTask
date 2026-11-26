@@ -1,4 +1,4 @@
-name: Build Windows portable release
+name: Build macOS Apple Silicon portable release
 
 on:
   workflow_dispatch:
@@ -17,39 +17,42 @@ concurrency:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: macos-14
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.source_ref || github.sha }}
           persist-credentials: false
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
           cache: pip
-          cache-dependency-path: requirements-windows.lock
+          cache-dependency-path: |
+            requirements.txt
+            requirements-build.txt
       - name: Verify reviewed release notes
-        shell: pwsh
+        shell: bash
         run: |
-          $version = (Get-Content -LiteralPath version.json -Raw | ConvertFrom-Json).version
+          set -euo pipefail
+          version=$(python -c 'import json; print(json.load(open("version.json"))["version"])')
           python scripts/prepare_release.py --ready
-          if ($LASTEXITCODE -ne 0) { throw 'Invalid pending contribution format' }
-          $pending = Get-Content -LiteralPath docs/UNRELEASED.md -Raw
-          if ($pending -match '(?m)^\* 【') { throw 'Prepare and review the release notes before building' }
-          python scripts/release_notes.py $version --output "$env:RUNNER_TEMP/miao-release-notes.md"
-          if ($LASTEXITCODE -ne 0) { throw 'Reviewed release notes are required' }
+          if grep -Eq '^\* 【' docs/UNRELEASED.md; then
+            echo 'Prepare and review the release notes before building' >&2
+            exit 1
+          fi
+          python scripts/release_notes.py "$version" --output "$RUNNER_TEMP/miao-release-notes.md"
       - name: Audit public source files
         run: python scripts/check_public_files.py
-      - name: Install locked build environment
-        run: python -m pip install -r requirements-windows.lock
-      - name: Fetch official ADB runtime
+      - name: Install build environment
+        run: python -m pip install -r requirements.txt -r requirements-build.txt
+      - name: Fetch official macOS ADB runtime
         run: python scripts/fetch_platform_tools.py
       - name: Test, build, and verify the portable package
-        run: python scripts/package_windows.py --adb-dir build/vendor/platform-tools --preinstall-all
-      - uses: actions/upload-artifact@v7
+        run: python scripts/package_macos.py --adb-dir build/vendor/platform-tools --preinstall-all
+      - uses: actions/upload-artifact@v4
         with:
-          name: MiaoTask-windows-x64
+          name: MiaoTask-macos-arm64
           path: |
             dist/*.zip
             dist/*.sha256

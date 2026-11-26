@@ -101,6 +101,17 @@ class ActivityPathsTests(unittest.TestCase):
         with patch.object(runtime.sys, 'frozen', False), patch.object(runtime, 'ROOT', self.root / 'checkout'):
             self.assertEqual(runtime.activities_dir(), self.root / 'checkout/activities')
 
+    def test_macos_application_support_and_app_bundle_parent_paths(self):
+        home = self.root / 'mac-home'
+        home.mkdir()
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('LOCALAPPDATA', None)
+            with patch.object(runtime.sys, 'platform', 'darwin'), \
+                    patch.object(Path, 'home', return_value=home), \
+                    patch.object(runtime.sys, 'executable', str(self.root / 'apps/MiaoTask.app/Contents/MacOS/MiaoTask')):
+                self.assertEqual(runtime.user_data_root(), home / 'Library/Application Support/MiaoTask')
+                self.assertEqual(runtime.activities_dir(), self.root / 'apps/activities')
+
 
 if __name__ == '__main__':
     unittest.main()

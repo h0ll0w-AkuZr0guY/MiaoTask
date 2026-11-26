@@ -28,7 +28,7 @@ on:
         type: boolean
         default: false
       build_run_id:
-        description: Successful Build Windows portable release run ID
+        description: Successful Build macOS Apple Silicon portable release run ID
         required: true
 
 permissions:
@@ -43,19 +43,19 @@ jobs:
   publish:
     if: inputs.confirm
     environment: release
-    runs-on: windows-latest
+    runs-on: macos-14
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.source_ref }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
       - name: Verify and publish the exact tag's build
-        shell: pwsh
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -63,55 +63,43 @@ jobs:
           BUILD_RUN_ID: ${{ inputs.build_run_id }}
           SOURCE_COMMIT: ${{ inputs.source_ref }}
         run: |
-          if ($env:SOURCE_COMMIT -notmatch '^[0-9a-fA-F]{40}$') { throw 'Provide the full reviewed commit SHA' }
-          if ($env:RELEASE_TAG -notmatch '^MiaoTask-v[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Invalid tag' }
-          if ($env:BUILD_RUN_ID -notmatch '^\d+$') { throw 'Invalid build run ID' }
-          $revision = (& git rev-parse HEAD).Trim()
-          $version = (Get-Content -LiteralPath version.json -Raw | ConvertFrom-Json).version
-          if ($version -ne $env:RELEASE_TAG) { throw 'Version must match reviewed source' }
-          $existingTag = & git rev-parse --verify "$($env:RELEASE_TAG)^{commit}" 2>$null
-          if ($LASTEXITCODE -eq 0 -and $existingTag.Trim() -ne $revision) { throw 'Existing tag points to different source' }
-          $build = (& gh api "repos/$env:GH_REPO/actions/runs/$env:BUILD_RUN_ID" | ConvertFrom-Json)
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect build run' }
-          $manualBuild = $build.conclusion -eq 'success' -and $build.event -eq 'workflow_dispatch' -and $build.path -eq '.github/workflows/release.yml' -and $build.name -eq 'Build Windows portable release'
-          $samePipeline = $env:BUILD_RUN_ID -eq $env:GITHUB_RUN_ID -and $build.path -eq '.github/workflows/release-pipeline.yml' -and $build.event -in @('push', 'workflow_dispatch') -and $build.status -eq 'in_progress'
-          if ($samePipeline) {
-            $jobs = & gh api --paginate "repos/$env:GH_REPO/actions/runs/$env:BUILD_RUN_ID/jobs" --jq '.jobs[] | select(.name == "build / build") | .conclusion'
-            if ($LASTEXITCODE -ne 0 -or $jobs -notcontains 'success') { throw 'The pipeline build job must succeed before publication' }
-          }
-          if ($build.head_sha -ne $revision -or -not ($manualBuild -or $samePipeline)) {
-            throw 'Build run must be successful and match this release commit'
-          }
-          & gh run download $env:BUILD_RUN_ID --name MiaoTask-windows-x64 --dir release-assets
-          if ($LASTEXITCODE -ne 0) { throw 'Artifact download failed' }
-          $zipName = "$($env:RELEASE_TAG)-windows-x64.zip"
-          $zipPath = Join-Path release-assets $zipName
-          $sumPath = $zipPath + '.sha256'
-          $expectedHash = ((Get-Content -LiteralPath $sumPath -Raw).Trim() -split '\s+')[0]
-          $actualHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($expectedHash -ne $actualHash) { throw 'Artifact checksum mismatch' }
-          Add-Type -AssemblyName System.IO.Compression.FileSystem
-          $zip = [IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $zipPath))
-          try {
-            $entry = $zip.GetEntry('MiaoTask/build-manifest.json')
-            $reader = [IO.StreamReader]::new($entry.Open())
-            try { $manifest = $reader.ReadToEnd() | ConvertFrom-Json } finally { $reader.Dispose() }
-          } finally { $zip.Dispose() }
-          if ($manifest.preview -or $manifest.source_dirty -or $manifest.source_commit -ne $revision -or $manifest.version -ne $env:RELEASE_TAG -or -not $manifest.smoke_test_passed) {
-            throw 'Portable package provenance mismatch'
-          }
-          $publicNotes = Join-Path $env:RUNNER_TEMP 'miao-release-notes.md'
-          python scripts/release_notes.py $env:RELEASE_TAG --output $publicNotes
-          if ($LASTEXITCODE -ne 0) { throw 'Reviewed release notes are required' }
-          $releaseJson = & gh release view $env:RELEASE_TAG --json isDraft 2>$null
-          if ($LASTEXITCODE -eq 0) {
-            $release = $releaseJson | ConvertFrom-Json
-            if (-not $release.isDraft) { throw 'Release already published; preserving its assets' }
-            & gh release upload $env:RELEASE_TAG $zipPath $sumPath --clobber
-            if ($LASTEXITCODE -ne 0) { throw 'Release asset upload failed' }
-            & gh release edit $env:RELEASE_TAG --draft=false --latest --notes-file $publicNotes
-          } else {
-            & gh release create $env:RELEASE_TAG $zipPath $sumPath --target $revision --latest --title ($env:RELEASE_TAG -replace '^MiaoTask-', 'MiaoTask ') --notes-file $publicNotes
-          }
-          if ($LASTEXITCODE -ne 0) { throw 'Publishing failed' }
-          & gh release view $env:RELEASE_TAG --json url,isDraft,assets
+          set -euo pipefail
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]] || { echo 'Provide the full reviewed commit SHA' >&2; exit 1; }
+          [[ "$RELEASE_TAG" =~ ^MiaoTask-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid tag' >&2; exit 1; }
+          [[ "$BUILD_RUN_ID" =~ ^[0-9]+$ ]] || { echo 'Invalid build run ID' >&2; exit 1; }
+          revision=$(git rev-parse HEAD)
+          version=$(python -c 'import json; print(json.load(open("version.json"))["version"])')
+          [[ "$version" == "$RELEASE_TAG" ]] || { echo 'Version must match reviewed source' >&2; exit 1; }
+          if existing_tag=$(git rev-parse --verify "${RELEASE_TAG}^{commit}" 2>/dev/null); then
+            [[ "$existing_tag" == "$revision" ]] || { echo 'Existing tag points to different source' >&2; exit 1; }
+          fi
+          gh run download "$BUILD_RUN_ID" --name MiaoTask-macos-arm64 --dir release-assets
+          zip_path="release-assets/${RELEASE_TAG}-macos-arm64.zip"
+          sum_path="${zip_path}.sha256"
+          expected_hash=$(awk '{print $1}' "$sum_path")
+          actual_hash=$(shasum -a 256 "$zip_path" | awk '{print $1}')
+          [[ "$expected_hash" == "$actual_hash" ]] || { echo 'Artifact checksum mismatch' >&2; exit 1; }
+          python - "$zip_path" "$revision" "$RELEASE_TAG" <<'PY'
+          import json, sys, zipfile
+          zip_path, revision, tag = sys.argv[1:4]
+          with zipfile.ZipFile(zip_path) as zf:
+              manifest = json.loads(zf.read('MiaoTask/build-manifest.json'))
+          if (manifest.get('preview') or manifest.get('source_dirty')
+                  or manifest.get('source_commit') != revision
+                  or manifest.get('version') != tag
+                  or manifest.get('platform') != 'macos-arm64'
+                  or not manifest.get('smoke_test_passed')):
+              raise SystemExit('Portable package provenance mismatch')
+          PY
+          public_notes="$RUNNER_TEMP/miao-release-notes.md"
+          python scripts/release_notes.py "$RELEASE_TAG" --output "$public_notes"
+          if release_json=$(gh release view "$RELEASE_TAG" --json isDraft 2>/dev/null); then
+            is_draft=$(python -c 'import json,sys; print(json.loads(sys.argv[1])["isDraft"])' "$release_json")
+            [[ "$is_draft" == "True" ]] || { echo 'Release already published; preserving its assets' >&2; exit 1; }
+            gh release upload "$RELEASE_TAG" "$zip_path" "$sum_path" --clobber
+            gh release edit "$RELEASE_TAG" --draft=false --latest --notes-file "$public_notes"
+          else
+            title="${RELEASE_TAG/MiaoTask-/MiaoTask }"
+            gh release create "$RELEASE_TAG" "$zip_path" "$sum_path" --target "$revision" --latest --title "$title" --notes-file "$public_notes"
+          fi
+          gh release view "$RELEASE_TAG" --json url,isDraft,assets

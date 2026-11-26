@@ -64,19 +64,17 @@ def synthetic_activity_package(path):
 
 def smoke(executable, output=None, *, activity_packages=()):
     executable = Path(executable).resolve()
-    flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
     result = {'exe': executable.name}
     with tempfile.TemporaryDirectory(prefix='miao-package-check-') as work:
         folder = Path(work)
         env = os.environ.copy()
-        windows = env.get('SystemRoot', r'C:\Windows')
-        env['PATH'] = os.pathsep.join([str(Path(windows) / 'System32'), windows])
+        env['PATH'] = '/usr/bin:/bin:/usr/sbin:/sbin'
         env['MIAO_DATA_DIR'] = str(folder / 'data')
         for key in ('PYTHONPATH', 'PYTHONHOME', 'ADBUTILS_ADB_PATH', 'MIAO_ACTIVITIES_DIR'):
             env.pop(key, None)
         report = folder / 'self-test.json'
         self_check = subprocess.run([str(executable), '--self-test', '--output', str(report)], cwd=work,
-                                    env=env, creationflags=flags, timeout=120)
+                                    env=env, timeout=120)
         if self_check.returncode:
             details = report.read_text(encoding='utf-8') if report.exists() else 'No self-test report was written'
             raise RuntimeError(f'Packaged self-test failed ({self_check.returncode}): {details}')
@@ -85,7 +83,7 @@ def smoke(executable, output=None, *, activity_packages=()):
             raise RuntimeError(f'Packaged self-test failed: {result}')
         port_file = folder / 'port.json'
         process = subprocess.Popen([str(executable), '--no-browser', '--port', '0', '--port-file', str(port_file)],
-                                   cwd=work, env=env, creationflags=flags)
+                                   cwd=work, env=env)
         try:
             deadline = time.monotonic() + 30
             while not port_file.exists():
@@ -97,8 +95,8 @@ def smoke(executable, output=None, *, activity_packages=()):
                 result['health'] = json.load(response)
             with urlopen(base + '/api/preferences', timeout=15) as response:
                 result['ocr_capabilities'] = json.load(response)
-            if 'cuda_available' not in result['ocr_capabilities']:
-                raise RuntimeError('Packaged OCR preferences route is missing')
+            if result['ocr_capabilities'].get('ocr_backend') != 'vision':
+                raise RuntimeError('Packaged Vision OCR preferences route is missing')
             for name, expected in [('/', 'MiaoTask'), ('/app.js', 'browse_recheck_rounds'), ('/style.css', '.topbar')]:
                 with urlopen(base + name, timeout=5) as response:
                     if expected not in response.read().decode('utf-8'):
@@ -145,7 +143,7 @@ def smoke(executable, output=None, *, activity_packages=()):
             if child['config']['max_tasks']!=3 or original['config']['max_tasks']!=state['config']['max_tasks']:
                 raise RuntimeError('Packaged workspaces do not isolate configuration')
             post('/api/workspaces/remove',{'id':added})
-            for path in ['/js/components/device-manager.js','/js/components/wifi-connect.js']:
+            for path in ['/js/components/device-manager.js']:
                 with urlopen(base+path,timeout=5) as response:
                     if not response.read():
                         raise RuntimeError('Packaged frontend component missing: '+path)
@@ -153,7 +151,7 @@ def smoke(executable, output=None, *, activity_packages=()):
             # Launching twice should reuse the existing service.
             port = base.rsplit(':', 1)[1]
             subprocess.run([str(executable), '--no-browser', '--port', port], cwd=work, env=env,
-                           creationflags=flags, check=True, timeout=20)
+                           check=True, timeout=20)
             result['second_launch_reuses_service'] = True
             request = Request(base + '/api/shutdown', data=b'{}', method='POST',
                               headers={'Content-Type': 'application/json', 'X-Miao-Token': state['token']})
@@ -166,16 +164,13 @@ def smoke(executable, output=None, *, activity_packages=()):
             if process.poll() is None:
                 process.terminate()
                 process.wait(timeout=10)
-        # A second real frozen process installs trusted synthetic source from a
-        # local ZIP.  This verifies that external namespace imports work even
-        # though no platform implementation exists in the frozen module graph.
         activity_zip = folder / 'offline-activity.zip'
         activity_hash = synthetic_activity_package(activity_zip)
         installed_report = folder / 'installed-self-test.json'
         install_check = subprocess.run(
             [str(executable), '--self-test', '--output', str(installed_report),
              '--activity-package', str(activity_zip), '--activity-package-sha256', activity_hash],
-            cwd=work, env=env, creationflags=flags, timeout=120)
+            cwd=work, env=env, timeout=120)
         details = json.loads(installed_report.read_text(encoding='utf-8')) if installed_report.exists() else {}
         factories = details.get('checks', {}).get('downloaded_activity_factories', [])
         expected_factory = 'backend.app.smokefixture.activities.daily.activity:OfflineActivity'
@@ -185,7 +180,7 @@ def smoke(executable, output=None, *, activity_packages=()):
         installed_port = folder / 'installed-port.json'
         installed_process = subprocess.Popen(
             [str(executable), '--no-browser', '--port', '0', '--port-file', str(installed_port)],
-            cwd=work, env=env, creationflags=flags)
+            cwd=work, env=env)
         try:
             deadline = time.monotonic() + 30
             while not installed_port.exists():
@@ -221,7 +216,7 @@ def smoke(executable, output=None, *, activity_packages=()):
             real_check = subprocess.run(
                 [str(executable), '--self-test', '--output', str(real_report),
                  '--activity-package', str(Path(archive).resolve()), '--activity-package-sha256', digest],
-                cwd=work, env=env, creationflags=flags, timeout=120)
+                cwd=work, env=env, timeout=120)
             details = json.loads(real_report.read_text(encoding='utf-8')) if real_report.exists() else {}
             record = details.get('checks', {}).get('local_activity_install', {})
             factory_prefix = f"backend.app.{record.get('app_module')}.activities.{record.get('activity_module')}."

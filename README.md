@@ -2,81 +2,58 @@
 
 <img src="frontend/assets/miaotask-128.png" width="76" alt="MiaoTask 图标">
 
-# MiaoTask
+# MiaoTask (macOS Apple Silicon)
 
 **把重复浏览，交给助手。**
 
-一个本地网页，管理手机、平板与模拟器的重复任务。
+专为 **macOS Apple Silicon（M 系列芯片）** 定制的本地网页控制台，通过 **ADB USB** 管理多台 Android 手机与平板的重复任务。
 
-[![下载](https://img.shields.io/github/v/release/h0ll0w-AkuZr0guY/MiaoTask?label=Download&color=f97316&filter=MiaoTask-v*&sort=date)](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/releases/latest)
-![平台](https://img.shields.io/badge/Windows_x64-Android-315f56)
+[![下载](https://img.shields.io/github/v/release/heyunl/MiaoTask-macOS?label=Download&color=f97316&filter=MiaoTask-v*&sort=date)](https://github.com/heyunl/MiaoTask-macOS/releases/latest)
+![平台](https://img.shields.io/badge/macOS_Apple_Silicon_(arm64)-Vision_OCR_%2B_ADB_USB-315f56)
 [![License](https://img.shields.io/badge/License-Apache_2.0-2563eb)](LICENSE)
-[![Star](https://img.shields.io/github/stars/h0ll0w-AkuZr0guY/MiaoTask?style=flat&color=e8ab38)](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/stargazers)
 
 [下载使用](#开始使用) · [功能与界面](#功能与界面) · [参与开发](docs/CONTRIBUTING.md) · [发布记录](docs/RELEASES.md)
 
 </div>
 
-![MiaoTask 手绘概览：一个本地控制台，通过 USB 或 Wi-Fi 管理独立设备工作区；活动适配执行观察、执行、返回和核验循环](docs/assets/miaotask-overview.png)
+![MiaoTask 手绘概览：一个本地控制台，通过 ADB USB 管理独立设备工作区；活动适配执行观察、执行、返回和核验循环](docs/assets/miaotask-overview.png)
 
-连接设备后，一键进入活动、读取任务、浏览或搜索，再返回核验进度。**淘宝的双11赚能量、淘金币日常、芭芭农场、红包签到和成就中心分别作为独立活动**，按需选择与排序；另支持支付宝「月月赚」浏览任务。可选实物打卡的初始化由本人处理。底层继续使用 **uiautomator2 + ADB**，UI控件识别优先、OCR辅助；设备接入、读屏、调度与记录已分层，截图与OCR在电脑本地处理。
+连接 USB 设备后，一键进入活动、读取任务、浏览或搜索，再返回核验进度。**淘宝的双11赚能量、淘金币日常、芭芭农场、红包签到和成就中心分别作为独立活动**，按需选择与排序；另支持京东「东东农场」、闲鱼与支付宝「月月赚」浏览任务。可选实物打卡的初始化由本人处理。底层使用 **uiautomator2 + macOS ADB USB**，UI 控件识别优先、**macOS 系统原生 Vision 框架（Apple Silicon 神经网络引擎 / GPU 加速）** 辅助；已移除第三方本地大模型依赖与 Wi-Fi 无线调试控制，截图与 OCR 全部在 Mac 本地处理。
 
 框架 ZIP 提供网页、设备控制和运行环境；**活动中心默认读取官方仓库 main，也可选择其他分支，按需安装活动源码**。活动适配更新合并后即可获取，无需为每次活动修改重新下载框架。
 
-## 开发 & 反馈
+## 定制特性
 
-**Q 群：1103989184** · [反馈问题](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/issues/new/choose) · [贡献规范](docs/CONTRIBUTING.md)
-
-反馈请附版本、机型与系统、复现步骤和脱敏截图。设备码、地址、账号与配对码无需公开。
-
-- [x] **多设备并行**：一个页面管理多个工作区，分别启停，也可批量应用设置。
-- [x] **无线调试**：网页分步配对，分段填写地址，配对后复用 IP。
-- [x] **不同屏幕与模拟器**：横竖屏、坐标回映与独立显示屏处理，发现运行中的 MuMu 实例。
-- [x] **可调整的任务队列**：实时选择执行或跳过；同日失败预算、选择与统计保留。
+- [x] **固定 macOS Apple Silicon 系统 OCR**：直接调用 macOS `Vision`（`VNRecognizeTextRequest` 高精度中英文识别），由 M 系列芯片 ANE / Metal 原生加速，无需下载安装 RapidOCR / ONNX / CUDA / DirectML 模型。
+- [x] **纯 macOS ADB USB 直连**：仅保留稳定的 Android ADB USB 有线连接，全面移除 Wi-Fi 无线配对/连接、模拟器端口扫描与 HDC 通道。
+- [x] **多设备 USB 并行**：一个页面管理多个独立 USB 设备工作区，分别启停，也可批量应用设置；同一物理设备独占租约，同机应用分身串行执行。
+- [x] **横竖屏与安全区域适配**：动态刷新屏幕尺寸与挖孔/系统栏安全边距，OCR 坐标自动回映至设备物理像素。
+- [x] **可调整的任务队列**：实时选择执行或跳过；同日失败预算、选择与统计按设备、应用、活动、实例、日期独立保留。
 - [x] **框架与活动分离**：从官方源码按应用安装、更新或卸载活动，设备上的活动按流水线串行执行。
-- [x] **入口与返回恢复**：匹配「赚能量 / 去赚能量」，逐层返回，必要时重开所选实例。
-- [ ] **持续适配**：特殊开屏弹窗、活动改版、复杂链式跳转及更多机型；现有有限恢复仍可能失败。
-- [ ] **人工认证提示完善**：已有停止与 Windows 提醒，部分新样式可能漏识别；滑块等验证由本人处理。
-- [ ] **扩展应用与设备**：新活动、更多厂商分身及 HarmonyOS 实机验证；接口预留不等于已完成适配。
-- [x] **低频识别与公共词表**：连续浏览不并发截图；按真实进度核验，搜索词随机抽取、跳过词跨版本保留。
-- [x] **可选CUDA扩展**：CPU基础包可独立使用，NVIDIA用户可另装兼容扩展，GPU不可用时回退CPU。
-- [x] **点个 Star**：喜欢这个项目的话，欢迎留下一个 ⭐，也欢迎反馈和 PR。
+- [ ] **人工认证与安全边界**：遇到滑块、登录、支付或安全认证自动停止并弹出 macOS 系统提醒，由本人手动完成。
 
 ## 开始使用
 
-[在线体验工作台](https://h0ll0w-akuzr0guy.github.io/MiaoTask/)：自动同步最新界面，使用演示设备与数据；实际执行请下载桌面版。
+### 环境要求
+
+* **电脑系统**：搭载 Apple Silicon（M1 / M2 / M3 / M4 等 `arm64` 芯片）的 macOS 13 及以上。
+* **手机连接**：Android 手机或平板，开启「开发者选项 → USB 调试」，使用支持数据传输的 USB-C 数据线连接 Mac。
 
 ### 下载并启动
 
 ![MiaoTask 首页](docs/assets/miaotask-home.png)
 
-1. 打开 [Releases](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/releases/latest)，在 **Assets** 下载 `MiaoTask-…-windows-x64.zip`。`Source code` 是源码包。
-2. **完整解压**，双击 `MiaoTask.exe`，保留同目录的 `_internal/`。电脑无需另装 Python、ADB 或 OCR 模型。
-3. 浏览器打开本地控制台，正式发布包按活动配置预装可分发的活动；更新或恢复活动可在 **活动中心**操作，再按下方任一方式连接设备，勾选本设备的活动并点击 **开始自动执行**。初次可在「任务设置」把本轮上限设为 2 次。活动源码单独保存在 exe 旁的 `activities/apps/`，可从活动中心打开实际位置；部分分发包已预装活动。
+1. **便携版启动**：打开 [Releases](https://github.com/heyunl/MiaoTask-macOS/releases/latest)，下载 `MiaoTask-…-macos-arm64.zip`，完整解压后在终端运行 `./MiaoTask`（保留同目录的 `_internal/`）。
+2. **源码启动**：克隆仓库后双击 `start.command`（或在终端执行 `./start.command`），脚本会自动检查 Apple Silicon 架构、创建 `.venv`、安装依赖并启动本地控制台（若系统尚未安装 `adb`，可执行 `brew install android-platform-tools`）。
+3. 浏览器打开本地控制台，可在 **活动中心** 安装或更新活动，再通过下方步骤连接 USB 设备，勾选本设备的活动并点击 **开始自动执行**。初次可在「任务设置」把本轮上限设为 2 次。活动源码单独保存在程序旁的 `activities/apps/`，可从活动中心直接在访达（Finder）中打开。
 
-在线更新需要电脑访问官方资源源。每次打开活动中心检查一次，之后可手动刷新；API 限流时尝试备用通道。安装过的活动保留恢复包，卸载后可点「离线恢复」；预装项另有随包恢复基线。已有内置活动的旧包仍可照常使用，升级时完整解压新框架。
+### macOS ADB USB 连接
 
-可选GPU加速：[CUDA扩展 v1.0 独立下载](https://github.com/h0ll0w-AkuZr0guY/MiaoTask/releases/tag/MiaoTask-CUDA-v1.0)。它不包含主程序，CPU基础包无需安装扩展即可运行。先退出托盘服务，将扩展的 `runtime_plugins/` 放到 `MiaoTask.exe` 同级，重启后在高级选项选择自动或CUDA。无需安装Torch，不覆盖 `_internal/`；更新框架时可迁移兼容的扩展目录。详见[使用条件、安装与回退](docs/USAGE.md#安装可选cuda扩展)。
+1. 手机保持解锁，在系统设置中开启「开发者选项 → USB 调试」（部分机型需同时开启「USB 调试（安全设置）」以允许模拟点击），通过支持数据传输的 USB 线连接 Mac。
+2. 手机弹出「允许 USB 调试吗？」提示时，勾选并点击 **允许**。
+3. 在网页控制台点击左侧设备齿轮或 **添加设备**，点击「刷新 USB 列表」，选择已识别的 USB 设备序列号后点击 **连接 USB 设备**。
 
-### USB 连接
-
-手机解锁，在系统设置中开启「开发者选项 → USB 调试」，使用支持数据传输的线连接电脑。在手机上允许这台电脑调试，点击左侧设备齿轮或 **添加设备**，在弹窗选择设备后连接。不同厂商开启开发者选项的路径略有差异；未发现设备时检查数据线、授权弹窗和厂商驱动。
-
-### Wi-Fi 连接
-
-适用于支持无线调试的 **Android 11 及以上**设备。手机和电脑连接同一 Wi-Fi，或让手机连接电脑热点，在左侧设备连接弹窗选择 **Wi-Fi 无线**（部分老版本鸿蒙【实际安卓】没有无线调试开关）：
-
-| 步骤 | 在手机上 | 在网页中 |
-| --- | --- | --- |
-| ① 首次配对 | 开启「开发者选项 → 无线调试」，打开「使用配对码配对设备」 | 填四段 IP、配对端口和六位配对码，点击「配对手机」；保持手机弹窗打开 |
-| ② 建立连接 | 关闭配对弹窗，查看无线调试**主页面**的连接端口 | IP 自动沿用，只填**连接端口**，点击「无线连接」 |
-| ③ 后续使用 | 确认无线调试开启、连接地址未变化 | 选「已经配对」后连接；地址变化时按手机显示更新 |
-
-**配对端口与连接端口通常不同。** IP 每段输满三位会自动换框，空框退格可返回上一段；也支持粘贴完整地址。校园网可能禁止设备互访，遇到超时可改用同一个个人热点。
-
-![无线连接向导：首次配对和连接分开，四段 IP 与端口独立填写](docs/assets/feature-wifi.png)
-
-关闭网页后任务仍在后台运行。退出或升级时，使用 **Windows 托盘菜单**。更多连接、分身和异常处理说明见[使用文档](docs/USAGE.md)。
+更多多设备、应用分身和异常处理说明见[使用文档](docs/USAGE.md)。
 
 > 调试授权允许程序操作手机。页面变化与平台规则可能带来误操作、认证或账号风险；随机滚动不保证规避风控。登录、安全认证与真实交易由本人处理。使用前请阅读[风险与隐私](docs/SAFETY.md)。
 
@@ -86,73 +63,56 @@
 
 活动中心按应用展示所选官方分支的活动，安装后以勾选卡片加入当前设备的流水线，可调整顺序或移除。**勾选只保存计划，点击开始才执行**。同一设备的活动和分身顺序处理，不同设备继续并行。认证或手动停止仍暂停当前设备；恢复流水线时跳过当天已确认完成的活动实例。任务完成仍以页面反馈核验。有说明的活动旁可点「！」查看介绍。
 
-活动安装、更新和卸载需所有设备操作结束。卸载保留日记录；活动包包含可执行 Python 代码，只安装经过审阅的可信活动，校验不提供沙箱隔离。活动所需的新第三方依赖仍需更新框架运行环境。
+活动安装、更新和卸载需所有设备操作结束。卸载保留日记录；活动包包含可执行 Python 代码，只安装经过审阅的可信活动，校验不提供沙箱隔离。
 
 淘宝日常活动的入口、执行范围和人工处理边界见[活动说明](docs/USAGE.md#淘宝活动)。签到与浏览不包含施肥、浇水、收货地址设置、抽奖或真实交易；页面不符合已识别规则时保留现场并停止。
 
-以下图片截取自正常 **1920 × 1080 桌面视口**中的对应功能区域，保留原比例。工作区名称和任务示例仅用于说明交互，不代表任务完成记录。
+### ✅ 同页管理，多台 USB 设备并行
 
-### ✅ 同页管理，多设备并行
-
-点击左侧虚线 **添加设备**创建工作区，点击设备卡片切换设置、任务、日志和画面；勾选后用底部 **一键启动**批量发送当前计划。每台设备独立开始、暂停和停止。同一物理设备的重复连接会被拦截，同一手机内的分身仍按队列串行执行。
+点击左侧虚线 **添加设备** 创建工作区，点击设备卡片切换设置、任务、日志和画面；勾选后用底部 **一键启动** 批量发送当前计划。每台 USB 设备独立开始、暂停和停止。同一物理设备的重复连接会被拦截，同一手机内的分身仍按队列串行执行。
 
 ![设备工作区：添加设备、切换标签与批量启动；图中为尚未连接的示例工作区](docs/assets/feature-devices.png)
 
-MuMu 通过实际运行实例发现连接端口；预览按设备比例显示，识别坐标回映到原屏幕。模拟器未登录时可检查唤醒与入口，工具不会代办登录。
-
 ### ✅ 任务由程序识别，也能随时调整
 
-浏览、搜索、跳转及累计奖励按活动规则处理，每次开始和返回都会重读列表。行内 **执行 / 跳过**调整可执行队列，**不会立即启动任务**；当前步骤先安全结束，下次选择时生效。已完成或必须人工处理的任务不能强制加入，右侧保留实际处理状态。
+浏览、搜索、跳转及累计奖励按活动规则处理，每次开始和返回都会重读列表。行内 **执行 / 跳过** 调整可执行队列，**不会立即启动任务**；当前步骤先安全结束，下次选择时生效。已完成或必须人工处理的任务不能强制加入，右侧保留实际处理状态。
 
 ![任务队列的交互示例：执行与跳过并排，完成及人工任务不可选择；图中为合成任务演示](docs/assets/feature-queue.png)
 
-任务选择、失败次数、已确认缺失的应用与统计按 **设备、应用、活动、实例、日期**保存。同日重启继续使用，次日重新判断；失败现场可在本地查看和导出，公开前需自行脱敏。
-
-顶部 **公共设置**集中调整任务与滚动参数，**排行榜**按设备应用或活动查看累计时长、完成、跳过和失败。便携版记录在系统用户目录，更新解压文件夹后继续保留；**画面与提示**控制右侧预览，**外观**可切换暖橙、湖蓝与午夜主题。
+任务选择、失败次数、已确认缺失的应用与统计按 **设备、应用、活动、实例、日期** 保存在 `~/Library/Application Support/MiaoTask`（便携版）或仓库 `runtime/`（源码运行）。同日重启继续使用，次日重新判断；失败现场可在本地查看和导出，公开前需自行脱敏。
 
 ### ✅ 按需设置，保持简单的开始路径
 
-**任务设置 / 滚动节奏 / 高级选项**分别管理执行范围、滑动参数和识别恢复；**应用分身**默认收起。搜索使用原生填字与提交兜底，不安装或替换输入法。跨应用返回优先逐层检查，必要时有限重启恢复所选实例。
+**任务设置 / 滚动节奏 / 高级选项** 分别管理执行范围、滑动参数和识别恢复；OCR 固定为 **macOS Apple Silicon 系统 Vision OCR**，无需配置后端或额外扩展包。搜索使用原生填字与提交兜底，不安装或替换输入法。跨应用返回优先逐层检查，必要时有限重启恢复所选实例。
 
 ![滚动节奏设置：距离、时长、额外间隔和同方向连续次数均可调整范围](docs/assets/feature-scoll.png)
 
-### 🧩 后续设计
-
-| 状态 | 方向 | 当前边界 |
-| --- | --- | --- |
-| 待适配 | 更多应用与活动 | 已有活动注册、配置和生命周期接口，仍需独立实现入口、任务规则与核验 |
-| 待验证 | HarmonyOS、折叠姿态及更多厂商分身 | 有驱动与屏幕扩展接口，不能据此承诺各型号可用 |
-| 持续完善 | 复杂弹窗、特殊跳转与认证提示 | 失败保留现场并有限恢复，认证留给本人处理 |
-
 ## 致谢与对比
 
-感谢 [MonsterNone/tmall-miao](https://github.com/MonsterNone/tmall-miao) 原作者与贡献者提供的思路参考。MiaoTask 围绕本地控制台、设备隔离和活动扩展重新组织实现；下表以原项目 next 分支的[固定提交](https://github.com/MonsterNone/tmall-miao/tree/9318d3d138d5fa53cff00601740de012da831c65)作功能对照，不代表其后续版本。
+感谢 [MonsterNone/tmall-miao](https://github.com/MonsterNone/tmall-miao) 与 [h0ll0w-AkuZr0guY/MiaoTask](https://github.com/h0ll0w-AkuZr0guY/MiaoTask) 原作者与贡献者提供的架构与活动实现基础，以及 [czl0325/coin11-tb](https://github.com/czl0325/coin11-tb) 的入口与任务组织思路参考。
 
-淘宝日常流程还参考了 [czl0325/coin11-tb](https://github.com/czl0325/coin11-tb) 的入口与任务组织思路，具体识别、执行和记录使用 MiaoTask 的组件实现。
-
-| 功能 | 原项目参考版本 | MiaoTask |
+| 模块 | 上游 Windows 版 | 本仓库（macOS Apple Silicon 定制版） |
 | --- | --- | --- |
-| 操作入口 | 命令行活动菜单 | 本地网页与 CLI，一键识别后执行 |
-| 活动流程 | 618 入口、浏览及累计奖励等流程 | 淘金币双11入口、搜索提交、动态任务更新与返回核验 |
-| 设备连接 | USB、手动填写 Wi-Fi TCP 地址 | USB、Android 无线调试配对向导、地址复用及 MuMu 实例发现 |
-| 多设备 | 单进程选择一个设备 | 单页多个独立工作区并行，单台启停与批量配置 |
-| 识别与恢复 | 控件文本、预设等待与返回 | UI 树 + 本地 OCR，逐层检查与有限恢复，原实例身份核对 |
-| 分身与任务管理 | 提示手动进入分身 | 包名与用户空间锁定、实例串行队列、实时执行/跳过与每日失败预算 |
-| 分发与扩展 | 已有 Windows 打包与 ADB / HDC | 自包含 Windows 框架 ZIP、离线 OCR；活动按分支从官方源码/静态资源源获取，支持离线恢复，独立于框架版本更新；默认包不含 HDC |
+| 运行平台 | Windows x64 | macOS Apple Silicon（M 系列 `arm64` 专属） |
+| 本地 OCR | RapidOCR + ONNX Runtime（可选 CUDA / DirectML 扩展） | 固定使用 macOS 系统原生 `Vision` 框架（零额外模型体积） |
+| 设备连接 | USB、Android 无线调试配对向导、MuMu 模拟器、预留 HDC | 仅保留 macOS Android ADB USB 有线直连，彻底移除 Wi-Fi 控制 |
+| 多设备与分身 | 单页多工作区并行，包名与用户空间锁定 | 保持多台 USB 真机并行、独占租约与同机应用分身串行 |
+| 数据与活动 | `%LOCALAPPDATA%/MiaoTask` + `activities/` | `~/Library/Application Support/MiaoTask` + `activities/` |
 
 ## 文档
 
 | 文档 | 适合查什么 |
 | --- | --- |
-| [使用说明](docs/USAGE.md) | 连接、模拟器、多设备、分身、设置、记录与升级 |
+| [使用说明](docs/USAGE.md) | macOS 启动、ADB USB 连接、多设备、分身、设置、记录与升级 |
+| [公共配置表](docs/CONFIGURATION.md) | 公共设置参数、词表规则与固定 Vision OCR 配置说明 |
 | [风险与隐私](docs/SAFETY.md) | 调试权限、平台风险、本地数据与反馈脱敏 |
-| [架构设计](docs/ARCHITECTURE.md) | 分层理由、依赖方向、设备隔离、执行与存储模型 |
+| [架构设计](docs/ARCHITECTURE.md) | 分层理由、依赖方向、设备隔离、Vision OCR 与存储模型 |
 | [公共接口手册](docs/REUSABLE_INTERFACES.md) | 设备、读屏、坐标、会话、任务策略、活动分发与流水线的调用约束 |
-| [开发指南](docs/DEVELOPMENT.md) | 源码环境、活动扩展步骤、配置与调试入口 |
+| [开发指南](docs/DEVELOPMENT.md) | macOS Apple Silicon 源码环境、活动扩展步骤、配置与调试入口 |
 | [贡献规范](docs/CONTRIBUTING.md) · [AGENTS](AGENTS.md) | Issue/PR 格式、AI 协作、共享资源维护与兼容要求 |
-| [测试、打包与发布](docs/BUILDING.md) | 从源码启动可视化 Release Builder，选择目录/ZIP/GitHub 链接、自动版本、活动预装与贡献汇总；也含可选云构建 |
+| [测试、打包与发布](docs/BUILDING.md) | 预检脚本、`package_macos.py` 打包与本地 Release Builder |
 | [待发布贡献](docs/UNRELEASED.md) · [发布记录](docs/RELEASES.md) | 贡献累积与集中版本记录 |
 
 ## License
 
-MiaoTask 采用 [Apache License 2.0](LICENSE)。第三方组件、工具和模型遵循各自许可，相关声明见 [NOTICE](NOTICE) 和[许可说明](docs/LICENSING.md)。
+MiaoTask 采用 [Apache License 2.0](LICENSE)。第三方组件与工具遵循各自许可，相关声明见 [NOTICE](NOTICE) 和[许可说明](docs/LICENSING.md)。
