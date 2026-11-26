@@ -17,6 +17,8 @@
     "earned_reward_balance": "我的成就点([0-9]+)",
     "list_markers": "^淘宝成就$|^成就中心$|成就任务",
     "list_support_markers": "^(?:签到|已签到|成就点|每日签到|今日签到|领取今日奖励)$|[([][0-9]+/[0-9]+[)\\]]",
+    "points_panel_markers": "我的成就点|做任务领成就|赚成就点|成就任务",
+    "merchandise_panel_markers": "免费领正版周边|奖品寄送地址|今日打卡任务|开启[0-9]+天打卡|再打卡",
     "official_entry_labels": [
       "开启我的淘宝成就"
     ],

@@ -887,6 +887,18 @@ class TaobaoDailyTests(unittest.TestCase):
         self.assertIs(runner.entry_node(screen,runner.config['task_entry_labels']),tab)
         runner.click.assert_not_called()
 
+    def test_achievement_merchandise_signin_is_not_the_points_panel(self):
+        runner = self.runner('achievements')
+        tab = TextNode('我的成就', (790, 2650, 1000, 2720))
+        native = Screen([TextNode('淘宝成就', (180, 100, 560, 210)),
+                         TextNode('今日打卡任务0/1', (50, 1500, 760, 1600)),
+                         TextNode('签到', (1300, 1620, 1620, 1710)), tab],
+                        1800, 2880, 'com.taobao.taobao')
+        self.assertFalse(runner.is_task_list(native.nodes))
+        self.assertIsNone(runner.entry_node(native, runner.config['task_entry_labels']))
+        native.source = 'ocr'
+        self.assertIs(runner.entry_node(native, runner.config['task_entry_labels']), tab)
+
     def test_achievement_initialization_never_selects_an_address(self):
         runner = self.runner('achievements')
         screen=Screen([TextNode('淘宝成就',(100,100,500,150)),
