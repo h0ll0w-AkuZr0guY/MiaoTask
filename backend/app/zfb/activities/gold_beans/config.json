@@ -1,0 +1,55 @@
+{
+  "name": "金豆夺宝",
+  "bundle_by_default": false,
+  "search_keyword": "金豆夺宝",
+  "progressless_rows": true,
+  "browse_confirmation": "^浏览精选页面[0-9]+秒$",
+  "browse_confirmation_task": "逛精选页面得大额金豆",
+  "entry_labels": [
+    "金豆夺宝"
+  ],
+  "search_results": [
+    "支付宝金豆夺宝"
+  ],
+  "landing_groups": [
+    [
+      "兑换明细"
+    ],
+    [
+      "立即兑"
+    ]
+  ],
+  "panel_groups": [
+    [
+      "做任务领支金豆",
+      "逛精选页面得大额金豆",
+      "多阶段任务进度"
+    ],
+    [
+      "去完成",
+      "去抽签",
+      "去访问",
+      "已完成",
+      "去领取"
+    ]
+  ],
+  "task_entry_labels": [
+    "签到领豆",
+    "领支金豆",
+    "赚金豆",
+    "赚支金豆",
+    "做任务领支金豆"
+  ],
+  "popup_groups": [
+    [
+      "累计签到7天"
+    ],
+    [
+      "去领支金豆"
+    ]
+  ],
+  "popup_close_labels": [
+    "关闭"
+  ],
+  "description": "支持签到和可识别的普通站内浏览，未标时长时默认尝试 15 秒。游戏、抽签、兑换和提现留给本人处理。"
+}

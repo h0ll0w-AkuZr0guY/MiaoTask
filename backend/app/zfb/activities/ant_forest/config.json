@@ -1,0 +1,56 @@
+{
+  "name": "蚂蚁森林",
+  "bundle_by_default": false,
+  "search_keyword": "蚂蚁森林",
+  "panel_headers": ["做任务领奖励", "森林任务", "我的活力值", "今日累计奖励", "关闭奖励弹窗", "奖励"],
+  "panel_close_label": "关闭奖励弹窗",
+  "visual_panel_labels": ["蚂蚁森林", "奖励"],
+  "visual_panel_groups": [["今日继续赚能量", "今日累计", "我的活力值", "坚持绿色承诺"]],
+  "progressless_rows": true,
+  "claim_removes_row": true,
+  "sign_heading": "今天",
+  "sign_groups": [["我的活力值"], ["今天"], ["第二天"]],
+  "sign_labels": ["领取"],
+  "sign_done_labels": ["已领取", "明日再来"],
+  "entry_labels": [
+    "蚂蚁森林"
+  ],
+  "search_results": [
+    "蚂蚁森林"
+  ],
+  "landing_groups": [
+    [
+      "森林广场"
+    ],
+    [
+      "找能量",
+      "设置"
+    ]
+  ],
+  "panel_groups": [
+    [
+      "做任务领奖励",
+      "森林任务",
+      "我的活力值",
+      "今日累计奖励"
+    ],
+    [
+      "立即领取",
+      "去领取",
+      "已领取",
+      "去完成",
+      "逛一逛",
+      "关闭奖励弹窗",
+      "去看看"
+    ]
+  ],
+  "task_entry_labels": [
+    "领奖励",
+    "领奖",
+    "做任务领奖励"
+  ],
+  "native_home_labels": [
+    "蚂蚁森林"
+  ],
+  "description": "打开蚂蚁森林奖励面板，支持每日奖励领取及可识别的站内浏览任务。"
+}

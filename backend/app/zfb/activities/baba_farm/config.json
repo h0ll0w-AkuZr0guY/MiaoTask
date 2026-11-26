@@ -1,0 +1,62 @@
+{
+  "name": "芭芭农场",
+  "bundle_by_default": false,
+  "search_keyword": "芭芭农场",
+  "progressless_rows": true,
+  "panel_headers": ["做任务集肥料"],
+  "sign_heading": "连续签到任务规则",
+  "landing_overlay_markers": ["来玩农场抽抽乐"],
+  "entry_labels": [
+    "芭芭农场"
+  ],
+  "search_results": [
+    "芭芭农场"
+  ],
+  "result_card_evidence": [
+    "1分割种水果",
+    "1分钱种水果",
+    "天天免费领肥料"
+  ],
+  "landing_groups": [
+    [
+      "芭芭农场游戏内容",
+      "支付宝·芭芭农场"
+    ],
+    [
+      "任务列表",
+      "我的收获"
+    ]
+  ],
+  "panel_groups": [
+    [
+      "做任务集肥料"
+    ],
+    [
+      "连续签到任务规则",
+      "去完成",
+      "已领取",
+      "已完成"
+    ]
+  ],
+  "task_entry_labels": [
+    "任务列表",
+    "集肥料",
+    "做任务集肥料"
+  ],
+  "sign_groups": [
+    [
+      "今天可领"
+    ],
+    [
+      "连续签到任务规则"
+    ]
+  ],
+  "sign_labels": [
+    "领取",
+    "立即领取"
+  ],
+  "sign_done_labels": [
+    "已领取"
+  ],
+  "description": "支付宝芭芭农场。自动进入集肥料面板，支持领取每日免费肥料和普通站内浏览。"
+}
