@@ -19,13 +19,14 @@ EXTERNAL_APPS = ()
 # 浏览类任务的标题特征。真机(2026-10-26)确认浏览任务形如：
 #   「逛余额宝领10~18元体验金」「逛乐游记得现金好礼」——以「逛」开头
 BROWSE_TITLE_RE = re.compile(r'浏览|逛|看一看|看看|逛逛|瞧一瞧|视频')
+MANUAL_TITLE_RE = re.compile(r'游戏|玩一玩|下单|支付(?!宝)|转账|充值|开户|保险|填写|开通|授权|订阅|关注|安装|下载')
 
 # 列表中永远不是"任务按钮"的文案，避免把它们当成任务标题
 BUTTON_TEXT = {'去完成', '去看看', '领取', '立即领取', '做任务', '更多任务',
                '已完成', '去浏览', '去逛逛'}
 
 # 浏览类任务的按钮文案（真机确认是「去看看」，商业任务是「去完成」）
-BROWSE_BUTTONS = {'去看看', '去完成', '去逛逛'}
+BROWSE_BUTTONS = {'去看看', '去完成', '去逛逛', '去浏览'}
 
 
 def _norm(text):
@@ -67,7 +68,7 @@ def is_task_list(nodes):
     return _has_branded_title(nodes)
 
 
-def _title_near(nodes, button, width, height):
+def _title_near(nodes, button, width, height, header_bottom):
     """在按钮同行或紧邻上方找任务标题。
 
     按「纵向中心距离」排序，其次看纵向空隙与横向间隔。
@@ -85,10 +86,10 @@ def _title_near(nodes, button, width, height):
         if not t or t in BUTTON_TEXT:
             continue
         nx0, ny0, nx1, ny1 = n.bounds
-        if ny0 > by1:                      # 完全在按钮下方，属于另一行
+        if ny0 < header_bottom or ny0 > bcy or nx1 > bx0 + width * .025:
             continue
         gap = max(0, by0 - ny1)            # 与按钮顶部的纵向空隙
-        if gap > height * 0.12:            # 离得太远，不是同一行
+        if gap > height * 0.025:           # 离得太远，不是同一行
             continue
         hdist = max(0, bx0 - nx1)          # 标题在按钮左侧的横向间隔
         if hdist > width * 0.35:           # 横向太远
@@ -103,11 +104,14 @@ def parse_tasks(nodes, width, height):
     """只解析「浏览类」任务，其余一概跳过。"""
     tasks = []
     seen = set()
+    header_bottom = max((node.bounds[3] for node in nodes if _norm(node.text) == '月月赚'
+                         and 0 < node.bounds[1] < node.bounds[3] < height * .15), default=0)
     for n in nodes:
-        if _norm(n.text) not in BROWSE_BUTTONS:
+        if (_norm(n.text) not in BROWSE_BUTTONS or n.bounds[1] < header_bottom
+                or n.bounds[3] > height or n.center[0] < width * .5):
             continue
-        title = _title_near(nodes, n, width, height)
-        if not title or not BROWSE_TITLE_RE.search(title):
+        title = _title_near(nodes, n, width, height, header_bottom)
+        if not title or not BROWSE_TITLE_RE.search(title) or MANUAL_TITLE_RE.search(title):
             continue  # 商业/金融类任务，安全起见直接跳过
         if title in seen:
             continue

@@ -8,6 +8,7 @@
   "visual_panel_groups": [["今日继续赚能量", "今日累计", "我的活力值", "坚持绿色承诺"]],
   "progressless_rows": true,
   "claim_removes_row": true,
+  "manual_task_titles": ["^去淘宝签到"],
   "sign_heading": "今天",
   "sign_groups": [["我的活力值"], ["今天"], ["第二天"]],
   "sign_labels": ["领取"],

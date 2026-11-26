@@ -469,6 +469,9 @@ class RescanPolicy:
         confirmed_empty = False
         closing = '本轮任务已处理完毕'
         while index < hard_limit:
+            if self.stats.attempts >= self.config['max_tasks']:
+                closing = '本轮尝试次数已达上限，可稍后继续'
+                break
             if index > 0:
                 logger.info('补扫：第 %d 轮结束，重新读取列表确认是否还有任务', index)
                 verdict = self.confirm_scan(retries, restart=True)
@@ -483,9 +486,6 @@ class RescanPolicy:
                     logger.warning('补扫：多次扫描都没能确认列表状态，停止；列表里可能还有任务')
                     closing = '补扫没能确认列表状态已停止；列表里可能还有任务，可稍后重新开始'
                     break
-            if self.stats.attempts >= self.config['max_tasks']:
-                closing = '本轮尝试次数已达上限，可稍后继续'
-                break
             before = self.progress_mark()
             # 补扫轮从“刚才发现任务的那一屏”接着做：ensure_list 默认会把列表拉回
             # 顶部，而可执行的行往往在下面几屏，回到顶部等于让它重新扫一遍并再次
