@@ -13,6 +13,18 @@ from backend.core.execution.navigator import Navigator
 class Activity(SessionLoop, Navigator, TaskTracking, Session, ABC):
     claim_actions = frozenset()
     external_apps = ()
+    offline_actions = frozenset()
+
+    @classmethod
+    def validate_activity_options(cls, options):
+        return options
+
+    @classmethod
+    def describe_state(cls, device, config):
+        return {}
+
+    def perform_action(self, action_name, params=None):
+        raise ValueError(f'当前活动不支持操作：{action_name}')
 
     @abstractmethod
     def default_config(self):
@@ -88,3 +100,4 @@ class Activity(SessionLoop, Navigator, TaskTracking, Session, ABC):
                 return super().run(auto_open)
             finally:
                 self.teardown()
+

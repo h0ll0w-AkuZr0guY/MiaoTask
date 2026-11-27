@@ -95,7 +95,7 @@ class AppleVisionEngine:
                     return tuple(chosen)
             return VISION_LANGUAGES
 
-    def __call__(self, image, use_cls=False):
+    def __call__(self, image, use_cls=False, language_correction=True):
         started = time.perf_counter()
         width, height = image.size
         if width <= 0 or height <= 0:
@@ -112,7 +112,7 @@ class AppleVisionEngine:
                 raise RuntimeError('无法初始化 macOS Vision 图像处理器')
             request = self._Vision.VNRecognizeTextRequest.alloc().init()
             request.setRecognitionLevel_(self._Vision.VNRequestTextRecognitionLevelAccurate)
-            request.setUsesLanguageCorrection_(True)
+            request.setUsesLanguageCorrection_(bool(language_correction))
             request.setRecognitionLanguages_(list(self.languages))
             ok, error = handler.performRequests_error_([request], None)
             if not ok or error is not None:

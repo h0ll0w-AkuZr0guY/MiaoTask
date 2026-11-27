@@ -1,0 +1,40 @@
+{
+  "name": "大麦定时抢票与坐标校准",
+  "search_keyword": "大麦",
+  "entry_labels": [
+    "立即预订",
+    "立即购买",
+    "选座购买"
+  ],
+  "task_entry_labels": [
+    "场次",
+    "票档"
+  ],
+  "clear_clipboard": false,
+  "bundle_by_default": true,
+  "activity_options": {
+    "session_text": "",
+    "session_index": null,
+    "price_text": "",
+    "price_index": null,
+    "sell_time": "",
+    "lead_ms": 80,
+    "order_mode": "quick_order",
+    "viewer_count": 1,
+    "viewer_names": [],
+    "submit_order": false,
+    "jitter_min_ms": 120,
+    "jitter_max_ms": 280,
+    "max_attempts": 40,
+    "page_timeout_s": 2.5,
+    "agree_tolerance_px": 45,
+    "auto_resume_verify": true,
+    "verify_wait_s": 90.0,
+    "auto_select_session_on_calibrate": true,
+    "llm_enabled": false,
+    "llm_base_url": "",
+    "llm_model": "claude-sonnet-4-6",
+    "llm_timeout_s": 15.0,
+    "ocr_min_conf": 0.3
+  }
+}

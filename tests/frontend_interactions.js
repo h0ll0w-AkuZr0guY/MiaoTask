@@ -139,4 +139,52 @@ function checkActivityInfo(){
   info.fire('click');e.window.fire('miaotask:device-selected');assert.equal(dialog.open,false);
 }
 
-(async()=>{checkActivityInfo();checkDialogs();checkPreview();checkThemes();await checkActivityGrouping();await checkRankings();await checkDevicePreparation();console.log('PASS dialogs, preview, themes, catalog, rankings, device preparation/isolation');})().catch(error=>{console.error(error);process.exitCode=1;});
+async function checkDamaiPanel(){
+  const e=environment(),requests=[],errors=[];
+  e.context.MiaoAPI.request=async(url,options)=>{requests.push({url,options});return {ok:true};};
+  e.window.addEventListener('miaotask:error',ev=>errors.push(ev.detail));
+  e.load('activity-selector.js');
+  e.load('damai-panel.js');
+  const catalog=[
+    {id:'taobao',label:'淘宝',activities:[{id:'coins',label:'淘金币'}]},
+    {id:'damai',label:'大麦',activities:[{id:'ticket_grab',label:'定时抢票与坐标校准'}]}
+  ];
+  e.window.fire('miaotask:state',{detail:{workspace_id:'alpha',token:'tok',status:'ready',connected:true,app:'taobao',activity:'coins',activity_plan:[{app:'taobao',activity:'coins'}],catalog,config:{}}});
+  assert.equal(e.get('damai-panel').hidden,true,'Damai panel stays hidden when viewing non-Damai apps');
+
+  // Switch tab to Damai
+  const tabs=e.get('application-nav').children;
+  tabs[1].fire('click');
+  assert.equal(e.get('damai-panel').hidden,false,'Selecting Damai app tab reveals inline Damai panel');
+
+  // Hydrate Damai state + targets + inspection
+  e.window.fire('miaotask:state',{detail:{
+    workspace_id:'alpha',token:'tok',status:'ready',connected:true,app:'damai',activity:'ticket_grab',
+    activity_plan:[{app:'damai',activity:'ticket_grab'}],catalog,
+    config:{activity_options:{session_text:'2026-05-02',price_text:'580',lead_ms:80,order_mode:'quick_order',viewer_count:1,viewer_names:[],submit_order:false,jitter_min_ms:120,jitter_max_ms:280,max_attempts:40,page_timeout_s:2.5,agree_tolerance_px:45,auto_resume_verify:true,verify_wait_s:90,auto_select_session_on_calibrate:true,llm_enabled:false,llm_base_url:'',llm_model:'claude-sonnet-4-6',ocr_min_conf:0.3}},
+    activity_state:{has_llm_key:true,targets:[{name:'confirm',label:'SKU 底部下单按钮',page:'sku',cached:true,stale:false,point:[299,2210],source:'agree',keywords:['一键下单']}],inspection:{page:'sku',page_label:'场次票档选择页',screen_size:[1080,2400],sessions:[{index:0,label:'2026-05-02 周六',selected:true,sold_out:false}],prices:[{index:1,label:'看台580元',selected:false,sold_out:false}],viewers:[]}}
+  }});
+  assert.equal(e.get('damai-price-text').value,'580');
+  assert.equal(e.get('damai-clear-key').hidden,false);
+  assert.equal(e.get('damai-coord-rows').children.length,1);
+
+  // Reject gemini-* vision model on client-side validation
+  e.get('damai-llm-enabled').checked=true;
+  e.get('damai-llm-model').value='gemini-2.5-pro';
+  assert.equal(e.window.MiaoDamai.validate(),false);
+  assert.match(errors.at(-1),/300px/);
+
+  // Fix model, enter new secret key, and trigger calibrate
+  e.get('damai-llm-model').value='claude-sonnet-4-6';
+  e.get('damai-llm-api-key').value='sk-ant-synthetic';
+  e.get('damai-calibrate').fire('click');
+  await new Promise(resolve=>setImmediate(resolve));
+  const calReq=requests.find(r=>r.url==='/api/activity_action');
+  assert.equal(calReq.options.payload.name,'calibrate');
+  assert.equal(calReq.options.payload.config.activity_options.price_text,'580');
+  assert.equal(calReq.options.payload.activity_secrets.llm_api_key,'sk-ant-synthetic');
+  assert.equal(e.get('damai-llm-api-key').value,'','secret input clears immediately after send');
+}
+
+(async()=>{checkActivityInfo();checkDialogs();checkPreview();checkThemes();await checkActivityGrouping();await checkRankings();await checkDevicePreparation();await checkDamaiPanel();console.log('PASS dialogs, preview, themes, catalog, rankings, device preparation/isolation, damai panel');})().catch(error=>{console.error(error);process.exitCode=1;});
+
