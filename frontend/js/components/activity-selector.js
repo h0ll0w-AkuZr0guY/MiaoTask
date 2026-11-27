@@ -48,9 +48,10 @@
     $('activity-name').textContent=activities.length>1?`${label(activities[0])} 等 ${activities.length} 个活动，按顺序执行`:activities.length?label(activities[0]):'请先选择活动';
     for(const [select,rows,value] of [[$('activity-app'),catalog,snapshot.app],[$('activity-choice'),catalog.find(app=>app.id===snapshot.app)?.activities||[],snapshot.activity]]){select.replaceChildren(...rows.map(row=>{const option=node('option','',row.label);option.value=row.id;return option;}));select.value=value||'';select.disabled=locked;}
     $('activity-apply').disabled=true;
+    window.dispatchEvent(new CustomEvent('miaotask:view-app',{detail:viewApp}));
   }
   $('pipeline-clear').addEventListener('click',()=>save([]));
   window.addEventListener('miaotask:device-selected',()=>{if(infoDialog.open)infoDialog.close();snapshot=null;signature='';for(const control of document.querySelectorAll('#activity-tiles input,#activity-pipeline button,#pipeline-clear'))control.disabled=true;});
   window.addEventListener('miaotask:state',event=>{snapshot=event.detail;const device=MiaoAPI.device;if(workspace!==device){workspace=device;viewApp=snapshot.app||'';signature='';}const change=pending.get(device);if(change&&(JSON.stringify(snapshot.activity_plan||[])===JSON.stringify(change.activities)||Date.now()-change.since>10000||snapshot.status==='error'))pending.delete(device);render();});
-  window.MiaoActivities=Object.freeze({get plan(){return plan().map(item=>({...item}));},get locked(){return busy();}});
+  window.MiaoActivities=Object.freeze({get plan(){return plan().map(item=>({...item}));},get locked(){return busy();},get viewApp(){return viewApp;}});
 })();

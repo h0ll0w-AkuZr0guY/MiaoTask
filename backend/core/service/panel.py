@@ -6,6 +6,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
+import re
 import socket
 from pathlib import Path
 import secrets
@@ -97,10 +98,25 @@ class Controller(ActivityPipeline, PreviewWorker):
         self.unavailable_tasks = {}
         from backend.core.execution.task_policy import TaskPolicy
         self.task_policy = TaskPolicy()
+        if config is not None:
+            initial_config = copy.deepcopy(config)
+            if self.persist_preferences and self.registration is not None and isinstance(initial_config.get('activity_options'), dict):
+                from backend.core.storage.preferences import read_activity_options
+                saved_opts = read_activity_options(self.registration.app.id, self.registration.activity.id)
+                if saved_opts:
+                    merged = dict(initial_config['activity_options'], **saved_opts)
+                    try:
+                        initial_config['activity_options'] = self.registration.factory().validate_activity_options(merged)
+                    except Exception:
+                        pass
+        elif self.registration is not None:
+            initial_config = self._load_activity_config(self.registration)
+        else:
+            initial_config = load_config(registry=self.registry)
         self.state = dict(status='disconnected', phase='idle', connected=False,
                           message='连接手机后，点击开始执行自动进入活动并识别任务', package='', source='',
                           current_task='', remaining=0, stats=asdict(RunStats()), tasks=[],
-                          config=config or load_config(registry=self.registry, app=self.registration.app.id if self.registration else None, activity=self.registration.activity.id if self.registration else None), device={}, logs=[], updated_at='',
+                          config=initial_config, activity_state={}, device={}, logs=[], updated_at='',
                           daily=None, task_scope='', last_failure=None, image_sequence=0, image_updated_at='',
                           app_instances=[], selected_instance='', instance_warnings=[], instance_queue=[],
                           app=self.registration.app.id if self.registration else '',
@@ -108,11 +124,39 @@ class Controller(ActivityPipeline, PreviewWorker):
                           catalog=self.registry.catalog(),
                           activity_plan=[dict(app=self.registration.app.id, activity=self.registration.activity.id)] if self.registration else [],
                           activity_pipeline=[])
+        self.state['activity_state'] = self._refresh_activity_state(initial_config)
+
+    def _validate_activity_secrets(self, raw):
+        if raw is None:
+            return {}
+        if not isinstance(raw, dict) or len(raw) > 16:
+            raise ValueError('密钥配置格式无效')
+        if self.registration is None and raw:
+            raise ValueError('未注册活动，无法保存密钥')
+        cleaned = {}
+        for key, value in raw.items():
+            if not isinstance(key, str) or not re.fullmatch(r'[a-z0-9_]{1,64}', key):
+                raise ValueError('密钥字段名无效')
+            if value is None:
+                continue
+            if not isinstance(value, str) or len(value) > 4096:
+                raise ValueError('密钥长度或格式无效')
+            cleaned[key] = value
+        return cleaned
+
+    def _save_activity_secrets(self, secrets_map):
+        if not secrets_map or self.registration is None:
+            return
+        from backend.core.storage.preferences import save_activity_secret
+        for key, value in secrets_map.items():
+            save_activity_secret(self.registration.app.id, key, value)
 
     def _save_preferences(self, config):
         if self.persist_preferences:
-            from backend.core.storage.preferences import save_preferences
+            from backend.core.storage.preferences import save_activity_options, save_preferences
             save_preferences(config=framework_overrides(config))
+            if self.registration is not None and isinstance(config.get('activity_options'), dict):
+                save_activity_options(self.registration.app.id, self.registration.activity.id, config['activity_options'])
 
     def log(self, level, message):
         with self.lock:
@@ -328,7 +372,7 @@ class Controller(ActivityPipeline, PreviewWorker):
                     return
                 if action == 'select_activity':
                     registration = self.registry.get(payload.get('app'), payload.get('activity'))
-                    config = load_config(registry=self.registry, app=registration.app.id, activity=registration.activity.id)
+                    config = self._load_activity_config(registration)
                     self.control = RunControl()
                     self.update(status='scanning', message='正在切换活动')
                     self.thread = threading.Thread(target=self._change_activity, args=(registration, config), daemon=True)
@@ -351,8 +395,19 @@ class Controller(ActivityPipeline, PreviewWorker):
                         (payload.get('app', self.registration.app.id) != self.registration.app.id
                          or payload.get('activity', self.registration.activity.id) != self.registration.activity.id)):
                     raise ValueError('请先选择对应应用和活动')
-                if action not in ('connect', 'scan', 'run', 'open_app', 'capture', 'configure', 'reset_tasks', 'select_instance', 'refresh_instances'):
+                if action not in ('connect', 'scan', 'run', 'open_app', 'capture', 'configure', 'reset_tasks',
+                                  'select_instance', 'refresh_instances', 'activity_action'):
                     raise ValueError('未知操作')
+                offline_action = False
+                if action == 'activity_action':
+                    action_name = payload.get('name')
+                    params = payload.get('params', {})
+                    if not isinstance(action_name, str) or not re.fullmatch(r'[a-z0-9_]{1,40}', action_name):
+                        raise ValueError('活动操作名称无效')
+                    if not isinstance(params, dict):
+                        raise ValueError('活动操作参数必须为对象')
+                    offline_action = action_name in getattr(self.registration.factory(), 'offline_actions', ())
+                    payload = dict(payload, name=action_name, params=params)
                 if action == 'connect':
                     from backend.core.device.discovery import is_usb_serial
                     kind = payload.get('device_type', 'uiautomator2')
@@ -362,23 +417,31 @@ class Controller(ActivityPipeline, PreviewWorker):
                     if serial is not None and not is_usb_serial(serial):
                         raise ValueError('仅支持通过 macOS ADB USB 连接的设备序列号，不支持无线调试或模拟器地址')
                     payload = dict(payload, device_type='uiautomator2', serial=serial)
-                if action not in ('connect', 'configure') and self.device is None:
+                if action not in ('connect', 'configure') and not (action == 'activity_action' and offline_action) and self.device is None:
                     raise ValueError('请先连接设备')
+                secrets_payload = self._validate_activity_secrets(payload.get('activity_secrets'))
                 config = copy.deepcopy(self.state['config'])
                 overrides = payload.get('config', {})
                 if not isinstance(overrides, dict) or set(overrides) - set(config):
                     raise ValueError('配置字段无效')
+                if 'activity_options' in overrides and isinstance(config.get('activity_options'), dict):
+                    if not isinstance(overrides['activity_options'], dict):
+                        raise ValueError('activity_options 必须为配置对象')
+                    overrides = dict(overrides, activity_options=dict(config['activity_options'], **overrides['activity_options']))
                 config.update(overrides)
                 validate_config(config)
+                if self.registration is not None and 'activity_options' in config:
+                    config['activity_options'] = self.registration.factory().validate_activity_options(config['activity_options'])
                 if action in ('configure', 'run') and 'all_instances' in payload:
                     if not isinstance(payload['all_instances'], bool):
                         raise ValueError('all_instances 必须为布尔值')
                 defer_instances = planned_run and (len(activities) > 1 or activities[0] != dict(app=self.state['app'], activity=self.state['activity']))
-                if not defer_instances and action in ('run', 'scan', 'select_instance') and isinstance(getattr(self.device, 'app_instances', None), list) and not self.state['app_instances']:
+                needs_instance = action in ('run', 'scan', 'select_instance') or (action == 'activity_action' and not offline_action)
+                if not defer_instances and needs_instance and isinstance(getattr(self.device, 'app_instances', None), list) and not self.state['app_instances']:
                     raise ValueError('未发现可用应用实例，请安装应用或刷新实例列表后重试')
                 if action in ('run', 'scan') and not isinstance(payload.get('auto_open', True), bool):
                     raise ValueError('auto_open 必须为布尔值')
-                if not defer_instances and action in ('run', 'scan', 'select_instance') and self.state['app_instances']:
+                if not defer_instances and needs_instance and self.state['app_instances']:
                     known = {item['id'] for item in self.state['app_instances']}
                     fallback_ids = ([payload['instance_id']] if payload.get('instance_id') else
                                     [row['id'] for row in self.state['app_instances']]
@@ -394,6 +457,8 @@ class Controller(ActivityPipeline, PreviewWorker):
                     if len(ids) > 1 and not payload.get('auto_open', True):
                         raise ValueError('顺序执行多个实例必须使用自动进入活动')
                     payload = dict(payload, instance_ids=ids)
+                if secrets_payload:
+                    payload = dict(payload, _validated_secrets=secrets_payload)
                 if action == 'configure':
                     self.update(config=config, **({'all_instances': payload['all_instances']} if 'all_instances' in payload else {}))
                 else:
@@ -402,9 +467,10 @@ class Controller(ActivityPipeline, PreviewWorker):
                     self.control = RunControl()
                     self.update(config=config, status={'connect': 'connecting', 'scan': 'scanning',
                                                       'run': 'running', 'capture': 'scanning', 'reset_tasks': 'scanning',
-                                                      'open_app': 'scanning',
+                                                      'open_app': 'scanning', 'activity_action': 'scanning',
                                                       'select_instance': 'scanning', 'refresh_instances': 'scanning'}[action],
-                                message='正在通过 USB 连接手机' if action == 'connect' else '正在读取手机页面')
+                                message=('正在通过 USB 连接手机' if action == 'connect' else
+                                         '正在执行活动操作' if action == 'activity_action' else '正在读取手机页面'))
                     self.thread = threading.Thread(target=self._work, args=(action, payload, config), daemon=True,
                                                    name='miao-device-worker')
                     self.thread.start()
@@ -413,13 +479,17 @@ class Controller(ActivityPipeline, PreviewWorker):
             self.log('INFO', {'pause': '用户暂停', 'resume': '用户继续', 'stop': '用户停止'}[action])
             self._persist_state()
         elif action == 'configure':
+            self._save_activity_secrets(secrets_payload)
             self._save_preferences(config)
+            self.update(activity_state=self._refresh_activity_state(config))
             self.log('INFO', '执行设置已应用并保存')
 
     @device_scoped
     def _work(self, action, payload, config):
         self._last_failure_stamp = 0.0
         try:
+            if payload.get('_validated_secrets'):
+                self._save_activity_secrets(payload['_validated_secrets'])
             if action == 'connect':
                 from backend.core.device.adapter import DeviceAdapter
                 from backend.core.device.discovery import is_usb_serial
@@ -471,6 +541,7 @@ class Controller(ActivityPipeline, PreviewWorker):
                             app_instances=[i.to_dict() for i in device.app_instances],
                             selected_instance=device.selected_instance.id if device.selected_instance else '',
                             instance_warnings=device.instance_warnings,
+                            activity_state=self._refresh_activity_state(config),
                             tasks=[], message='设备已连接，请确认应用实例后开始自动执行')
                 self._preview_stop.clear()
                 self._start_preview()
@@ -504,6 +575,7 @@ class Controller(ActivityPipeline, PreviewWorker):
                 self.update(app_instances=instances,
                             selected_instance=self.device.selected_instance.id if self.device.selected_instance else '',
                             instance_warnings=self.device.instance_warnings, instance_queue=[],
+                            activity_state=self._refresh_activity_state(config),
                             status='ready', phase='ready', tasks=[], current_task='', stats=asdict(RunStats()),
                             message='实例列表已刷新；未读取任何账号登录信息')
                 self._instance_availability('实例列表已刷新；未读取任何账号登录信息')
@@ -511,6 +583,9 @@ class Controller(ActivityPipeline, PreviewWorker):
                 self._select_instance(payload['instance_ids'][0])
                 self._remember_instances(payload['instance_ids'])
                 self.update(status='ready', phase='ready', instance_queue=[], message='已选择实例，开始后才会打开对应应用')
+            elif action == 'activity_action':
+                self._save_preferences(config)
+                self._execute_activity_action(payload, config)
             else:
                 from backend.core.device.ocr import device_ocr_scope, engine_session
                 with engine_session(device_ocr_scope(self.device)):
@@ -553,12 +628,51 @@ class Controller(ActivityPipeline, PreviewWorker):
                     self.on_image(self.device.screenshot())
                 except Exception:
                     logger.debug('刷新预览失败', exc_info=True)
+            if action in ('run', 'scan'):
+                self.update(activity_state=self._refresh_activity_state(config))
             if self.device is not None:
                 try:
                     self._persist_state()
                     self._save_report()
                 except Exception:
                     logger.exception('保存本地当天记录失败')
+
+    def _execute_activity_action(self, payload, config):
+        action_name = payload['name']
+        params = payload.get('params') or {}
+        cls = self.registration.factory()
+        offline_action = action_name in getattr(cls, 'offline_actions', ())
+        from backend.core.device.ocr import device_ocr_scope, engine_session
+        ocr_ctx = engine_session(device_ocr_scope(self.device)) if self.device is not None else nullcontext()
+        with ocr_ctx:
+            if self.device is not None and not offline_action:
+                ids = payload.get('instance_ids') or [self.state['selected_instance'] or None]
+                instance_id = ids[0] if ids else None
+                if instance_id:
+                    self._select_instance(instance_id)
+                self._ensure_daily()
+                runner = CampaignRunner(
+                    self.device, config, self.control, lambda **event: self.update(**event), self.on_image,
+                    unavailable_tasks=self.unavailable_tasks, on_failure=self.on_failure,
+                    task_policy=self.task_policy, registry=self.registry,
+                    app=self.registration.app.id, activity=self.registration.activity.id)
+                context = self.device.instance_session() if instance_id else nullcontext()
+                with context, runner.reader.observation_session(config, self.control):
+                    result = runner.perform_action(action_name, params)
+            else:
+                runner = cls(self.device, config, self.control, lambda **event: self.update(**event), self.on_image)
+                runner.registration = self.registration
+                result = runner.perform_action(action_name, params)
+        next_state = dict(self.state.get('activity_state') or {})
+        next_state.update(self._refresh_activity_state(config))
+        message = None
+        if isinstance(result, dict):
+            message = result.get('message')
+            next_state.update({key: value for key, value in result.items() if key != 'message'})
+        self.update(activity_state=next_state,
+                    status='ready' if self.device is not None else 'disconnected',
+                    phase='ready',
+                    **({'message': str(message)} if message else {}))
 
     def _instance_availability(self, ready_message):
         warnings = list(getattr(self.device, 'instance_warnings', ()) or ())
@@ -648,6 +762,7 @@ class Controller(ActivityPipeline, PreviewWorker):
         target = self.device.select_app_instance(instance_id)
         self._ensure_daily()
         self.update(selected_instance=target.id, tasks=[], current_task='', remaining=0,
+                    activity_state=self._refresh_activity_state(),
                     last_failure=None, stats=asdict(RunStats()))
 
     @device_scoped

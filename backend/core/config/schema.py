@@ -74,4 +74,29 @@ def validate_config(config):
         labels = config.get(key)
         if not isinstance(labels, list) or not labels or not all(isinstance(v, str) and 0 < len(v) < 80 for v in labels):
             raise ValueError(f'{key} 必须为非空文字列表')
+    if 'activity_options' in config:
+        config['activity_options'] = _validate_activity_options(config['activity_options'])
     return config
+
+
+def _validate_activity_options(options):
+    if not isinstance(options, dict) or len(options) > 64:
+        raise ValueError('activity_options 必须为最多 64 项的配置对象')
+    cleaned = {}
+    for key, value in options.items():
+        if not isinstance(key, str) or not re.fullmatch(r'[a-z0-9_]{1,64}', key):
+            raise ValueError('activity_options 字段名无效')
+        if value is None or isinstance(value, (bool, int, float)):
+            cleaned[key] = value
+        elif isinstance(value, str):
+            if len(value) > 4000:
+                raise ValueError(f'{key} 内容过长')
+            cleaned[key] = value
+        elif isinstance(value, list):
+            if len(value) > 64 or any(not isinstance(item, str) or len(item) > 120 for item in value):
+                raise ValueError(f'{key} 列表格式无效')
+            cleaned[key] = list(value)
+        else:
+            raise ValueError(f'{key} 字段类型无效')
+    return cleaned
+

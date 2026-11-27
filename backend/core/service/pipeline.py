@@ -34,6 +34,30 @@ class ActivityPipeline:
         if ids and all(isinstance(value, str) and value for value in ids):
             self._app_instance_plans[self.registration.app.id] = list(ids)
 
+    def _load_activity_config(self, registration, shared_overrides=None):
+        config = load_config(registry=self.registry, app=registration.app.id,
+                             activity=registration.activity.id, overrides=shared_overrides)
+        if getattr(self, 'persist_preferences', False) and isinstance(config.get('activity_options'), dict):
+            from backend.core.storage.preferences import read_activity_options
+            saved = read_activity_options(registration.app.id, registration.activity.id)
+            if saved:
+                merged = dict(config['activity_options'], **saved)
+                try:
+                    config['activity_options'] = registration.factory().validate_activity_options(merged)
+                except Exception:
+                    pass
+        return config
+
+    def _refresh_activity_state(self, config=None):
+        if self.registration is None:
+            return {}
+        try:
+            current = config if config is not None else self.state.get('config')
+            state = self.registration.factory().describe_state(self.device, current)
+            return dict(state) if isinstance(state, dict) else {}
+        except Exception:
+            return {}
+
     def _activate_registration(self, registration, config):
         self.control.check()
         old_app = self.registration.app.id if self.registration else None
@@ -64,6 +88,7 @@ class ActivityPipeline:
             self.daily = None
             self.unavailable_tasks.clear()
         self.update(app=registration.app.id, activity=registration.activity.id, config=config,
+                    activity_state=self._refresh_activity_state(config),
                     tasks=[], stats=asdict(RunStats()), daily=None, task_scope='',
                     current_task='', remaining=0, last_failure=None, instance_queue=[],
                     app_instances=[item.to_dict() for item in self.device.app_instances] if self.device else [],
@@ -77,8 +102,8 @@ class ActivityPipeline:
             first = activities[0]
             registration = self.registry.get(first['app'], first['activity'])
             if self.registration is None or (self.state['app'], self.state['activity']) != (first['app'], first['activity']):
-                self._activate_registration(registration, load_config(
-                    registry=self.registry, overrides=framework_overrides(self.state['config']), **first))
+                self._activate_registration(registration, self._load_activity_config(
+                    registration, framework_overrides(self.state['config'])))
         self.update(activity_plan=activities, activity_pipeline=[],
                     status='ready' if self.device else 'disconnected', phase='ready',
                     message='已保存活动流水线，点击开始后按顺序执行' if activities else '未选择活动；请勾选需要执行的活动')
@@ -102,10 +127,10 @@ class ActivityPipeline:
             self.control.check()
             registration = self.registry.get(**item)
             settings = (config if index == 0 and (item['app'], item['activity']) == first_identity else
-                        load_config(registry=self.registry, overrides=shared_overrides, **item))
+                        self._load_activity_config(registration, shared_overrides))
             if (self.state['app'], self.state['activity']) != (item['app'], item['activity']):
                 self._activate_registration(registration, settings)
-            self.update(config=settings)
+            self.update(config=settings, activity_state=self._refresh_activity_state(settings))
             self._activity_queue_status(index, 'running')
             current = dict(payload)
             ids = payload.get('instance_ids') if index == 0 else instance_choices.get(item['app'])
@@ -157,11 +182,12 @@ class ActivityPipeline:
         if previous in available:
             self.registration = registry.get(*previous)
             overrides = framework_overrides(self.state['config'])
-            config = load_config(registry=registry, app=previous[0], activity=previous[1], overrides=overrides)
+            config = self._load_activity_config(self.registration, overrides)
             with self._daily_lock:
                 self.daily = None
                 self.unavailable_tasks.clear()
-            self.update(config=config, tasks=[], task_scope='', daily=None, current_task='',
+            self.update(config=config, activity_state=self._refresh_activity_state(config),
+                        tasks=[], task_scope='', daily=None, current_task='',
                         stats=asdict(RunStats()), instance_queue=[], remaining=0, last_failure=None)
             if self.device:
                 self._ensure_daily()
@@ -171,13 +197,14 @@ class ActivityPipeline:
             if getattr(self, 'release_device', None):
                 self.release_device()
             self.registration = registry.get() if registry.has_activities else None
-            config = load_config(registry=registry)
+            config = self._load_activity_config(self.registration) if self.registration else load_config(registry=registry)
             with self._daily_lock:
                 self.daily = None
                 self.unavailable_tasks.clear()
             self.update(app=self.registration.app.id if self.registration else '',
                         activity=self.registration.activity.id if self.registration else '',
-                        config=config, connected=False, device={}, daily=None, task_scope='',
+                        config=config, activity_state=self._refresh_activity_state(config),
+                        connected=False, device={}, daily=None, task_scope='',
                         app_instances=[], selected_instance='', tasks=[], instance_queue=[],
                         stats=asdict(RunStats()), current_task='', remaining=0)
             self.image = None
@@ -186,3 +213,4 @@ class ActivityPipeline:
         self.update(catalog=registry.catalog(), activity_plan=plan, activity_pipeline=[],
                     message='活动目录已更新，可选择活动后连接设备',
                     status='ready' if self.device else 'disconnected')
+

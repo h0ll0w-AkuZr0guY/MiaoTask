@@ -546,3 +546,28 @@ controller.dispatch('run', {'auto_open': True})
 压缩截图的私有 HTTP 通道使用 8 秒读取超时；传输超时/断流只重试一次，重试前重新核定实例与显示屏，不重发输入，不把传输异常当任务完成。
 
 通知与观察恢复：`focused_notification()` 只识别当前焦点通知面，不借用其下方 Activity 作为可操作身份。瞬态空焦点使用完整 8 秒预算，明确通知允许最多 20 秒等待；结束仍未知时抛 `ObservationUnavailable`，与已证实的实例/显示屏冲突区分。网页与 CLI 通过 `run_with_observation_recovery()` 复用同一活动对象，最多两次定向恢复（唤回、再冷启），不清统计、词表或已核验标记，不重发原点击。认证、停止和真实身份冲突不进入该恢复。
+
+### 活动专用配置、动作与本地密钥隔离
+
+实现：[schema.py](../backend/core/config/schema.py)、[activity.py](../backend/core/execution/activity.py)、[preferences.py](../backend/core/storage/preferences.py)、[panel.py](../backend/core/service/panel.py)。
+
+```python
+class CustomActivity(Activity):
+    offline_actions = frozenset({'clear_cache'})
+
+    @classmethod
+    def validate_activity_options(cls, options):
+        return options
+
+    @classmethod
+    def describe_state(cls, device, config):
+        return {}
+
+    def perform_action(self, action_name, params=None):
+        return {'message': '操作已完成'}
+```
+
+* **活动专用配置（`activity_options`）**：不写入 `defaults.json`，仅在声明了 `activity_options` 的活动 `config.json` 中启用。`validate_config()` 校验 JSON 基本类型与长度上限，控制器在 `configure/run/activity_action` 中调用 `Activity.validate_activity_options()` 同步校验业务约束，无效参数直接返回 400。通过 `read_activity_options(app, activity)` / `save_activity_options(app, activity, options)` 按 `app/activity` 独立保存在 `preferences.json`，不跨活动复制。
+* **活动状态与独立动作（`activity_state` / `POST /api/activity_action`）**：`Controller.state['activity_state']` 由 `Activity.describe_state(device, config)` 生成并随设备、实例、校准或扫描刷新。`POST /api/activity_action?device=<id>` 接收 `{app, activity, name, params, config}`，在设备工作线程内持有 `RunControl` 与所选应用实例会话执行 `runner.perform_action(name, params)`；列在 `offline_actions` 中的纯本地操作允许未连接设备时调用，其余操作仍要求已连接设备并核定实例。
+* **写专用密钥隔离（`activity_secrets` / `secrets.json`）**：`configure/run/activity_action` 可选携带只写字段 `activity_secrets`，经 `save_activity_secret(app, name, value)` 以 `0600` 权限原子写入用户目录 `secrets.json`（空字符串表示清除）。密钥永远不进入 `Controller.state`、`GET /api/state`、`preferences.json`、`last-run.json` 或 `miao-diagnostics.zip`；前端仅通过布尔标志（如 `has_llm_key`）获知本机是否已存密钥。
+

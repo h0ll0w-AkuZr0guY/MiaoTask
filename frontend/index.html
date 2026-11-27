@@ -4,7 +4,7 @@
   <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light"><title>MiaoTask · 设备任务工作台</title>
   <link rel="icon" type="image/png" sizes="32x32" href="/assets/miaotask-32.png"><link rel="icon" type="image/png" sizes="16x16" href="/assets/miaotask-16.png"><link rel="apple-touch-icon" sizes="180x180" href="/assets/miaotask-180.png">
-  <script src="/js/components/themes.js"></script><link rel="stylesheet" href="/css/base.css"><link rel="stylesheet" href="/css/themes.css"><script src="/js/api.js" defer></script><script src="/js/components/dialogs.js" defer></script><script src="/js/components/rankings.js" defer></script><script src="/js/components/preview-controls.js" defer></script><script src="/js/components/activity-selector.js" defer></script><script src="/js/components/activity-center.js" defer></script><script src="/js/components/device-manager.js" defer></script><script src="/js/app.js" defer></script>
+  <script src="/js/components/themes.js"></script><link rel="stylesheet" href="/css/base.css"><link rel="stylesheet" href="/css/themes.css"><script src="/js/api.js" defer></script><script src="/js/components/dialogs.js" defer></script><script src="/js/components/rankings.js" defer></script><script src="/js/components/preview-controls.js" defer></script><script src="/js/components/activity-selector.js" defer></script><script src="/js/components/activity-center.js" defer></script><script src="/js/components/device-manager.js" defer></script><script src="/js/components/damai-panel.js" defer></script><script src="/js/app.js" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -39,6 +39,65 @@
         <section class="card setup-card" aria-labelledby="setup-title"><div class="section-heading"><h2 id="setup-title"><span class="step">01</span>活动计划</h2><span class="current-device-caption" id="current-device-name">未连接设备</span></div>
           <div class="application-switcher"><span class="field-label">应用</span><nav id="application-nav" role="tablist" aria-label="浏览已安装应用"></nav></div>
           <section class="activity-selection" aria-label="本设备活动选择"><h3 id="activity-selection-title">选择要执行的活动</h3><div id="activity-tiles" class="activity-tiles"></div><details class="pipeline-details"><summary>执行顺序 <span id="pipeline-count">0</span><span class="pipeline-expand-hint">排序 / 移除</span></summary><div class="pipeline-heading"><strong>按以下顺序执行</strong><button type="button" class="text-button" id="pipeline-clear">清空选择</button></div><div id="activity-pipeline"></div></details><p class="field-hint">勾选后按顺序执行；各设备独立运行。</p></section>
+          <section class="damai-panel" id="damai-panel" aria-labelledby="damai-panel-title" hidden>
+            <div class="damai-header">
+              <div>
+                <h3 id="damai-panel-title">大麦抢票参数与坐标校准</h3>
+                <p class="field-hint">开售前在详情页/场次票档页校准一次即可缓存像素坐标；正式开抢走 0ms XML + 缓存极速路径，由下方「▶ 开始自动执行」启动 mtop 时钟同步与冲刺。</p>
+              </div>
+              <span class="damai-page-badge" id="damai-page-badge">尚未读取大麦页面</span>
+            </div>
+            <div class="damai-toolbar" role="group" aria-label="大麦校准与页面检查操作">
+              <button type="button" class="button dark" id="damai-calibrate" disabled>⊕ 校准当前页面坐标</button>
+              <button type="button" class="feature-button" id="damai-inspect" disabled>↻ 只读查看当前页</button>
+              <button type="button" class="feature-button" id="damai-save">✓ 保存抢票参数</button>
+              <button type="button" class="text-button" id="damai-clear-cache">清空坐标缓存</button>
+            </div>
+            <div id="damai-inspection-box" class="damai-inspection-box" hidden></div>
+            <div class="damai-grid">
+              <label>场次关键词<input type="text" id="damai-session-text" maxlength="80" placeholder="如：2026-05-02 或 周六（留空选首场）"></label>
+              <label>场次序号 (可选, 0起)<input type="number" id="damai-session-index" min="0" max="50" step="1" placeholder="留空按关键词匹配"></label>
+              <label>票档关键词<input type="text" id="damai-price-text" maxlength="80" placeholder="如：580 或 看台580元（防误配 1580）"></label>
+              <label>票档序号 (可选, 0起)<input type="number" id="damai-price-index" min="0" max="50" step="1" placeholder="留空按关键词匹配"></label>
+              <label>定时开售时间<input type="text" id="damai-sell-time" maxlength="32" placeholder="YYYY-MM-DD HH:MM:SS（留空读详情页或立即开抢）"></label>
+              <label>提前点击量 / 毫秒<input type="number" id="damai-lead-ms" min="-2000" max="5000" step="5" value="80"></label>
+              <label>SKU 下单按钮模式<select id="damai-order-mode"><option value="quick_order">一键下单 / 确定（推荐，系统自动配座）</option><option value="seat_map">去选座（进入选座页后停下人工选座）</option></select></label>
+              <label>勾选观演人数量<input type="number" id="damai-viewer-count" min="0" max="8" step="1" value="1"></label>
+              <label class="damai-span-2">指定实名观演人姓名（可选，分号分隔；支持匹配脱敏名如 张*）<input type="text" id="damai-viewer-names" maxlength="200" placeholder="留空则按上方数量顺序补齐未勾选的观演人；已勾选的绝不反选"></label>
+            </div>
+            <div class="damai-switches">
+              <label class="damai-switch"><input type="checkbox" id="damai-submit-order"><span>到达订单确认页后自动点击「立即提交」<small>默认关闭便于演练核验；开启后自动提交订单并在支付宝收银台立即停止，绝不触碰支付密码</small></span></label>
+            </div>
+            <details class="damai-advanced">
+              <summary>防风控节奏、滑块恢复与多模态视觉辅助设置</summary>
+              <div class="damai-grid damai-advanced-grid">
+                <label>最小点击抖动 / ms<input type="number" id="damai-jitter-min" min="0" max="2000" step="10" value="120"></label>
+                <label>最大点击抖动 / ms<input type="number" id="damai-jitter-max" min="0" max="2000" step="10" value="280"></label>
+                <label>最大冲刺轮数<input type="number" id="damai-max-attempts" min="1" max="500" step="1" value="40"></label>
+                <label>页面跳转超时 / 秒<input type="number" id="damai-page-timeout" min="0.5" max="30" step="0.1" value="2.5"></label>
+                <label>多源坐标一致容差 / px<input type="number" id="damai-agree-tolerance" min="5" max="200" step="1" value="45"></label>
+                <label>Vision OCR 最低置信度<input type="number" id="damai-ocr-min-conf" min="0.05" max="0.95" step="0.05" value="0.3"></label>
+                <label>滑块最长等待 / 秒<input type="number" id="damai-verify-wait" min="5" max="300" step="5" value="90"></label>
+              </div>
+              <div class="damai-switches">
+                <label class="damai-switch"><input type="checkbox" id="damai-auto-select-session" checked><span>校准场次票档页时，若未展开票档自动点击目标场次并继续校准</span></label>
+                <label class="damai-switch"><input type="checkbox" id="damai-auto-resume-verify" checked><span>遇到霸下滑块验证时系统提醒并暂停点击，人工滑完自动恢复抢票（内置 1.5s ≤ 5 次点击限流）</span></label>
+                <label class="damai-switch"><input type="checkbox" id="damai-llm-enabled"><span>启用 Anthropic 兼容视觉模型参与校准投票（仅校准与脱靶重定位调用；禁止使用 gemini-* 模型）</span></label>
+              </div>
+              <div class="damai-grid damai-llm-grid">
+                <label>视觉模型接口 Base URL<input type="url" id="damai-llm-base-url" maxlength="300" placeholder="如 https://api.anthropic.com"></label>
+                <label>视觉模型名称<div class="damai-inline-input"><input type="text" id="damai-llm-model" list="damai-llm-model-options" value="claude-sonnet-4-6" maxlength="120"><datalist id="damai-llm-model-options"></datalist><button type="button" class="text-button" id="damai-llm-models-btn">检测模型</button></div></label>
+                <label class="damai-span-2">API Key（独立 0600 权限保存于本机 secrets.json，不回显、不进日志与诊断包）<div class="damai-inline-input"><input type="password" id="damai-llm-api-key" autocomplete="new-password" maxlength="512" placeholder="输入 Anthropic 兼容 API Key"><button type="button" class="text-button danger-button" id="damai-clear-key" hidden>清除已存密钥</button></div></label>
+              </div>
+            </details>
+            <div class="damai-coord-wrap">
+              <div class="damai-coord-title"><strong>目标坐标缓存与定位状态</strong><small>支持分页面增量保存（先校准详情页，进场次页再校准一次自动合并）</small></div>
+              <table class="damai-coord-table">
+                <thead><tr><th scope="col">环节控件</th><th scope="col">匹配规则</th><th scope="col">缓存像素坐标</th><th scope="col">定位状态</th></tr></thead>
+                <tbody id="damai-coord-rows"></tbody>
+              </table>
+            </div>
+          </section>
           <div hidden><select id="activity-app" aria-label="当前应用"></select><select id="activity-choice" aria-label="当前活动"></select><button id="activity-apply" type="button">选择活动</button></div><form id="settings-form">
           <div hidden><span id="activity-name"></span><span id="settings-summary"></span><span id="instance-summary"></span><button id="toggle-instances" type="button"></button></div>
           <dialog id="common-settings" class="workbench-dialog" aria-labelledby="common-settings-title">

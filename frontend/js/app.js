@@ -2,7 +2,7 @@
 const $ = id => document.getElementById(id);
 const busyStates = new Set(['connecting', 'scanning', 'running', 'paused', 'stopping']);
 const statusLabels = {disconnected:'等待连接',connecting:'正在连接',ready:'设备已就绪',scanning:'识别中',running:'正在执行',paused:'已暂停',stopping:'正在停止',stopped:'已停止',finished:'本轮已结束',needs_attention:'需要手动处理',error:'操作失败'};
-const phaseLabels = {locating:'LOCATING CAMPAIGN',ready:'READY TO GO',opening:'OPENING TASK',browsing:'BROWSING IN PROGRESS',returning:'BACK TO YOUR TASKS',scanning:'FINDING MORE TASKS',finished:'SESSION FINISHED',stopped:'SESSION STOPPED',needs_attention:'YOUR ATTENTION NEEDED'};
+const phaseLabels = {locating:'LOCATING CAMPAIGN',ready:'READY TO GO',opening:'OPENING TASK',browsing:'BROWSING IN PROGRESS',returning:'BACK TO YOUR TASKS',scanning:'FINDING MORE TASKS',countdown:'WAITING FOR SALE',sprint:'TICKET SPRINT LIVE',verify_paused:'SLIDER VERIFICATION',finished:'SESSION FINISHED',stopped:'SESSION STOPPED',needs_attention:'YOUR ATTENTION NEEDED'};
 const taskLabels = {pending:'待执行',running:'执行中',done:'已核验',manual:'手动处理',failed:'未通过',disabled:'已跳过'};
 const kindLabels = {browse:'浏览',search:'搜索',visit:'跳转',claim:'领奖',manual:'手动',done:'完成'};
 const deviceUIPreferences=new Map();
@@ -35,6 +35,7 @@ function config(){
   values.enabled_task_kinds=['browse','search','visit','claim'].filter(kind=>$('kind-'+kind).checked);
   values.claim_rewards=$('kind-claim').checked;
   for(const [key,id] of Object.entries(keywordSettings))values[key]=[...new Set(String($(id).value||'').split(/[;；\s]+/u).filter(Boolean))];
+  if(state?.app==='damai'&&window.MiaoDamai)values.activity_options=window.MiaoDamai.collectOptions();
   return values;
 }
 function applyConfig(values){
@@ -77,6 +78,7 @@ async function action(name, extra={}){
   if(requesting)return;
   if(!state&&name!=='shutdown'){toast('正在读取当前设备，请稍候');return;}
   if(['run','connect','configure'].includes(name)&&!validateSettingsForm())return;
+  if(state?.app==='damai'&&['run','configure'].includes(name)&&window.MiaoDamai&&!window.MiaoDamai.validate())return;
   if(name==='run'&&!config().enabled_task_kinds.length){showSettings('tasks');toast('请至少选择一种本轮任务类型');return;}
   if(name==='run'&&instanceProblem()){toast(instanceProblem());return;}
   requesting=true;
@@ -84,10 +86,11 @@ async function action(name, extra={}){
     if(name==='connect'){connection={device_type:$('device-type').value,serial:$('serial').value.trim()};const target=await MiaoDevices.prepare();if(!state||state.workspace_id!==target||MiaoAPI.device!==target)throw new Error('设备已切换，请重新连接');$('serial').value=connection.serial;$('device-type').value=connection.device_type;}
     const payload={app:state?.app,activity:state?.activity,...extra,auto_open:true};
     if(['run','connect','configure'].includes(name))payload.config=config();
+    if(state?.app==='damai'&&['run','configure'].includes(name)&&window.MiaoDamai){const secrets=window.MiaoDamai.collectSecrets();if(secrets)payload.activity_secrets=secrets;}
     if(name==='run'){payload.all_instances=clonesEnabled;payload.activities=MiaoActivities.plan;if(!payload.activities.length)throw new Error('请先勾选至少一个活动');const queued=clonesEnabled&&$('sequence-instances').checked;if(payload.activities[0]?.app===state.app){payload.instance_ids=queued?queueOrder:[state.selected_instance];if(!payload.instance_ids.length||payload.instance_ids.some(id=>!id||!state.app_instances.some(item=>item.id===id)))throw new Error('所选应用实例已失效，请重新选择');}if(queued)payload.auto_open=true;}
     if(name==='connect')Object.assign(payload,connection);
     const response=await fetch(MiaoAPI.url('/api/'+name),{method:'POST',headers:{'Content-Type':'application/json','X-Miao-Token':token},body:JSON.stringify(payload)});
-    const result=await response.json();if(!response.ok)throw new Error(result.error||'操作失败');if(name==='shutdown'){toast('助手已退出，可以关闭此页面');return;}if(name==='configure')toast('执行设置已应用');await poll();
+    const result=await response.json();if(!response.ok)throw new Error(result.error||'操作失败');if(state?.app==='damai'&&['run','configure'].includes(name)&&window.MiaoDamai)window.MiaoDamai.markSaved();if(name==='shutdown'){toast('助手已退出，可以关闭此页面');return;}if(name==='configure')toast('执行设置已应用');await poll();
   }catch(error){toast(error.message);}finally{requesting=false;}
 }
 function ocrHint(p){
@@ -199,7 +202,7 @@ function render(){
   const failureTask=state.last_failure?.task;
   const failureTitle=typeof failureTask==='string'?failureTask:failureTask?.title;
   $('last-failure').textContent=state.last_failure?`最近记录：${state.last_failure.reason||'执行未通过'}${failureTitle?' · '+failureTitle:''}`:'遇到验证、恢复失败或核验失败时记录现场，原始截图仅保存在本机。';
-  $('package-name').textContent=state.package||'设备未连接';$('preview-source').textContent=state.source==='ocr'?'本地 OCR 识别':state.source==='ui'?'页面控件识别':'手机截图预览';
+  $('package-name').textContent=state.package||'设备未连接';$('preview-source').textContent=state.source==='ocr'?'本地 OCR 识别':state.source==='ui'?'页面控件识别':state.source==='damai-xml'?'大麦 XML + Vision':'手机截图预览';
   if(!initialized){applyConfig({...config(),...(state.config||{})});initialized=true;loadPreferences();}
   updateSettingsSummary();renderTasks();renderLogs();preview();MiaoDevices.refresh();
 }
@@ -254,6 +257,7 @@ for(const name of ['tasks','logs'])$(name+'-tab').addEventListener('click',()=>{
 window.addEventListener('miaotask:activity-changed',()=>{initialized=false;taskHash=logsHash=instanceHash='';poll();});
 window.addEventListener('miaotask:plan-changed',()=>{taskHash=instanceHash='';poll();});
 window.addEventListener('miaotask:workspaces-changed',()=>poll());
+window.addEventListener('miaotask:poll-now',()=>poll());
 window.addEventListener('miaotask:error',event=>toast(event.detail));
 window.addEventListener('miaotask:device-selected',()=>{
   if($('common-settings').open)$('common-settings').close();$('common-settings-open').disabled=true;

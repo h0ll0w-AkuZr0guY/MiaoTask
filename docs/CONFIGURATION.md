@@ -77,3 +77,24 @@
 两项保存在既有用户偏好（`~/Library/Application Support/MiaoTask/preferences.json`）中，保留任务词表和设备配置；环境变量 `MIAO_DOWNLOAD_PROXY` 优先于保存的代理偏好。它们不更改活动的 `ocr` 布尔配置，支付宝月月赚默认继续优先使用原生 UI。淘宝标准浏览在 Vision OCR 下的首轮末尾补滑沿用 `browse_recheck_rounds`，`visit` 与活动短停留保持原有含义。
 
 淘宝任务页与搜索结果的渲染等待独立于浏览时长：进入前短等 1.2 秒再读屏；当 Vision 观察耗时不足 0.6 秒时，间隔 0.4 秒复核顶部任务/搜索控件位置稳定性，避免动画未落稳时误点。
+
+## 大麦抢票活动专用参数（`activity_options`）
+
+大麦 `ticket_grab` 的专用参数保存在 `preferences.json` 的 `activity_options["damai/ticket_grab"]` 下，不影响 `defaults.json` 公共配置：
+
+| 字段 | 默认值 / 范围 | 说明 |
+| --- | --- | --- |
+| `session_text` / `session_index` | 空 / `null`（0～50） | 场次关键词或 0 起始序号；均留空时默认选第一个场次 |
+| `price_text` / `price_index` | 空 / `null`（0～50） | 票档关键词（纯数字启用整词边界防误配）或 0 起始序号；留空优先首个未售罄票档 |
+| `sell_time` / `lead_ms` | 空 / `80`（-2000～5000ms） | `YYYY-MM-DD HH:MM:SS`（或 `HH:MM:SS`），留空自动读详情页开售时间或立即开抢；`lead_ms` 为相对大麦 mtop 时钟提前触发毫秒数 |
+| `order_mode` | `quick_order` | `quick_order` 优先点击正式开售「一键下单」或预售「确定」；`seat_map` 点击「去选座」并在选座页停下由人工选座 |
+| `viewer_count` / `viewer_names` | `1`（0～8） / `[]` | 订单确认页实名观演人核验数量或指定姓名（支持匹配 `张*` 类脱敏显示）；仅补勾未勾选项，已勾选绝不反选 |
+| `submit_order` | `false` | 默认关闭（停在订单确认页核验）；开启后自动点击「立即提交」并在支付宝收银台停止 |
+| `jitter_min_ms` / `jitter_max_ms` | `120`～`280`（0～2000ms） | 每次 `adb shell input tap` 后的随机抖动等待，配合 `1.5s ≤ 5 次` 滑动窗口限流降低霸下滑块触发率 |
+| `max_attempts` / `page_timeout_s` | `40`（1～500） / `2.5`（0.5～30s） | 冲刺最大轮数与单步页面跳转等待预算 |
+| `auto_resume_verify` / `verify_wait_s` | `true` / `90.0`（5～300s） | 遇到滑块验证时系统提醒并暂停点击，人工滑完后自动恢复抢票 |
+| `auto_select_session_on_calibrate` | `true` | 校准未展开票档的正式开售 SKU 页时，自动点击目标场次以展开票档并继续校准 |
+| `llm_enabled` / `llm_base_url` / `llm_model` | `false` / 空 / `claude-sonnet-4-6` | 可选第三路 Anthropic 兼容视觉校准模型（仅校准与脱靶重定位调用；开启时拒绝 `gemini-*` 模型） |
+
+视觉模型 API Key 通过只写字段 `activity_secrets.llm_api_key` 提交，以 `0600` 权限单独存储在 `~/Library/Application Support/MiaoTask/secrets.json`（也可通过环境变量 `ANTHROPIC_API_KEY` 提供），绝不写入 `preferences.json`、`/api/state` 响应或诊断压缩包。
+

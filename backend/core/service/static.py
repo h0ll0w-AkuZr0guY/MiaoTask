@@ -17,6 +17,7 @@ STATIC = {
     '/js/app.js': ('js/app.js', 'text/javascript; charset=utf-8'),
     '/js/api.js': ('js/api.js', 'text/javascript; charset=utf-8'),
     '/js/components/activity-selector.js': ('js/components/activity-selector.js', 'text/javascript; charset=utf-8'),
+    '/js/components/damai-panel.js': ('js/components/damai-panel.js', 'text/javascript; charset=utf-8'),
     '/css/base.css': ('css/base.css', 'text/css; charset=utf-8'),
 }
 
